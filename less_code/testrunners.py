@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,7 +34,7 @@ def _run(cmd: list[str], cwd: Path, timeout: int) -> TestResult:
 
 def run_tests(root: Path, lang: str, timeout: int = 600, quiet: bool = False) -> TestResult:
     if lang == "python":
-        cmd = ["python", "-m", "pytest", "-x", "-q", "--no-header"]
+        cmd = [sys.executable, "-m", "pytest", "-x", "-q", "--no-header"]
     elif lang in ("javascript", "typescript"):
         cmd = ["node", "--test"]
     elif lang == "rust":

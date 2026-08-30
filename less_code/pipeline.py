@@ -88,6 +88,30 @@ def reduce_project(
         return stats
     stats.tests_ok = True
 
+    # crash safety: never leave the tree mutated if we are killed mid-verify
+    snapshots = {p: p.read_text(encoding="utf-8", errors="replace") for p in project.source_files}
+
+    def _restore(*_args) -> None:
+        for p, text in snapshots.items():
+            p.write_text(text, encoding="utf-8")
+
+    import signal
+
+    old_handlers: dict[int, object] = {}
+
+    def _handler(signum, frame):  # pragma: no cover
+        _restore()
+        old = old_handlers.get(signum)
+        if callable(old):
+            old(signum, frame)
+        raise SystemExit(130)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            old_handlers[sig] = signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            pass
+
     if formatter:
         run_formatter(root, project.lang)
 

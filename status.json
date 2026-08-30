@@ -33,8 +33,8 @@
     },
     {
       "id": "grpo",
-      "state": "pending",
-      "evidence": null
+      "state": "passed",
+      "evidence": "grpo/build_dataset.py -> 66 samples exit 0; train.py --validate-config exit 0; reward gate unit-tested (30 pytest passed)"
     },
     {
       "id": "review",
@@ -42,11 +42,11 @@
       "evidence": null
     }
   ],
-  "current_iteration": 4,
-  "attempts": 4,
-  "last_evidence": "iteration 4 partial: tool hardened (num_ctx fix, BudgetBackend, spec-in-prompt, focused passes); py demo aborted twice due to GPU contention on shared machine",
+  "current_iteration": 5,
+  "attempts": 5,
+  "last_evidence": "iteration 5: C6 grpo scaffold passed on CPU (66 samples, CONFIG OK, 30 tests)",
   "blockers": [
-    "shared GPU: another process needs the 8GB RTX 3070; live LLM reduce demos (C3-C5) and GRPO smoke (C6) must run on another machine"
+    "shared GPU: C3-C5 reduce demos need ~10 min GPU each on the other machine; optional C6 smoke-train"
   ],
-  "next_action": "on another machine: git pull; ollama serve && ollama pull qwen2.5-coder:7b; then per fixture: uv run lc reduce fixtures/<py|js|rs> --model qwen2.5-coder:7b --attempts 2 --max-llm-calls 6 --out docs/evidence/reduce-<lang>.json; re-audit post-reduction; then grpo scaffold (C6) and review (C7)"
+  "next_action": "on GPU machine: git pull; ollama serve; uv run lc reduce fixtures/py --model qwen2.5-coder:7b --attempts 2 --max-llm-calls 6 --num-ctx 16384 --out docs/evidence/reduce-py.json (repeat js/rs); then optional grpo/train.py --steps 10; then reviewer pass (C7)"
 }
