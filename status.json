@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "goal": "Build the most effective hybrid (static + LLM + RL/GRPO) LOC-reduction system for Rust/JS/Python that significantly shrinks complex, well-tested code without breaking tests",
+  "mode": "full",
+  "state": "in_progress",
+  "cap": 15,
+  "gate_type": "mixed",
+  "criteria": [
+    {
+      "id": "research",
+      "state": "passed",
+      "evidence": "docs/research.md sections a-d + docs/research/{static,rl,data}.md, 53 cited URLs total"
+    },
+    {
+      "id": "tool",
+      "state": "passed",
+      "evidence": "uv run pytest -q -> 21 passed exit 0; lc --help exit 0; verify-gate proven via broken-backend rejection test"
+    },
+    {
+      "id": "demo-py",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "id": "demo-js",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "id": "demo-rs",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "id": "grpo",
+      "state": "pending",
+      "evidence": null
+    },
+    {
+      "id": "review",
+      "state": "pending",
+      "evidence": null
+    }
+  ],
+  "current_iteration": 3,
+  "attempts": 3,
+  "last_evidence": "iteration 2: C2 tool passed (21 tests, verify gate proven)",
+  "blockers": [],
+  "next_action": "iteration 3: build 3 realistic fixtures (py/js/rust, >=300 LOC each) with strong test suites, verify baseline green + mutation score >= 70%"
+}
