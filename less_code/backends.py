@@ -28,10 +28,11 @@ class NullBackend(Backend):
 
 
 class OllamaBackend(Backend):
-    def __init__(self, model: str = "qwen2.5-coder:1.5b", host: str = "http://127.0.0.1:11434") -> None:
+    def __init__(self, model: str = "qwen2.5-coder:1.5b", host: str = "http://127.0.0.1:11434", num_ctx: int = 32768) -> None:
         super().__init__("ollama")
         self.model = model
         self.host = host.rstrip("/")
+        self.num_ctx = num_ctx
 
     def complete(self, system: str, prompt: str, temperature: float = 0.2) -> str:
         payload = json.dumps(
@@ -42,7 +43,7 @@ class OllamaBackend(Backend):
                     {"role": "user", "content": prompt},
                 ],
                 "stream": False,
-                "options": {"temperature": temperature},
+                "options": {"temperature": temperature, "num_ctx": self.num_ctx},
             }
         ).encode()
         req = urllib.request.Request(
@@ -114,11 +115,32 @@ def ensure_ollama(model: str = "qwen2.5-coder:1.5b") -> OllamaBackend:
         raise RuntimeError("could not start ollama server")
 
 
-def make_backend(spec: str, model: str | None = None) -> Backend:
+class BudgetBackend(Backend):
+    """Hard cap on total LLM calls — keeps GPU time bounded on shared machines."""
+
+    def __init__(self, inner: Backend, max_calls: int) -> None:
+        super().__init__(f"{inner.name}(budget={max_calls})")
+        self.inner = inner
+        self.max_calls = max_calls
+        self.calls = 0
+
+    def complete(self, system: str, prompt: str, temperature: float = 0.2) -> str:
+        if self.calls >= self.max_calls:
+            raise RuntimeError(f"LLM budget exhausted ({self.max_calls} calls)")
+        self.calls += 1
+        return self.inner.complete(system, prompt, temperature)
+
+
+def make_backend(spec: str, model: str | None = None, num_ctx: int = 32768) -> Backend:
     if spec == "none":
         return NullBackend()
     if spec == "ollama":
-        return ensure_ollama(model=model or "qwen2.5-coder:1.5b")
+        try:
+            backend = OllamaBackend(model=model or "qwen2.5-coder:1.5b", num_ctx=num_ctx)
+            backend.complete("ping", "ping", temperature=0.0)
+            return backend
+        except Exception:
+            return ensure_ollama(model=model or "qwen2.5-coder:1.5b")
     if spec == "openai":
         return OpenAICompatBackend(model=model or "gpt-4o-mini")
     raise ValueError(f"unknown backend {spec}")

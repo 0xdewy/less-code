@@ -111,6 +111,13 @@ def reduce_project(
 
     # ---- L2 LLM ----
     if backend is not None and backend.name != "none":
+        from .llm_reduce import focused_passes, reduce_file, reduce_file_chunked
+
+        spec = "\n\n".join(
+            f.read_text(encoding="utf-8", errors="replace")[:40000]
+            for f in project.test_files
+        )[:40000]
+        runner = lambda r, l: run_tests(r, l, timeout=test_timeout)  # noqa: E731
         ordered = sorted(project.source_files, key=lambda f: -f.stat().st_size)
         if max_files:
             ordered = ordered[:max_files]
@@ -119,19 +126,38 @@ def reduce_project(
             loc_before = count_source(source_before, project.lang).code
             if loc_before < 8:
                 continue
-            best, best_loc, records = reduce_file(
-                backend, root, path, project.lang, lambda r, l: run_tests(r, l, timeout=test_timeout),
-                attempts=attempts_per_file,
-            )
+            if project.lang == "python":
+                best, best_loc, records = reduce_file(
+                    backend, root, path, project.lang, runner,
+                    attempts=max(1, attempts_per_file - 1), spec=spec,
+                )
+                if best_loc < loc_before:
+                    path.write_text(best + "\n", encoding="utf-8")
+                records += focused_passes(backend, root, path, project.lang, runner, spec=spec)
+                now = count_source(
+                    path.read_text(encoding="utf-8", errors="replace"), project.lang
+                ).code
+                if now > 1000:  # very large file: per-symbol fallback
+                    records += reduce_file_chunked(backend, root, path, runner, spec=spec)
+            else:
+                best, best_loc, records = reduce_file(
+                    backend, root, path, project.lang, runner,
+                    attempts=attempts_per_file, spec=spec,
+                )
+                if best_loc < loc_before:
+                    path.write_text(best + "\n", encoding="utf-8")
             for rec in records:
+                print(
+                    f"  [L2] {rec.file.split('/')[-1]} attempt={rec.attempt} "
+                    f"{rec.outcome} {rec.loc_before}->{rec.loc_after}",
+                    flush=True,
+                )
                 stats.attempt_records.append(
                     {
                         "file": rec.file, "attempt": rec.attempt, "outcome": rec.outcome,
                         "loc_before": rec.loc_before, "loc_after": rec.loc_after, "detail": rec.detail[:200],
                     }
                 )
-            if best_loc < loc_before:
-                path.write_text(best + "\n", encoding="utf-8")
         final = run_tests(root, project.lang, timeout=test_timeout)
         stats.tests_ok = final.ok
 

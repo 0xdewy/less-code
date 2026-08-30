@@ -52,21 +52,24 @@ def api_surface(files: list[Path], lang: str) -> dict[str, dict[str, str]]:
 def api_violations(
     before: dict[str, dict[str, str]], after: dict[str, dict[str, str]]
 ) -> list[str]:
-    """Files whose API changed (any rename, signature change, or removal)."""
+    """Files whose public API changed. Underscore-prefixed additions are
+    allowed (internal helpers created during dedup); removals/changes of
+    existing public symbols are violations."""
     problems: list[str] = []
     for file, api in before.items():
-        if api != after.get(file, {}):
-            missing = set(api) - set(after.get(file, {}))
-            added = set(after.get(file, {})) - set(api)
-            changed = {
-                k for k in set(api) & set(after.get(file, {})) if api[k] != after[file][k]
-            }
-            parts = []
-            if missing:
-                parts.append(f"missing={sorted(missing)}")
-            if changed:
-                parts.append(f"changed={sorted(changed)}")
-            if added:
-                parts.append(f"added={sorted(added)}")
+        new_api = after.get(file, {})
+        missing = set(api) - set(new_api)
+        changed = {
+            k for k in set(api) & set(new_api) if api[k] != new_api[k]
+        }
+        added_public = {k for k in set(new_api) - set(api) if not k.startswith("_")}
+        parts = []
+        if missing:
+            parts.append(f"missing={sorted(missing)}")
+        if changed:
+            parts.append(f"changed={sorted(changed)}")
+        if added_public:
+            parts.append(f"added={sorted(added_public)}")
+        if parts:
             problems.append(f"{file}: {' '.join(parts)}")
     return problems

@@ -50,8 +50,10 @@ def cmd_audit(args: argparse.Namespace) -> int:
 def cmd_reduce(args: argparse.Namespace) -> int:
     backend = None
     if not args.static_only:
-        from .backends import make_backend
-        backend = make_backend(args.backend, args.model)
+        from .backends import BudgetBackend, make_backend
+        backend = make_backend(args.backend, args.model, num_ctx=args.num_ctx)
+        if args.max_llm_calls:
+            backend = BudgetBackend(backend, args.max_llm_calls)
     stats = reduce_project(
         Path(args.path), lang=args.lang, backend=backend,
         attempts_per_file=args.attempts, max_files=args.max_files,
@@ -121,6 +123,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-files", type=int, default=None)
     p.add_argument("--no-format", action="store_true")
     p.add_argument("--timeout", type=int, default=600)
+    p.add_argument("--max-llm-calls", type=int, default=8,
+                   help="hard cap on LLM calls (GPU budget on shared machines)")
+    p.add_argument("--num-ctx", type=int, default=16384, help="context window for local backend")
     p.add_argument("--out", default="reduce-report.json")
     p.set_defaults(func=cmd_reduce)
 

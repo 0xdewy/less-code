@@ -42,9 +42,11 @@
       "evidence": null
     }
   ],
-  "current_iteration": 3,
-  "attempts": 3,
-  "last_evidence": "iteration 2: C2 tool passed (21 tests, verify gate proven)",
-  "blockers": [],
-  "next_action": "iteration 3: build 3 realistic fixtures (py/js/rust, >=300 LOC each) with strong test suites, verify baseline green + mutation score >= 70%"
+  "current_iteration": 4,
+  "attempts": 4,
+  "last_evidence": "iteration 4 partial: tool hardened (num_ctx fix, BudgetBackend, spec-in-prompt, focused passes); py demo aborted twice due to GPU contention on shared machine",
+  "blockers": [
+    "shared GPU: another process needs the 8GB RTX 3070; live LLM reduce demos (C3-C5) and GRPO smoke (C6) must run on another machine"
+  ],
+  "next_action": "on another machine: git pull; ollama serve && ollama pull qwen2.5-coder:7b; then per fixture: uv run lc reduce fixtures/<py|js|rs> --model qwen2.5-coder:7b --attempts 2 --max-llm-calls 6 --out docs/evidence/reduce-<lang>.json; re-audit post-reduction; then grpo scaffold (C6) and review (C7)"
 }
