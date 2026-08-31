@@ -23,8 +23,8 @@
     },
     {
       "id": "demo-js",
-      "state": "pending",
-      "evidence": null
+      "state": "passed",
+      "evidence": "bench/results/20260831T002030Z.jsonl: hybrid qwen2.5-coder:7b 601->445 canonical code-LOC (25.96%), tests/api/hidden all green, 2 LLM calls; table docs/evidence/reduce-js-7b.md, attempt log docs/evidence/reduce-js-7b.log"
     },
     {
       "id": "demo-rs",
@@ -44,7 +44,7 @@
   ],
   "current_iteration": 5,
   "attempts": 5,
-  "last_evidence": "iteration 5: C6 grpo scaffold passed on CPU (66 samples, CONFIG OK, 30 tests)",
+  "last_evidence": "iteration 7+: C4 demo-js passed at 25.96% canonical hybrid (7B, all gates green)",
   "blockers": [
     "shared GPU: C3-C5 reduce demos need ~10 min GPU each on the other machine; optional C6 smoke-train"
   ],
