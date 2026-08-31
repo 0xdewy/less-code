@@ -353,7 +353,14 @@ def reduce_file(
             feedback = ""
             continue
         feedback = _feedback_for(outcome)
-        if not decompose_rejected or not outcome.startswith(("tests-failed", "api-changed")):
+        if not decompose_rejected or not outcome.startswith(
+            ("tests-failed", "api-changed", "syntax-error")
+        ):
+            # syntax-error included deliberately: a rewrite that does not
+            # compile as a whole usually contains individually valid symbol
+            # rewrites, and the parse/check pre-gate rejects the bad hunks
+            # in milliseconds (measured: every rust whole-file 7B reject in
+            # iterations 09-10 was a syntax-error carrying big reductions).
             continue
         # C1: the rewrite is usually right about most symbols — keep those.
         hunks = decompose(best, candidate, lang)

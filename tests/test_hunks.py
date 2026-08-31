@@ -223,3 +223,68 @@ class TestSearchThroughPipeline:
         assert stats.tests_ok
         assert stats.loc_final == stats.loc_after_static
         assert "if item is None:" in (root / "mod.py").read_text()
+
+
+class TestSyntaxErrorSalvage:
+    """A whole-file rewrite that does not PARSE still donates its valid
+    symbol rewrites (iterations 09-10: every rust 7B whole-file reject was a
+    syntax-error carrying large reductions that salvage never saw)."""
+
+    JS_MODULE = (
+        "export function a(x) {\n"
+        "  let out = 0;\n"
+        "  for (const v of x) {\n"
+        "    out = out + v;\n"
+        "  }\n"
+        "  return out;\n"
+        "}\n"
+        "export function b(x) {\n"
+        "  let d = x;\n"
+        "  d = d * 2;\n"
+        "  return d;\n"
+        "}\n"
+    )
+    JS_TESTS = (
+        "import { test } from 'node:test';\n"
+        "import assert from 'node:assert/strict';\n"
+        "import { a, b } from './mod.mjs';\n"
+        "test('a', () => { assert.equal(a([1, 2, 3]), 6); });\n"
+        "test('b', () => { assert.equal(b(4), 8); });\n"
+    )
+    # a is validly reduced; b is a parse error with BALANCED braces so the
+    # brace-based segmenter still splits the candidate.
+    JS_CANDIDATE = (
+        "export function a(x) {\n"
+        "  return x.reduce((s, v) => s + v, 0);\n"
+        "}\n"
+        "export function b(x) {\n"
+        "  return x * ;\n"
+        "}\n"
+    )
+
+    def test_valid_hunk_salvaged_from_unparseable_rewrite(self, tmp_path):
+        root = tmp_path / "proj"
+        root.mkdir()
+        (root / "mod.mjs").write_text(self.JS_MODULE)
+        (root / "mod.test.mjs").write_text(self.JS_TESTS)
+        (root / "package.json").write_text('{"type": "module"}\n')
+
+        class BrokenWholeFile(Backend):
+            def __init__(self):
+                super().__init__("broken-whole-file")
+
+            def complete(self, system, prompt, temperature=0.2):
+                return f"```javascript\n{TestSyntaxErrorSalvage.JS_CANDIDATE}```"
+
+        stats = reduce_project(
+            root, backend=BrokenWholeFile(), attempts_per_file=1,
+            formatter=False, strategy="whole-file",
+        )
+        final = (root / "mod.mjs").read_text()
+        assert stats.tests_ok and stats.api_ok
+        assert "reduce((s, v) => s + v, 0)" in final     # good hunk landed
+        assert "return x * ;" not in final               # broken hunk did not
+        assert "d = d * 2;" in final                     # b kept original body
+        outcomes = [a["outcome"] for a in stats.attempt_records]
+        assert "syntax-error" in outcomes
+        assert "hunks-accepted" in outcomes
