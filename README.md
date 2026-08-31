@@ -10,16 +10,26 @@ code-LOC shrinks.** Everything else reverts.
 ```
 L0  normalize (format-only; not counted as reduction)
 L1  static provably-safe pass
-      python: AST dead-code/unused-symbol removal (test-gated)
+      python: AST dead-code/unused-symbol removal, `ruff check --fix` safe
+              tier automatically and the unsafe tier as its own gated layer
+              (LOC-reducing families: RET/SIM/C4/PIE/UP/PLR1/PERF/FURB), plus
+              unreachable-code removal after `return`/`raise` — all test-gated
       rust:   cargo fix + clippy --fix (compiler-verified), then dead `pub`
               item removal — brace-matched extraction incl. doc comments and
               attributes, kept only if no project file (tests included)
               mentions the name
-      js:     dead internal exports via import-graph scan
+      js:     dead exports via import-graph scan, cross-checked with
+              `npx knip` when it is available (exports only — never
+              knip's unused-*files* report, which would delete
+              `tests_hidden/`), plus non-exported top-level functions
+              and consts nothing in the project references
 L1b rule library (less_code/rules.py): deterministic, semantics-preserving
       AST rewrites, applied file-wide and gated by the frozen suite
       python: `if c: return True/return False` -> `return c`;
-              append-loop -> comprehension / `list()`;
+              append-loop -> comprehension / `list()`, including an `if`
+              guard as a comprehension clause and a twice-read temp bound with
+              a walrus in that clause when it is the guard's first-evaluated
+              name (so evaluation order is provably unchanged);
               `t = 0` + `+=` loop -> `sum()` (float start preserved);
               fresh-list + `.sort()` -> `sorted()`;
               `try/except X: raise` -> the try body
@@ -27,8 +37,18 @@ L1b rule library (less_code/rules.py): deterministic, semantics-preserving
 L1.5 audit: mutation score of the test suite (trust oracle)
       built-in mutation engine (py: AST, js/rust: masked token swaps)
 L2  LLM semantic reduction, verify-gated
+      **per-symbol proposals are the default**: the model rewrites ONE
+        top-level symbol at a time, biggest first (python via ast, js/rust via
+        the brace matcher), given that symbol, a signatures-only map of the
+        rest of the file and the test spec. Each proposal goes through the
+        same gate, so one budget buys ~20 independent bets instead of one
+        all-or-nothing whole-file gamble
+      an optional whole-file sweep runs last (only it can dedup *across*
+        symbols) with hunk salvage on its rejects
       local ollama (qwen2.5-coder) or any OpenAI-compatible endpoint;
-      test suite included in prompt as behavior spec; per-attempt feedback;
+      test suite included in prompt as behavior spec; per-attempt feedback —
+      a test failure *and* an `api-changed` rejection's concrete
+      missing/changed/added symbol list both go into the next prompt;
       hard LLM-call budget for shared-GPU machines
       pre-gates (cheapest first): not-smaller -> parse (ast/node --check/
         cargo check) -> API surface -> frozen tests, + a content-hash cache
@@ -71,9 +91,14 @@ uv run lc bench --static-only            # all fixtures + hidden tests, no GPU
 scratch copy — the repo is never mutated — runs the hidden suite afterwards,
 prints a markdown table and appends one JSON row per (fixture, config, commit)
 to `bench/results/<timestamp>.jsonl`: LOC before/after static/final, static
-and hybrid %, tests/api/hidden green, LLM calls and wall seconds.
+and hybrid %, tests/api/hidden green, LLM calls and wall seconds. **Rows are
+appended as each fixture finishes**, so an interrupted run still leaves the
+fixtures that completed. A row whose language has no formatter installed is
+marked `"metric": "raw"`, shouted about on stderr and printed as `**RAW**` in
+the table — raw physical lines are not comparable with canonical ones.
 
 `--static-only` runs L1 only (no GPU). `--max-llm-calls N` bounds GPU time.
+`--fixture NAME` benches a single fixture.
 
 ## GRPO
 
@@ -91,7 +116,7 @@ minification, and degenerate-output guards; tests run on CPU inside the reward.
 ## Repo layout
 
 ```
-less_code/   the tool        tests/      109 tests (unit + integration + reward)
+less_code/   the tool        tests/      153 tests (unit + integration + reward)
 fixtures/    py/js/rs demo targets (mutation-scored suites + tests_hidden/)
 bench/       results/*.jsonl — one bench row per fixture/config/commit
 grpo/        dataset builder, reward fn, TRL trainer
@@ -103,5 +128,7 @@ CRITERIA.md  fixed acceptance criteria for the build
 ## Status vs goal
 
 research ✅ · tool ✅ · grpo scaffold ✅ (66 samples, config validated) ·
-demos py/js/rs pending GPU time (resume commands in `status.json`) ·
-review pending demos.
+**js demo (C4) ✅ 25.96 % canonical hybrid**, tests/API/hidden green
+(`docs/evidence/reduce-js-7b.md`) · py and rs still short of the 25 % bar
+(4.6 % / 7.4 % at 3B — `iterations/08-per-symbol-and-static-d1d2.md`) ·
+review pending py/rs demos.

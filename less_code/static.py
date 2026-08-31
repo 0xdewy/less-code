@@ -12,6 +12,7 @@ enhancements; the tool stays hermetic without them.
 from __future__ import annotations
 
 import ast
+import json
 import re
 import shutil
 import subprocess
@@ -92,7 +93,12 @@ def _python_remove_dead(files: list[Path], all_project_files: list[Path]) -> Sta
     return result
 
 
-def _js_remove_dead_exports(files: list[Path], all_project_files: list[Path]) -> StaticResult:
+def _js_remove_dead_exports(
+    files: list[Path],
+    all_project_files: list[Path],
+    knip_names: dict[str, set[str]] | None = None,
+    root: Path | None = None,
+) -> StaticResult:
     result = StaticResult()
     exported: dict[Path, set[str]] = {}
     for path in files:
@@ -118,12 +124,19 @@ def _js_remove_dead_exports(files: list[Path], all_project_files: list[Path]) ->
             pass
     from .hunks import symbol_spans
 
+    knip_extra: dict[Path, set[str]] = {}
+    for rel, names in (knip_names or {}).items():
+        for path in exported:
+            if root is not None and path == (root / rel).resolve():
+                knip_extra[path] = names
+            elif str(path).endswith(rel):
+                knip_extra.setdefault(path, set()).update(names)
     for path, names in exported.items():
         source = path.read_text(encoding="utf-8", errors="replace")
         # drop export statements whose symbol is imported nowhere else. Spans
         # come from the brace matcher, not a regex: a `[^}]*` body pattern
         # truncates at the first nested block and leaves the file unparsable.
-        for name in sorted(names - imported_names):
+        for name in sorted((names | knip_extra.get(path, set())) - imported_names):
             lines = source.splitlines()
             span = next((sp for sp in symbol_spans(source, "javascript") if sp[2] == name), None)
             if span is not None:
@@ -147,6 +160,186 @@ def _js_remove_dead_exports(files: list[Path], all_project_files: list[Path]) ->
             result.changed_files[str(path)] = source
             result.loc_removed += original - final
     return result
+
+
+# ---- D2: JS knip + dead internal (non-exported) symbols ---------------------
+
+JS_TOP_VAR = re.compile(r"^(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=", re.MULTILINE)
+
+
+def _knip_unused_exports(root: Path, timeout: int = 240) -> tuple[dict[str, set[str]], str]:
+    """`npx knip --reporter json` -> {relative file: {unused export names}}.
+
+    Best effort by design: knip needs a package.json and, the first time, a
+    network fetch, so an offline machine simply gets `({}, note)` and the
+    hand-rolled scan below carries the pass. Only the `exports` issue class is
+    consumed — knip also reports unused *files*, and acting on that would
+    delete each fixture's `tests_hidden/` suite, which is the one thing the
+    bench must never touch.
+    """
+    if shutil.which("npx") is None or not (root / "package.json").is_file():
+        return {}, "knip: skipped (no npx or no package.json)"
+    try:
+        proc = subprocess.run(
+            ["npx", "--yes", "knip", "--reporter", "json"],
+            cwd=root, capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}, "knip: unavailable (offline?)"
+    payload = proc.stdout.strip()
+    if not payload.startswith("{"):
+        return {}, f"knip: no usable output (exit {proc.returncode})"
+    try:
+        data = json.loads(payload)
+    except ValueError:
+        return {}, "knip: output was not JSON"
+    found: dict[str, set[str]] = {}
+    for issue in data.get("issues", []):
+        names = {e["name"] for e in issue.get("exports", []) if e.get("name")}
+        if names:
+            found.setdefault(issue.get("file", ""), set()).update(names)
+    return found, f"knip: {sum(len(v) for v in found.values())} unused exports"
+
+
+def _js_statement_end(source: str, from_index: int) -> int:
+    """End offset (exclusive) of a top-level `const x = ...` statement."""
+    depth, i = 0, from_index
+    while i < len(source):
+        ch = source[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif depth == 0 and ch == ";":
+            return i + 1
+        elif depth == 0 and ch == "\n":
+            return i + 1
+        i += 1
+    return len(source)
+
+
+def _js_internal_spans(source: str) -> list[tuple[str, int, int]]:
+    """(name, start_line, end_line_exclusive) for NON-exported top-level
+    functions, classes and const/let/var bindings."""
+    from .hunks import symbol_spans
+
+    lines = source.splitlines()
+    spans: list[tuple[str, int, int]] = []
+    for start, end, name in symbol_spans(source, "javascript"):
+        if not name or lines[start].lstrip().startswith("export"):
+            continue
+        spans.append((name, start, end))
+    starts = [0]
+    for line in source.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+
+    def line_of(offset: int) -> int:
+        lo, hi = 0, len(starts) - 1
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if starts[mid] <= offset:
+                lo = mid + 1
+            else:
+                hi = mid
+        return lo - 1
+
+    for m in JS_TOP_VAR.finditer(source):
+        if m.group(0).startswith("export"):
+            continue
+        end = _js_statement_end(source, m.end())
+        spans.append((m.group(1), line_of(m.start()), line_of(max(end - 1, m.start())) + 1))
+    return spans
+
+
+def _js_remove_dead_internal(
+    sources: dict[Path, str], all_texts: dict[Path, str]
+) -> StaticResult:
+    """Delete non-exported top-level symbols nothing in the project mentions.
+
+    Same reference-scan shape as the rust dead-`pub` pass: one `\bname\b` hit
+    anywhere outside the symbol's own span — any file, comments and strings
+    included — keeps it. Whatever survives still faces the frozen suite.
+    """
+    result = StaticResult()
+    for path, text in sources.items():
+        spans = _js_internal_spans(text)
+        if not spans:
+            continue
+        lines = text.splitlines()
+        dead: list[tuple[str, int, int]] = []
+        for name, start, end in spans:
+            pattern = re.compile(rf"\b{re.escape(name)}\b")
+            own = "\n".join(lines[:start] + lines[end:])
+            elsewhere = pattern.search(own) or any(
+                pattern.search(other) for q, other in all_texts.items() if q != path
+            )
+            if not elsewhere:
+                dead.append((name, start, end))
+        if not dead:
+            continue
+        kept = list(lines)
+        for name, start, end in sorted(dead, key=lambda t: -t[1]):
+            del kept[start:end]
+            result.notes.append(f"{path.name}: dropped unreferenced internal {name}")
+        new_text = "\n".join(kept) + "\n"
+        before = measure(text, "javascript").code
+        after = measure(new_text, "javascript").code
+        if after < before:
+            result.changed_files[str(path)] = new_text
+            result.loc_removed += before - after
+    return result
+
+
+def _js_static(
+    root: Path,
+    source_files: list[Path],
+    all_project_files: list[Path],
+    runner=None,
+) -> StaticResult:
+    """Dead exports (own scan + knip when it runs) then dead internals.
+
+    Narrowed like the python pass when a runner is available: if the combined
+    edit set goes red, the export-only subset is tried on its own.
+    """
+    knip_names, knip_note = _knip_unused_exports(root)
+    exports = _js_remove_dead_exports(source_files, all_project_files, knip_names, root)
+    exports.notes.insert(0, knip_note)
+
+    originals = {p: p.read_text(encoding="utf-8", errors="replace") for p in source_files}
+    after_exports = {
+        p: exports.changed_files.get(str(p), text) for p, text in originals.items()
+    }
+    all_texts = {
+        p: after_exports.get(p, p.read_text(encoding="utf-8", errors="replace"))
+        for p in all_project_files
+    }
+    internal = _js_remove_dead_internal(after_exports, all_texts)
+    combined = StaticResult(
+        changed_files={**exports.changed_files, **internal.changed_files},
+        loc_removed=exports.loc_removed + internal.loc_removed,
+        notes=exports.notes + internal.notes,
+    )
+    if runner is None or not combined.changed_files or not internal.changed_files:
+        return combined
+
+    def _write(changed: dict[str, str]) -> None:
+        for path, text in originals.items():
+            path.write_text(changed.get(str(path), text), encoding="utf-8")
+
+    def _green(changed: dict[str, str]) -> bool:
+        _write(changed)
+        ok = runner(root, "javascript").ok
+        _write({})
+        return ok
+
+    if _green(combined.changed_files):
+        return combined
+    combined.notes.append("js dead-internal removal reverted by the gate")
+    return StaticResult(
+        changed_files=dict(exports.changed_files),
+        loc_removed=exports.loc_removed,
+        notes=combined.notes,
+    )
 
 
 
@@ -288,6 +481,104 @@ def _rust_cargo_fix(root: Path) -> StaticResult:
     return result
 
 
+# ---- D1: ruff --fix tiers and unreachable code ------------------------------
+
+
+# ruff's default set (F, E4/E7/E9) is a *correctness* set and removes almost
+# no lines. These families are the LOC-reducing ones — superfluous else after
+# return, redundant comprehension wrappers, `class C(object)`, `if x: return
+# True` — and every one of them still goes through the frozen suite.
+RUFF_SELECT = "F,E4,E7,E9,RET,SIM,C4,PIE,UP,PLR1,PLW,PERF,FURB"
+
+
+def _ruff_fix(text: str, filename: str, unsafe: bool = False) -> str:
+    """`ruff check --fix` over stdin. Returns the input unchanged on any doubt.
+
+    stdin mode keeps the pass *pure*: the fixed source comes back on stdout, so
+    nothing is written to disk outside the pipeline's revert set (`cargo fix`,
+    by contrast, mutates the tree behind the gate's back). The safe tier is
+    ruff's own definition of a fix that cannot change behaviour; the unsafe
+    tier (dropping an unused local binding, for instance) is a separate,
+    separately-gated layer — see `_python_static`.
+    """
+    if shutil.which("ruff") is None:
+        return text
+    cmd = ["ruff", "check", "--select", RUFF_SELECT, "--fix", "--quiet"]
+    if unsafe:
+        cmd.append("--unsafe-fixes")
+    cmd += ["--stdin-filename", filename, "-"]
+    try:
+        proc = subprocess.run(cmd, input=text, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return text
+    out = proc.stdout
+    if not out.strip():
+        return text  # ruff errored out; stdout is not a source file
+    try:
+        ast.parse(out)
+    except SyntaxError:
+        return text
+    return out
+
+
+_TERMINATORS = (ast.Return, ast.Raise, ast.Continue, ast.Break)
+
+
+def _unreachable_line_spans(source: str) -> list[tuple[int, int]]:
+    """1-based inclusive line ranges of statements that can never run.
+
+    Anything after a `return`/`raise` (and after `continue`/`break`) inside a
+    function body is dead. Only whole, line-aligned statements are taken; a
+    statement sharing a line with the terminator (`return 1; x = 2`) is left
+    alone, the same discipline the rule library uses.
+
+    Caveat, recorded rather than hidden: deleting `return; x = 1` also deletes
+    the binding that made `x` a *local* name, so a function that reads `x`
+    before the return would change from `UnboundLocalError` to a global read.
+    That is why this layer is separately test-gated.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    spans: list[tuple[int, int]] = []
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(func):
+            for field in ("body", "orelse", "finalbody"):
+                block = getattr(node, field, None)
+                if not isinstance(block, list) or len(block) < 2:
+                    continue
+                if not all(isinstance(st, ast.stmt) for st in block):
+                    continue
+                for index, stmt in enumerate(block[:-1]):
+                    if isinstance(stmt, _TERMINATORS):
+                        dead = block[index + 1 :]
+                        start = min(st.lineno for st in dead)
+                        if start <= stmt.end_lineno:
+                            break  # shares a line with the terminator
+                        spans.append((start, max(st.end_lineno for st in dead)))
+                        break
+    return spans
+
+
+def _python_drop_unreachable(source: str) -> str:
+    spans = _unreachable_line_spans(source)
+    if not spans:
+        return source
+    lines = source.splitlines(keepends=True)
+    drop: set[int] = set()
+    for start, end in spans:
+        drop.update(range(start - 1, min(end, len(lines))))
+    new_source = "".join(line for i, line in enumerate(lines) if i not in drop)
+    try:
+        ast.parse(new_source)
+    except SyntaxError:  # pragma: no cover - defensive
+        return source
+    return new_source
+
+
 def _python_rules(sources: dict[Path, str], only: set[str] | None = None) -> tuple[dict[str, str], list[str]]:
     """Run the C4 rule library over already-proposed sources. Pure function."""
     from .rules import apply_rules
@@ -303,35 +594,96 @@ def _python_rules(sources: dict[Path, str], only: set[str] | None = None) -> tup
     return changed, notes
 
 
+def _python_layers(
+    dead: StaticResult, source_files: list[Path]
+) -> list[tuple[str, object]]:
+    """The ordered, independently gateable static layers for Python.
+
+    Each layer is `(name, transform)` where `transform(sources) -> (sources,
+    notes)` maps the *current* proposed text of every file to the next. They
+    compose left to right; on a red suite `_python_static` re-applies them one
+    at a time and keeps only the ones that stay green, so a misfiring layer
+    costs its own yield and nothing else.
+    """
+    from .rules import RULES
+
+    def dead_layer(sources: dict[Path, str]):
+        out = dict(sources)
+        for path in sources:
+            if str(path) in dead.changed_files:
+                out[path] = dead.changed_files[str(path)]
+        return out, list(dead.notes)
+
+    def rule_layer(rule: str):
+        def run(sources: dict[Path, str]):
+            changed, notes = _python_rules(sources, {rule})
+            out = {p: changed.get(str(p), t) for p, t in sources.items()}
+            return out, notes
+        return run
+
+    def unreachable_layer(sources: dict[Path, str]):
+        out, notes = {}, []
+        for path, text in sources.items():
+            new_text = _python_drop_unreachable(text)
+            out[path] = new_text
+            if new_text != text:
+                notes.append(f"{path.name}: removed unreachable code after return/raise")
+        return out, notes
+
+    def ruff_layer(unsafe: bool):
+        tier = "unsafe" if unsafe else "safe"
+
+        def run(sources: dict[Path, str]):
+            out, notes = {}, []
+            for path, text in sources.items():
+                new_text = _ruff_fix(text, path.name, unsafe=unsafe)
+                out[path] = new_text
+                if new_text != text:
+                    notes.append(f"{path.name}: ruff --fix ({tier} tier)")
+            return out, notes
+        return run
+
+    layers: list[tuple[str, object]] = [("dead-code", dead_layer)]
+    layers += [(f"rule {rule}", rule_layer(rule)) for rule in RULES]
+    layers.append(("unreachable-code", unreachable_layer))
+    # ruff last: the layers above create new unused imports and locals for it
+    layers.append(("ruff-safe", ruff_layer(False)))
+    layers.append(("ruff-unsafe", ruff_layer(True)))
+    return layers
+
+
 def _python_static(
     root: Path,
     source_files: list[Path],
     all_project_files: list[Path],
     runner=None,
 ) -> StaticResult:
-    """Dead-code removal, then the rule library, then (if a runner is given)
-    per-rule gating.
+    """Dead code, the C4 rule library, unreachable-code removal and both
+    `ruff --fix` tiers (roadmap D1), narrowed layer by layer under the gate.
 
     Without a runner this returns one combined edit set and the pipeline's
     own gate decides all-or-nothing. With a runner, a red suite is narrowed:
-    dead-code-only first, then each rule on its own, keeping what stays green.
-    A reverted rule is a result, not a failure — it is reported in the notes.
+    each layer is re-applied on top of the last green state and kept only if
+    the suite stays green. A reverted layer is a result, not a failure — it is
+    reported in the notes.
     """
+    originals = {p: p.read_text(encoding="utf-8", errors="replace") for p in source_files}
     dead = _python_remove_dead(source_files, all_project_files)
-    proposed = {
-        p: dead.changed_files.get(str(p), p.read_text(encoding="utf-8", errors="replace"))
-        for p in source_files
+    layers = _python_layers(dead, source_files)
+
+    current = dict(originals)
+    notes: list[str] = []
+    for _name, transform in layers:
+        current, layer_notes = transform(current)
+        notes += layer_notes
+    combined_changes = {
+        str(p): text for p, text in current.items() if text != originals[p]
     }
-    rule_changes, rule_notes = _python_rules(proposed)
     combined = StaticResult(
-        changed_files={**dead.changed_files, **rule_changes},
-        loc_removed=dead.loc_removed,
-        notes=list(dead.notes) + rule_notes,
+        changed_files=combined_changes, loc_removed=dead.loc_removed, notes=notes,
     )
     if runner is None or not combined.changed_files:
         return combined
-
-    originals = {p: p.read_text(encoding="utf-8", errors="replace") for p in source_files}
 
     def _write(changed: dict[str, str]) -> None:
         for path, text in originals.items():
@@ -347,25 +699,20 @@ def _python_static(
         return combined
 
     combined.notes.append("static+rules broke tests; narrowing rule by rule")
-    accepted: dict[str, str] = {}
-    if dead.changed_files and _green(dead.changed_files):
-        accepted = dict(dead.changed_files)
-    elif dead.changed_files:
-        combined.notes.append("dead-code removal reverted by the gate")
-    from .rules import RULES
-
-    for rule in RULES:
-        base = {p: accepted.get(str(p), originals[p]) for p in source_files}
-        single, _ = _python_rules(base, {rule})
-        if not single:
+    accepted_text = dict(originals)
+    for name, transform in layers:
+        trial_text, _layer_notes = transform(dict(accepted_text))
+        if trial_text == accepted_text:
             continue
-        trial = {**accepted, **single}
+        trial = {str(p): t for p, t in trial_text.items() if t != originals[p]}
         if _green(trial):
-            accepted = trial
+            accepted_text = trial_text
+        elif name == "dead-code":
+            combined.notes.append("dead-code removal reverted by the gate")
         else:
-            combined.notes.append(f"rule {rule} reverted by the gate")
-    kept = StaticResult(changed_files=accepted, notes=combined.notes)
-    return kept
+            combined.notes.append(f"{name} reverted by the gate")
+    accepted = {str(p): t for p, t in accepted_text.items() if t != originals[p]}
+    return StaticResult(changed_files=accepted, notes=combined.notes)
 
 
 def static_pass(
@@ -383,7 +730,7 @@ def static_pass(
     if lang == "python":
         return _python_static(root, source_files, all_project_files, runner)
     if lang in ("javascript", "typescript"):
-        return _js_remove_dead_exports(source_files, all_project_files)
+        return _js_static(root, source_files, all_project_files, runner)
     if lang == "rust":
         result = _rust_cargo_fix(root)
         dead = _rust_remove_dead_pub(source_files, all_project_files)

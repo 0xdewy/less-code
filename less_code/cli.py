@@ -85,6 +85,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
         Path(args.out_dir),
         config="static-only" if args.static_only else f"hybrid:{args.model or args.backend}",
         repo=Path(__file__).resolve().parent.parent,
+        fixture=args.fixture,
         backend_spec=args.backend,
         model=args.model,
         attempts=args.attempts,
@@ -181,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--llm-timeout", type=int, default=600,
                    help="seconds to wait for one LLM response before recording "
                         "backend-error (a slow GPU needs more than the 600s default)")
+    p.add_argument("--fixture", default=None,
+                   help="bench only this fixture directory (e.g. `js`)")
     p.add_argument("--out-dir", default="bench/results")
     p.add_argument("--markdown", default=None, help="also write the table here")
     p.set_defaults(func=cmd_bench)

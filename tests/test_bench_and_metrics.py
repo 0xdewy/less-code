@@ -227,3 +227,91 @@ class TestBench:
         assert lines[0].startswith("| fixture |") and "hidden" in lines[0]
         assert len(lines) == 3
         assert "| proj | python | static-only |" in lines[2]
+
+
+# ---- iteration 08: checkpointing, --fixture, and the raw-metric warning -----
+
+
+class TestBenchCheckpointing:
+    def test_rows_are_appended_as_each_fixture_finishes(self, tmp_path, monkeypatch):
+        """Iteration 07 lost two finished fixtures to an interrupted third."""
+        from less_code import bench as bench_mod
+
+        fixtures = tmp_path / "fx"
+        for name in ("a", "b", "c"):
+            d = fixtures / name
+            d.mkdir(parents=True)
+            (d / "m.py").write_text("def f():\n    return 1\n")
+            (d / "test_m.py").write_text("from m import f\n\ndef test_f():\n    assert f() == 1\n")
+
+        seen: list[list[str]] = []
+        out_dir = tmp_path / "out"
+        real = bench_mod.bench_fixture
+
+        def spy(fixture, *args, **kwargs):
+            # what is on disk *before* this fixture's own row is written
+            files = sorted(out_dir.glob("*.jsonl"))
+            lines = files[0].read_text().splitlines() if files else []
+            seen.append([json.loads(x)["fixture"] for x in lines])
+            if fixture.name == "c":
+                raise RuntimeError("boom")
+            return real(fixture, *args, **kwargs)
+
+        monkeypatch.setattr(bench_mod, "bench_fixture", spy)
+        with pytest.raises(RuntimeError):
+            bench_mod.run_bench(fixtures, out_dir, repo=tmp_path)
+        assert seen == [[], ["a"], ["a", "b"]]
+        # the two finished fixtures survived the third one's failure
+        written = sorted(out_dir.glob("*.jsonl"))[0].read_text().splitlines()
+        assert [json.loads(x)["fixture"] for x in written] == ["a", "b"]
+
+    def test_fixture_selector_runs_only_one(self, tmp_path):
+        from less_code.bench import discover
+
+        fixtures = tmp_path / "fx"
+        for name in ("js", "py"):
+            d = fixtures / name
+            d.mkdir(parents=True)
+            (d / "m.py").write_text("def f():\n    return 1\n")
+            (d / "test_m.py").write_text("def test_f():\n    assert 1\n")
+        assert [p.name for p in discover(fixtures)] == ["js", "py"]
+        assert [p.name for p in discover(fixtures, "py")] == ["py"]
+        assert discover(fixtures, "nope") == []
+
+
+class TestRawMetricIsLoud:
+    def test_missing_formatter_marks_the_row_raw_and_warns(self, tmp_path, monkeypatch, capsys):
+        from less_code import bench as bench_mod
+
+        fixture = tmp_path / "fx" / "py"
+        fixture.mkdir(parents=True)
+        (fixture / "m.py").write_text("def f():\n    return 1\n")
+        (fixture / "test_m.py").write_text("from m import f\n\ndef test_f():\n    assert f() == 1\n")
+
+        monkeypatch.setattr(bench_mod, "reduce_project", bench_mod.reduce_project)
+        monkeypatch.setattr("less_code.loc.formatter_available", lambda _lang: False)
+        row = bench_mod.bench_fixture(fixture, "static-only", "deadbeef")
+        assert row.metric == "raw" and row.formatted_loc is False
+        assert any("UNSCOREABLE METRIC" in n for n in row.notes)
+        assert "metric=\"raw\"" in capsys.readouterr().err
+
+    def test_present_formatter_is_canonical_and_silent(self, tmp_path, capsys):
+        from less_code.bench import bench_fixture
+
+        fixture = tmp_path / "fx" / "py"
+        fixture.mkdir(parents=True)
+        (fixture / "m.py").write_text("def f():\n    return 1\n")
+        (fixture / "test_m.py").write_text("from m import f\n\ndef test_f():\n    assert f() == 1\n")
+        row = bench_fixture(fixture, "static-only", "deadbeef")
+        assert row.metric == "canonical"
+        assert "UNSCOREABLE" not in capsys.readouterr().err
+
+    def test_markdown_table_shouts_about_a_raw_row(self):
+        from less_code.bench import BenchRow, markdown_table
+
+        raw = BenchRow(fixture="js", lang="javascript", config="c", commit="x",
+                       timestamp="t", metric="raw")
+        canonical = BenchRow(fixture="py", lang="python", config="c", commit="x",
+                             timestamp="t", metric="canonical")
+        table = markdown_table([raw, canonical])
+        assert "**RAW**" in table and "canonical" in table

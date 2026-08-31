@@ -191,7 +191,9 @@ def test_append_loop_not_rewritten_when_loop_var_leaks():
     assert apply_rules(src, {"append-loop-to-comprehension"}) == (src, [])
 
 
-def test_append_loop_with_guard_is_left_for_the_llm():
+def test_append_loop_with_guard_becomes_a_comprehension_if_clause():
+    """Iteration 07 declined this shape; iteration 08 takes it. The guard is
+    evaluated once per iteration at the same point in both forms."""
     src = norm(
         """
         def f(rows):
@@ -202,7 +204,132 @@ def test_append_loop_with_guard_is_left_for_the_llm():
             return out
         """
     )
+    new_src, applied = apply_rules(src, {"append-loop-to-comprehension"})
+    assert applied == ["append-loop-to-comprehension"]
+    assert "out = [row.name for row in rows if row.ok]" in new_src
+    assert _behaves_the_same(src, new_src, "f", [_Rows()])
+
+
+def test_guard_with_a_call_is_refused():
+    """A call in the guard is the conservative line: refuse rather than
+    reason about what the call does."""
+    src = norm(
+        """
+        def f(rows):
+            out = []
+            for row in rows:
+                if row.name.startswith("a"):
+                    out.append(row.name)
+            return out
+        """
+    )
     assert apply_rules(src, {"append-loop-to-comprehension"}) == (src, [])
+
+
+def test_guard_with_an_else_branch_is_refused():
+    src = norm(
+        """
+        def f(rows):
+            out = []
+            for row in rows:
+                if row.ok:
+                    out.append(1)
+                else:
+                    out.append(2)
+            return out
+        """
+    )
+    assert apply_rules(src, {"append-loop-to-comprehension"}) == (src, [])
+
+
+def test_twice_read_temp_is_walrus_bound_in_the_guard():
+    """The `low_stock` shape from the py fixture: `product` is read twice, so
+    it cannot be inlined — but it is the guard's first-evaluated name, so the
+    walrus lands exactly where the assignment stood."""
+    src = norm(
+        """
+        def f(d, order):
+            out = []
+            for k in order:
+                item = d[k]
+                if item.qty <= item.floor:
+                    out.append(k)
+            return out
+        """
+    )
+    new_src, applied = apply_rules(src, {"append-loop-to-comprehension"})
+    assert applied == ["append-loop-to-comprehension"]
+    assert "(item := d[k]).qty <= item.floor" in new_src
+    assert _behaves_the_same(src, new_src, "f", [{"a": _Item(1, 5), "b": _Item(9, 5)}, ["a", "b"]])
+
+
+def test_walrus_is_refused_when_the_temp_is_not_evaluated_first():
+    """`limit()` would run before `d[k]` in the comprehension but after it in
+    the loop — a reordering, so the rule declines."""
+    src = norm(
+        """
+        def f(d, order, limit):
+            out = []
+            for k in order:
+                item = d[k]
+                if limit > 0 and item.qty <= item.floor:
+                    out.append(k)
+            return out
+        """
+    )
+    assert apply_rules(src, {"append-loop-to-comprehension"}) == (src, [])
+
+
+def test_two_twice_read_temps_are_refused():
+    src = norm(
+        """
+        def f(d, order):
+            out = []
+            for k in order:
+                item = d[k]
+                cap = item.floor
+                if item.qty <= cap and cap > 0 and item.qty > 0:
+                    out.append(k)
+            return out
+        """
+    )
+    assert apply_rules(src, {"append-loop-to-comprehension"}) == (src, [])
+
+
+def test_guarded_accumulate_becomes_a_filtered_sum():
+    src = norm(
+        """
+        def f(rows):
+            total = 0
+            for row in rows:
+                if row.ok:
+                    total += row.n
+            return total
+        """
+    )
+    new_src, applied = apply_rules(src, {"accumulate-to-sum"})
+    assert applied == ["accumulate-to-sum"]
+    assert "total = sum((row.n for row in rows if row.ok))" in new_src
+
+
+def test_walrus_in_a_class_body_never_ships():
+    """A walrus inside a class-body comprehension is a SyntaxError. The rule
+    would emit one here; `apply_rules` re-parses and returns the input."""
+    src = norm(
+        """
+        class C:
+            data = {"a": 1}
+            keys = ["a"]
+            out = []
+            for k in keys:
+                item = data[k]
+                if item > 0 and item < 9:
+                    out.append(k)
+        """
+    )
+    new_src, applied = apply_rules(src, {"append-loop-to-comprehension"})
+    compile(new_src, "<test>", "exec")  # would raise before the class-body guard
+    assert applied == [] and new_src == src
 
 
 # ---- accumulate-to-sum -----------------------------------------------------
@@ -470,7 +597,7 @@ def test_total():
 '''.lstrip()
 
 
-def _misfire(body, index, scope_lines):
+def _misfire(body, index, scope_lines, class_body=False):
     """A deliberately wrong 'bool-return': always returns False."""
     import ast
 
@@ -512,9 +639,14 @@ def test_pipeline_gate_reverts_a_misfiring_rule(tmp_path, monkeypatch):
     source = (root / "mod.py").read_text()
 
     assert stats.tests_ok
-    assert "return False" in source and "if on_hand <= reorder:" in source
-    assert "sum(" in source  # the correct rule survived the narrowing
     assert any("rule bool-return reverted by the gate" in n for n in stats.static_notes)
+    assert "sum(" in source  # the correct rule survived the narrowing
+    # behaviour, not text: a later layer (ruff's RET/SIM tier) may legitimately
+    # perform the same collapse the sabotaged rule got wrong, so what must hold
+    # is that `is_low` still answers correctly.
+    ns: dict = {}
+    exec(source, ns)
+    assert ns["is_low"](1, 5) is True and ns["is_low"](9, 5) is False
 
 
 def test_pipeline_gate_reverts_everything_without_a_runner(tmp_path, monkeypatch):
@@ -558,3 +690,32 @@ def test_bench_row_records_attempt_outcomes(tmp_path):
     row.attempt_outcomes = {"tests-failed": 2, "hunks-accepted": 1}
     import dataclasses
     assert dataclasses.asdict(row)["attempt_outcomes"]["hunks-accepted"] == 1
+
+
+class _Item:
+    def __init__(self, qty, floor):
+        self.qty, self.floor = qty, floor
+
+
+class _Rows:
+    """A row-ish object list stand-in for the guard tests."""
+
+    def __init__(self):
+        self.rows = [_Row("a", True), _Row("b", False), _Row("c", True)]
+
+    def __iter__(self):
+        return iter(self.rows)
+
+
+class _Row:
+    def __init__(self, name, ok):
+        self.name, self.ok = name, ok
+
+
+def _behaves_the_same(before: str, after: str, fn: str, args: list) -> bool:
+    """Run the original and the rewrite side by side on the same input."""
+    ns_a: dict = {}
+    ns_b: dict = {}
+    exec(before, ns_a)
+    exec(after, ns_b)
+    return ns_a[fn](*args) == ns_b[fn](*[a for a in args])

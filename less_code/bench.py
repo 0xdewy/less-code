@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
@@ -45,6 +46,12 @@ class BenchRow:
     llm_calls: int = 0
     seconds: float = 0.0
     formatted_loc: bool = False
+    # "canonical" when the language's formatter ran, "raw" when it was missing.
+    # Iteration 07's one promising js result was invalidated because
+    # `formatted_loc: false` was a quiet field nobody read: raw physical lines
+    # are exactly the metric roadmap B1 exists to abolish, because line-joining
+    # games them. A raw row is not comparable with a canonical one.
+    metric: str = "canonical"
     # per-attempt outcome tally (accepted / tests-failed / api-changed /
     # syntax-error / backend-error / hunks-*). Without this a finished row is
     # not diagnosable after the fact: the scratch tree is deleted and the
@@ -110,6 +117,18 @@ def bench_fixture(
         row.tests_ok = payload["tests_ok"]
         row.api_ok = payload["api_ok"]
         row.formatted_loc = formatter_available(stats.lang)
+        row.metric = "canonical" if row.formatted_loc else "raw"
+        if not row.formatted_loc:
+            row.notes.append(
+                f"UNSCOREABLE METRIC: no formatter for {stats.lang}; LOC is raw "
+                f"physical lines, not comparable with canonical rows"
+            )
+            print(
+                f"WARNING: {fixture.name} ({stats.lang}) has no formatter installed — "
+                f'this row is metric="raw" (physical lines) and is NOT comparable '
+                f"with canonical rows. Install the formatter and re-run.",
+                file=sys.stderr, flush=True,
+            )
         row.llm_calls = getattr(backend, "calls", 0)
         tally: dict[str, int] = {}
         for rec in payload["attempts"]:
@@ -126,11 +145,17 @@ def bench_fixture(
     return row
 
 
-def discover(root: Path) -> list[Path]:
-    """Every directory under `root` that maps to a supported project."""
+def discover(root: Path, only: str | None = None) -> list[Path]:
+    """Every directory under `root` that maps to a supported project.
+
+    `only` selects a single fixture by name — a 15-minute GPU run should not
+    be the only way to re-measure one language.
+    """
     found = []
     for child in sorted(root.iterdir()):
         if not child.is_dir() or child.name in SKIP_DIRS:
+            continue
+        if only and child.name != only:
             continue
         try:
             map_project(child)
@@ -143,9 +168,9 @@ def discover(root: Path) -> list[Path]:
 def markdown_table(rows: list[BenchRow]) -> str:
     head = (
         "| fixture | lang | config | LOC start | after static | final | static % | "
-        "hybrid % | tests | api | hidden | calls | s |"
+        "hybrid % | tests | api | hidden | calls | s | metric |"
     )
-    sep = "|---|---|---|---:|---:|---:|---:|---:|---|---|---|---:|---:|"
+    sep = "|---|---|---|---:|---:|---:|---:|---:|---|---|---|---:|---:|---|"
 
     def flag(value: bool | None) -> str:
         return "-" if value is None else ("ok" if value else "FAIL")
@@ -155,7 +180,8 @@ def markdown_table(rows: list[BenchRow]) -> str:
         lines.append(
             f"| {r.fixture} | {r.lang} | {r.config} | {r.loc_start} | {r.loc_after_static} | "
             f"{r.loc_final} | {r.static_pct} | {r.hybrid_pct} | {flag(r.tests_ok)} | "
-            f"{flag(r.api_ok)} | {flag(r.hidden_ok)} | {r.llm_calls} | {r.seconds} |"
+            f"{flag(r.api_ok)} | {flag(r.hidden_ok)} | {r.llm_calls} | {r.seconds} | "
+            f"{'**RAW**' if r.metric == 'raw' else 'canonical'} |"
         )
     return "\n".join(lines)
 
@@ -165,18 +191,26 @@ def run_bench(
     out_dir: Path,
     config: str = "static-only",
     repo: Path | None = None,
+    fixture: str | None = None,
     **kwargs,
 ) -> tuple[list[BenchRow], Path]:
-    """Bench every fixture under `fixtures_dir`; append one JSONL row each."""
+    """Bench every fixture under `fixtures_dir`; append one JSONL row each.
+
+    Rows are appended **as each fixture finishes**, not at the end. Iteration
+    07 lost a completed multi-hour run's first two fixtures to an interrupted
+    third, and then spent a session guessing at a row it could not inspect.
+    A checkpointed file is the difference between evidence and a story.
+    """
     repo = repo or Path.cwd()
     commit = git_commit(repo)
-    rows = [
-        bench_fixture(fixture, config, commit, **kwargs)
-        for fixture in discover(fixtures_dir)
-    ]
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.jsonl"
-    with out.open("a", encoding="utf-8") as fh:
-        for row in rows:
+    rows: list[BenchRow] = []
+    for target in discover(fixtures_dir, fixture):
+        row = bench_fixture(target, config, commit, **kwargs)
+        rows.append(row)
+        with out.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(asdict(row)) + "\n")
+            fh.flush()
+        print(f"  [bench] {row.fixture} written to {out}", flush=True)
     return rows, out

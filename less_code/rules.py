@@ -114,10 +114,12 @@ def _call(func: str, args: list[ast.expr], keywords: list[ast.keyword] | None = 
     return ast.Call(func=ast.Name(id=func, ctx=ast.Load()), args=args, keywords=keywords or [])
 
 
-def _comprehension(target: ast.expr, iter_: ast.expr) -> ast.comprehension:
+def _comprehension(
+    target: ast.expr, iter_: ast.expr, ifs: list[ast.expr] | None = None
+) -> ast.comprehension:
     stripped = ast.parse(ast.unparse(target)).body[0]
     tgt = stripped.value if isinstance(stripped, ast.Expr) else target
-    return ast.comprehension(target=tgt, iter=iter_, ifs=[], is_async=0)
+    return ast.comprehension(target=tgt, iter=iter_, ifs=list(ifs or []), is_async=0)
 
 
 def _span(nodes: list[ast.stmt]) -> tuple[int, int]:
@@ -185,6 +187,146 @@ def _flatten_body(body: list[ast.stmt]) -> tuple[ast.stmt, set[str]] | None:
     return merged, names
 
 
+# ---- guarded loop bodies: the `if` clause and the walrus binding ------------
+#
+# Iteration 07 declined `low_stock` (and friends) for two reasons: the append
+# was wrapped in an `if`, and the loop body read a temp twice. Both are
+# expressible in a comprehension without weakening anything — an `if` clause,
+# and a walrus in that clause — provided the *evaluation order* is preserved
+# exactly. That is what `_first_evaluated_name` proves.
+
+
+def _pure(node: ast.AST) -> bool:
+    """No calls, lambdas, awaits, yields or existing walruses anywhere.
+
+    A guard condition is evaluated once per iteration at the same point in
+    both the loop and the comprehension, so ordering alone would allow calls;
+    this is the deliberately conservative line (a misfiring guard is the one
+    kind of rewrite the frozen suite might not catch).
+    """
+    return not any(
+        isinstance(n, (ast.Call, ast.Await, ast.Yield, ast.YieldFrom, ast.NamedExpr, ast.Lambda))
+        for n in ast.walk(node)
+    )
+
+
+def _first_evaluated_name(node: ast.expr) -> str | None:
+    """The name whose *load* happens first when `node` is evaluated.
+
+    Walking the leftmost evaluation path (BoolOp -> values[0], Compare ->
+    left, Attribute/Subscript -> value, ...). When that name is the temp we
+    want to walrus-bind, replacing it with `(temp := value)` puts `value`
+    exactly where the original assignment stood: no reordering at all, so the
+    rewrite is order-preserving even for impure sub-expressions after it.
+    """
+    while True:
+        if isinstance(node, ast.Name):
+            return node.id if isinstance(node.ctx, ast.Load) else None
+        if isinstance(node, ast.BoolOp):
+            node = node.values[0]
+        elif isinstance(node, ast.Compare):
+            node = node.left
+        elif isinstance(node, ast.BinOp):
+            node = node.left
+        elif isinstance(node, ast.UnaryOp):
+            node = node.operand
+        elif isinstance(node, (ast.Attribute, ast.Subscript)):
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.func
+        elif isinstance(node, ast.IfExp):
+            node = node.test
+        else:
+            return None
+
+
+def _load_count(nodes: list[ast.AST | None], name: str) -> int:
+    return sum(
+        1
+        for node in nodes
+        if node is not None
+        for n in ast.walk(node)
+        if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load)
+    )
+
+
+class _SubstituteFirst(ast.NodeTransformer):
+    """Replace only the first `Load` of `name` (used for the walrus)."""
+
+    def __init__(self, name: str, value: ast.expr) -> None:
+        self.name, self.value, self.done = name, value, False
+
+    def visit_Name(self, node: ast.Name):  # noqa: N802
+        if not self.done and node.id == self.name and isinstance(node.ctx, ast.Load):
+            self.done = True
+            return self.value
+        return node
+
+
+def _collapse_loop_body(
+    body: list[ast.stmt], class_body: bool = False,
+) -> tuple[ast.stmt, ast.expr | None, set[str]] | None:
+    """`(final_stmt, condition_or_None, bound_names)` for a loop body.
+
+    Handles three shapes, in increasing order of ambition:
+
+      for v in xs: acc.append(e)                     -> no condition
+      for v in xs:
+          if c: acc.append(e)                        -> an `if` clause
+      for v in xs:
+          t = <expr>
+          if <c reading t twice>: acc.append(<e reading t>)
+                                                     -> `if (t := <expr>) ...`
+
+    A temp read exactly once is inlined (as before). A temp read more than
+    once is bound with a walrus in the condition, but only when it is the
+    condition's first-evaluated name — otherwise the binding would move
+    across another sub-expression and that is a reordering.
+    """
+    if not body:
+        return None
+    if isinstance(body[-1], ast.If) and not body[-1].orelse and body[-1].body:
+        prefix, cond, tail = body[:-1], body[-1].test, body[-1].body
+        if not _pure(cond):
+            return None
+    else:
+        prefix, cond, tail = [], None, body
+    flat = _flatten_body(tail)
+    if flat is None:
+        return None
+    final, names = flat
+    bound = set(names)
+    walruses = 0
+    for stmt in reversed(prefix):
+        if not (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and _is_name(stmt.targets[0])
+        ):
+            return None
+        name = stmt.targets[0].id
+        if name in bound:
+            return None  # rebound twice: not a straight-line temp chain
+        bound.add(name)
+        uses = _load_count([cond, final], name)
+        if uses == 1:
+            sub = _Substitute(name, stmt.value)
+            cond = sub.visit(cond) if cond is not None else None
+            final = sub.visit(final)
+        elif (
+            uses > 1 and cond is not None and not class_body
+            and _first_evaluated_name(cond) == name
+        ):
+            if walruses:
+                return None  # one walrus is all the order proof covers
+            walruses += 1
+            target = ast.Name(id=name, ctx=ast.Store())
+            cond = _SubstituteFirst(name, ast.NamedExpr(target=target, value=stmt.value)).visit(cond)
+        else:
+            return None
+    return final, cond, bound
+
+
 def _fresh_list(value: ast.expr) -> ast.expr | None:
     """The iterable behind a provably-fresh list expression, or None.
 
@@ -206,7 +348,7 @@ def _fresh_list(value: ast.expr) -> ast.expr | None:
 # ---- rules -----------------------------------------------------------------
 
 
-def _rule_bool_return(body: list[ast.stmt], i: int, scope_lines: dict) -> Rewrite | None:
+def _rule_bool_return(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
     """`if c: return True` + `return False` -> `return c` / `return bool(c)`.
 
     Both the fall-through form and the explicit `else:` form; the inverted
@@ -251,7 +393,7 @@ def _append_target(stmt: ast.stmt, name: str) -> ast.expr | None:
     return call.args[0]
 
 
-def _rule_append_loop(body: list[ast.stmt], i: int, scope_lines: dict) -> Rewrite | None:
+def _rule_append_loop(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
     """`x = []` + `for t in it: x.append(e)` -> `x = [e for t in it]`."""
     assign = body[i]
     if not (
@@ -268,10 +410,10 @@ def _rule_append_loop(body: list[ast.stmt], i: int, scope_lines: dict) -> Rewrit
     if not isinstance(loop, ast.For) or loop.orelse or not loop.body:
         return None
     name = assign.targets[0].id
-    flat = _flatten_body(loop.body)
+    flat = _collapse_loop_body(loop.body, class_body)
     if flat is None:
         return None
-    final, temps = flat
+    final, cond, temps = flat
     element = _append_target(final, name)
     if element is None:
         return None
@@ -280,10 +422,12 @@ def _rule_append_loop(body: list[ast.stmt], i: int, scope_lines: dict) -> Rewrit
     # a self-referential build) and the loop variable must be dead afterwards
     if name in _names(element) or name in _names(loop.iter):
         return None
+    if cond is not None and name in _names(cond):
+        return None
     if leaked & _names(loop.iter) or _leaks(scope_lines, leaked, loop.lineno, loop.end_lineno):
         return None
-    generator = _comprehension(loop.target, loop.iter)
-    if _is_name(element) and _is_name(generator.target, element.id):
+    generator = _comprehension(loop.target, loop.iter, [cond] if cond is not None else [])
+    if not cond and _is_name(element) and _is_name(generator.target, element.id):
         value = _call("list", [loop.iter])  # `[t for t in it]` is just `list(it)`
     else:
         value = ast.ListComp(elt=element, generators=[generator])
@@ -309,7 +453,7 @@ def _added_expr(stmt: ast.stmt, name: str) -> ast.expr | None:
     return None
 
 
-def _rule_accumulate_sum(body: list[ast.stmt], i: int, scope_lines: dict) -> Rewrite | None:
+def _rule_accumulate_sum(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
     """`t = 0` + `for v in xs: t += f(v)` -> `t = sum(f(v) for v in xs)`."""
     assign = body[i]
     if not (
@@ -327,19 +471,24 @@ def _rule_accumulate_sum(body: list[ast.stmt], i: int, scope_lines: dict) -> Rew
     if not isinstance(loop, ast.For) or loop.orelse or not loop.body:
         return None
     name = assign.targets[0].id
-    flat = _flatten_body(loop.body)
+    flat = _collapse_loop_body(loop.body, class_body)
     if flat is None:
         return None
-    final, temps = flat
+    final, cond, temps = flat
     added = _added_expr(final, name)
     if added is None:
         return None
     leaked = _target_names(loop.target) | temps
     if name in _names(added) or name in _names(loop.iter):
         return None
+    if cond is not None and name in _names(cond):
+        return None
     if leaked & _names(loop.iter) or _leaks(scope_lines, leaked, loop.lineno, loop.end_lineno):
         return None
-    gen = ast.GeneratorExp(elt=added, generators=[_comprehension(loop.target, loop.iter)])
+    gen = ast.GeneratorExp(
+        elt=added,
+        generators=[_comprehension(loop.target, loop.iter, [cond] if cond is not None else [])],
+    )
     args = [gen]
     if type(assign.value.value) is not int:
         # `total = 0.0` must stay a float even for an empty iterable, so the
@@ -351,7 +500,7 @@ def _rule_accumulate_sum(body: list[ast.stmt], i: int, scope_lines: dict) -> Rew
                    _end_col([assign, loop], end))
 
 
-def _rule_sort_to_sorted(body: list[ast.stmt], i: int, scope_lines: dict) -> Rewrite | None:
+def _rule_sort_to_sorted(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
     """`x = <list expr>` + `x.sort(...)` -> `x = sorted(<list expr>, ...)`.
 
     Only fires when the value is *provably* a fresh list (a literal or a
@@ -390,7 +539,7 @@ def _rule_sort_to_sorted(body: list[ast.stmt], i: int, scope_lines: dict) -> Rew
                    _end_col([assign, call_stmt], end))
 
 
-def _rule_bare_reraise(body: list[ast.stmt], i: int, scope_lines: dict) -> Rewrite | None:
+def _rule_bare_reraise(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
     """`try: B except X: raise` -> `B` (every handler a bare re-raise)."""
     stmt = body[i]
     if not isinstance(stmt, ast.Try) or stmt.orelse or stmt.finalbody:
@@ -426,10 +575,22 @@ _BLOCK_FIELDS = ("body", "orelse", "finalbody")
 SCOPES = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
 
-def _collect(node: ast.AST, only: set[str], out: list[Rewrite], scope_lines: dict) -> None:
-    """Depth-first scan for non-overlapping rewrites over every statement list."""
+def _collect(
+    node: ast.AST, only: set[str], out: list[Rewrite], scope_lines: dict,
+    class_body: bool = False,
+) -> None:
+    """Depth-first scan for non-overlapping rewrites over every statement list.
+
+    `class_body` tracks whether the statements being scanned sit directly in
+    a `class` block: a walrus inside a comprehension is a SyntaxError there,
+    and `ast.parse` does not catch it (it is raised at compile time), so the
+    rule has to decline up front.
+    """
     if isinstance(node, SCOPES):
         scope_lines = scope_name_lines(node)
+        class_body = False
+    if isinstance(node, ast.ClassDef):
+        class_body = True
     for field in _BLOCK_FIELDS:
         block = getattr(node, field, None)
         if not isinstance(block, list) or not all(isinstance(s, ast.stmt) for s in block):
@@ -440,7 +601,7 @@ def _collect(node: ast.AST, only: set[str], out: list[Rewrite], scope_lines: dic
             for name in RULES:
                 if name not in only:
                     continue
-                hit = _RULE_FNS[name](block, i, scope_lines)
+                hit = _RULE_FNS[name](block, i, scope_lines, class_body)
                 if hit is not None:
                     break
             if hit is not None:
@@ -450,10 +611,10 @@ def _collect(node: ast.AST, only: set[str], out: list[Rewrite], scope_lines: dic
                 while i < len(block) and block[i].lineno <= hit.end:
                     i += 1
                 continue
-            _collect(block[i], only, out, scope_lines)
+            _collect(block[i], only, out, scope_lines, class_body)
             i += 1
     for handler in getattr(node, "handlers", []) or []:
-        _collect(handler, only, out, scope_lines)
+        _collect(handler, only, out, scope_lines, class_body)
 
 
 def _render(rw: Rewrite) -> list[str]:
@@ -481,7 +642,7 @@ def _one_pass(source: str, only: set[str]) -> tuple[str, list[str]]:
     except SyntaxError:
         return source, []
     rewrites: list[Rewrite] = []
-    _collect(tree, only, rewrites, scope_name_lines(tree))
+    _collect(tree, only, rewrites, scope_name_lines(tree), False)
     if not rewrites:
         return source, []
     lines = source.splitlines()
@@ -497,8 +658,10 @@ def _one_pass(source: str, only: set[str]) -> tuple[str, list[str]]:
     if source.endswith("\n"):
         new_source += "\n"
     try:
-        ast.parse(new_source)
-    except SyntaxError:  # pragma: no cover - defensive: never emit broken code
+        # compile(), not ast.parse(): some errors (a walrus in a class-body
+        # comprehension) are raised only at the compile stage.
+        compile(new_source, "<rules>", "exec")
+    except (SyntaxError, ValueError):  # defensive: never emit broken code
         return source, []
     return new_source, applied
 

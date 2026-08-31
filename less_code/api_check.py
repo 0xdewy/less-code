@@ -181,3 +181,33 @@ def api_violations(
         if parts:
             problems.append(f"{file}: {' '.join(parts)}")
     return problems
+
+
+def api_feedback(violations: list[str]) -> str:
+    """Turn `api_violations` output into a concrete instruction for the model.
+
+    The API gate is where a small model most often dies (iteration 07: js
+    attempts 2-3 and py attempt 2 were all `api-changed`), and until now the
+    violation list was computed and then thrown away — the next attempt was
+    told only "api-changed", which is not actionable. Test failures have always
+    been fed back verbatim; this closes the same loop for the API gate.
+    """
+    if not violations:
+        return ""
+    lines = [
+        "Your previous rewrite CHANGED THE PUBLIC API. That is forbidden and is",
+        "why it was rejected — no test was even run. Exact violations:",
+    ]
+    for problem in violations[:6]:
+        lines.append(f"  - {problem}")
+    lines += [
+        "Fix them ALL in the next attempt:",
+        "  * every symbol listed under `missing=` must exist again with its",
+        "    original name AND its original signature (parameter names, order,",
+        "    and default values are all part of the API);",
+        "  * every symbol under `changed=` must get its original signature back;",
+        "  * every symbol under `added=` is a new public name you introduced —",
+        "    delete it or rename it with a leading underscore (`_helper`).",
+        "Names are given as `symbol`, `Class.method` or `Type::method`.",
+    ]
+    return "\n".join(lines)

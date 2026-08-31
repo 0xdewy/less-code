@@ -77,6 +77,7 @@ def reduce_project(
     max_files: int | None = None,
     formatter: bool = True,
     test_timeout: int = 600,
+    whole_file_sweep: bool = True,
 ) -> ReduceStats:
     project = map_project(root, lang)
     stats = ReduceStats(lang=project.lang, files_considered=len(project.source_files))
@@ -139,7 +140,16 @@ def reduce_project(
 
     # ---- L2 LLM ----
     if backend is not None and backend.name != "none":
-        from .llm_reduce import focused_passes, reduce_file, reduce_file_chunked
+        from . import llm_reduce as _llm
+        from .llm_reduce import reduce_file, reduce_symbols
+
+        # live per-attempt output: a long GPU run must be readable while it
+        # runs, not only once each file is finished.
+        _llm.PROGRESS = lambda rec: print(
+            f"  [L2] {rec.file.split('/')[-1]} attempt={rec.attempt} "
+            f"{rec.outcome} {rec.loc_before}->{rec.loc_after}",
+            flush=True,
+        )
 
         spec = "\n\n".join(
             f.read_text(encoding="utf-8", errors="replace")[:40000]
@@ -154,38 +164,34 @@ def reduce_project(
             loc_before = measure(source_before, project.lang).code
             if loc_before < 8:
                 continue
-            if project.lang == "python":
-                best, best_loc, records = reduce_file(
+            # C2: per-symbol proposals are the DEFAULT for every language.
+            # Iteration 07 measured zero outright whole-file acceptances at 3B
+            # and 7B; a per-symbol proposal is a short output through the same
+            # gate, so the same budget buys ~20 independent bets instead of 1.
+            records = reduce_symbols(
+                backend, root, path, project.lang, runner,
+                attempts_per_symbol=max(1, attempts_per_file - 1), spec=spec,
+            )
+            if whole_file_sweep:
+                # optional final sweep: only a whole-file rewrite can dedup
+                # ACROSS symbols, and its rejects still feed hunk salvage.
+                current = path.read_text(encoding="utf-8", errors="replace")
+                loc_now = measure(current, project.lang).code
+                best, best_loc, sweep_records = reduce_file(
                     backend, root, path, project.lang, runner,
-                    attempts=max(1, attempts_per_file - 1), spec=spec,
+                    attempts=1, spec=spec,
                 )
-                if best_loc < loc_before:
-                    path.write_text(best + "\n", encoding="utf-8")
-                records += focused_passes(backend, root, path, project.lang, runner, spec=spec)
-                now = measure(
-                    path.read_text(encoding="utf-8", errors="replace"), project.lang
-                ).code
-                if now > 1000:  # very large file: per-symbol fallback
-                    records += reduce_file_chunked(backend, root, path, runner, spec=spec)
-            else:
-                best, best_loc, records = reduce_file(
-                    backend, root, path, project.lang, runner,
-                    attempts=attempts_per_file, spec=spec,
-                )
-                if best_loc < loc_before:
+                records += sweep_records
+                if best_loc < loc_now:
                     path.write_text(best + "\n", encoding="utf-8")
             for rec in records:
-                print(
-                    f"  [L2] {rec.file.split('/')[-1]} attempt={rec.attempt} "
-                    f"{rec.outcome} {rec.loc_before}->{rec.loc_after}",
-                    flush=True,
-                )
                 stats.attempt_records.append(
                     {
                         "file": rec.file, "attempt": rec.attempt, "outcome": rec.outcome,
                         "loc_before": rec.loc_before, "loc_after": rec.loc_after, "detail": rec.detail[:200],
                     }
                 )
+        _llm.PROGRESS = None
         final = run_tests(root, project.lang, timeout=test_timeout)
         stats.tests_ok = final.ok
 
