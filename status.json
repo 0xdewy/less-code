@@ -19,7 +19,7 @@
     {
       "id": "demo-py",
       "state": "pending",
-      "evidence": "MISS: bench/results/20260831T010516Z.jsonl hybrid qwen2.5-coder:7b 500->463 canonical code-LOC (7.4%), static-only 7.0%, tests/api/hidden green, 8 LLM calls; bar is 25%. Table docs/evidence/reduce-py-rs-iteration09.md, attempt log docs/evidence/reduce-py-7b.log"
+      "evidence": "best: 9.2% canonical hybrid (7B whole-file+salvage, bench/results/20260831T012153Z.jsonl), all gates green \u2014 MISS vs 25%"
     },
     {
       "id": "demo-js",
@@ -29,7 +29,7 @@
     {
       "id": "demo-rs",
       "state": "pending",
-      "evidence": "MISS: bench/results/20260831T011236Z.jsonl hybrid qwen2.5-coder:7b 392->372 canonical code-LOC (5.1%, all static), tests/api/hidden green, 8 LLM calls all rejected (5 at cargo check); bar is 25%. Table docs/evidence/reduce-py-rs-iteration09.md, attempt log docs/evidence/reduce-rs-7b.log"
+      "evidence": "best: 14.29% canonical hybrid (7B whole-file+salvage, bench/results/20260831T015018Z.jsonl), all gates green, first outright rust acceptance \u2014 MISS vs 25%"
     },
     {
       "id": "grpo",
@@ -44,7 +44,7 @@
   ],
   "current_iteration": 9,
   "attempts": 9,
-  "last_evidence": "iteration 9: per-method + duplicate-group proposals and 2 ladder rules landed (199 tests); py 7.4% / rs 5.1% at 7B, both MISS the 25% bar; 1 acceptance in 36 proposals",
+  "last_evidence": "strategy sweep complete: js 25.96% PASS; py 9.2% / rs 14.29% best-ever but MISS; local-model ceiling documented",
   "blockers": [
     "budget scheduling: the dedup pass took 6/10 calls at 0% acceptance and cost rs 2.3 points vs iteration 8",
     "rust dies at cargo check at every granularity (5/10 proposals at 7B)",
