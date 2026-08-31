@@ -1,3 +1,12 @@
+# RESUME — SUPERSEDED (2026-08-31)
+
+This runbook described the pre-demo state. The goal has since PASSED all 7
+criteria (see status.json, docs/evidence/C7-REVIEW.md). Demos: py 33.5% /
+js 29.1% / rs 25.5%, each with a preserved CPU-verifiable tree under
+docs/evidence/. Long-horizon plan: docs/ROADMAP.md.
+
+---
+
 # RESUME — runbook for the GPU machine
 
 Everything up to commit `fa2752c` is done on CPU: research, tool (30 tests
