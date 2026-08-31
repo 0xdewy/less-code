@@ -307,3 +307,173 @@ cannot be independently confirmed from the repository as delivered:
 
 **Should fix:** D5 (dirty-tree commit stamps), D8 (URLs in `research.md`),
 D10 (`reduce` has no dry-run — the root cause of D1), D11.
+
+---
+---
+
+# RE-REVIEW — remediation commit `e5f2b98`
+
+Same independence and adversarial standard as the first pass. I verified each
+claim by running it, not by reading the commit message. CPU only; no ollama,
+no GPU. Nothing modified except this file. Per the coordinator's note I
+disregard the untracked `mining/` work and any `dataset_v2.jsonl` as out of
+criteria scope, and I treat the pre-hardening historical rows in
+`bench/results/` as superseded rather than contradictory (they self-label
+`raw` vs `canonical`).
+
+## Reproduction log (this pass)
+
+| check | command | result |
+|---|---|---|
+| tool suite | `uv run pytest -q` | **259 passed** ✅ (was 236) |
+| D1 restore | `git show 6ef9a1a:fixtures/py/inventory.py \| diff - fixtures/py/inventory.py` | **byte-identical** ✅ |
+| D1 baseline | `less_code.loc.measure` | fixtures/py = **537** canonical code-LOC ✅ |
+| D1 fixture drift | `git diff 6ef9a1a HEAD -- fixtures/` | only additive (hidden suites, FIXTURE.md, pytest.ini, Cargo.toml) + `target/` deletions; **no source or test file altered** ✅ |
+| C3 re-derivation | `lc reduce fixtures/py --static-only --copy-to … --out …` | 537 → 357 = **33.52 %**, tests+api ok ✅ |
+| C3 artifact fidelity | `diff <copy-to output> docs/evidence/py-static-357/inventory.py` | **byte-identical to a fresh run** ✅ |
+| C3 mutation | `lc audit fixtures/py --max-mutants 40` | **0.925** (37/40) ✅ — exactly the claimed figure |
+| C4 artifact | rebuilt: `fixtures/js` test files + `docs/evidence/js-reduced-426/reporting.js` | `node --test` **36 pass**; `node --test tests_hidden/hidden.mjs` **16 pass** ✅ |
+| C4 arithmetic | `less_code.loc.measure` | 426 canonical; (601−426)/601 = **29.12 %** ✅ |
+| C4 API | `api_check.EXTRACTORS['javascript']` | 24 → 21 exports; missing = exactly `deepCloneRow`, `formatPercent`, `pivotByRegion`; **0 added, 0 changed** ✅ |
+| C5 artifact | `fixtures/rs` + evidence `src/` → `cargo test`; `cargo test --test hidden` | **39 + 12 pass**, 292 LOC = 25.51 % ✅ (re-confirmed) |
+| C6 builder | `python grpo/build_dataset.py …` | **69 samples**, exit 0, **byte-identical** to `grpo/dataset.jsonl` ✅ |
+| C6 config | `python grpo/train.py --validate-config` | exit 0 ✅ |
+| D11 | `git ls-files \| grep -cE 'pycache\|\.pyc$'` | **0** ✅ |
+
+## Per-defect resolution
+
+**D1 — pristine py fixture. RESOLVED, and better than asked.**
+`fixtures/py/inventory.py` is byte-identical to `6ef9a1a` (537 canonical
+code-LOC). C3 is re-derived off it at **33.52 %** — and the reduced tree in
+`docs/evidence/py-static-357/` is **byte-identical to the output of a fresh
+`lc reduce --static-only --copy-to` I ran myself**, so C3 is now fully
+deterministic and reproducible on CPU with zero LLM calls. Mutation score
+re-measured at 0.925, matching the restored `FIXTURE.md`. The superseded
+500-baseline numbers in `docs/evidence/reduce-py-rs-iteration10.md` are marked
+as such rather than deleted.
+
+**D2 — C4 artifact. RESOLVED.** `docs/evidence/js-reduced-426/` now carries
+`reporting.js`, `round1.json`, `round1.log` and `REPRODUCE.md`. I rebuilt the
+module against the fixture's own test files: 36 frozen + 16 hidden tests green,
+426 canonical code-LOC, 29.12 % off 601. The `round1.json` attempt trail
+reconciles exactly with the artifact (553 → 535 → 488 → 426, every gain from
+hunk salvage after all three whole-file proposals were rejected as
+`api-changed` / `syntax-error` / `tests-failed`). This is now the
+best-evidenced of the three LLM demos, and it also raises the number (25.96 %
+→ 29.12 %) on a preserved tree rather than defending the unpreserved one.
+
+**D3 — C5 reproducibility. ADEQUATELY DOCUMENTED; I accept it.**
+The brief asked me to judge whether documentation suffices where the
+non-determinism is irreducible. `rs-reduced-292/REPRODUCE.md` clears that bar:
+it gives the exact four `lc reduce` invocations with flags, per-round
+arithmetic that reconciles with `round1-4.json` (392→311→311→311→292), a
+deterministic no-GPU verification block (which I ran), and — decisively — it
+states the uncomfortable facts rather than burying them: *"the LLM rounds are
+not deterministic … a re-run will land on a different number"*, *"no bench row
+reaches 25.51 %; the best single-round rs bench row is 14.29 %"*, and the
+`title_case` hidden-suite catch that forced a function to be restored verbatim
+mid-campaign. It correctly relocates the claim from "this command reproduces
+the number" to "this artifact is the evidence and it is deterministically
+checkable" — which is the honest framing, and the artifact does check out.
+
+**D4 — API wording. RESOLVED.** `ReduceStats` now records `api_baseline`
+(`"post-static"`) and `static_removed_symbols`, both surfaced in reports and
+bench rows; my fresh py run emitted
+`static_removed_symbols: ["LegacyReorderCalculator", …, "old_flag_code"]`.
+`status.json`, README and both `REPRODUCE.md` files now qualify the claim
+instead of asserting an unqualified "API preserved". Gate semantics are
+unchanged, which is right — the fix was to the claim, not the gate. Pinned by
+`test_report_names_the_baseline_and_lists_static_removals` and
+`test_static_removal_note_lists_the_symbol`. This also turned up and fixed a
+real latent bug: `static.py`'s dead-symbol note read
+`defs - set(referenced) & defs`, which parses as `(defs - set(referenced)) & defs`
+and was therefore always empty — every python dead-code note in the project's
+history was blank. Finding that while fixing a wording defect is a good sign.
+
+**D5 — dirty-tree provenance. RESOLVED, verified live.** The committed row
+`bench/results/20260831T073226Z.jsonl` stamps `"commit": "2821f26-dirty"`.
+Four tests cover clean / modified / untracked / non-repo.
+
+**D6 — README. RESOLVED.** The status block is a per-criterion table matching
+`status.json` (259 tests, py 33.5 / js 29.1 / rs 25.5, C7 in progress). The
+stale "rs still short of the bar — 14.29 %" text is gone.
+
+**D7 — status.json. RESOLVED.** Evidence strings rebuilt (259 passed, 69
+samples), `blockers: []`, `next_action` now describes the re-review.
+`state: "in_progress"` is now *correct* rather than stale, since C7 is the one
+pending criterion.
+
+**D8 — research.md URLs. RESOLVED, with the count fixed honestly.** The file
+now ends with the full numbered URL list and states *"53 entries, 52 distinct
+URLs (1 cited in two reports)"*. I checked: 52 distinct, and the single
+duplicate is `mutmut.readthedocs.io`. The first pass's off-by-one is resolved
+by correcting the claim, not by inflating the list.
+
+**D9 — mutation-weighted reward. RESOLVED.** `reward_fn_mutation_weighted` /
+`compute_reward_mutation_weighted` implement
+`gate × (1 + 0.5·loc_delta·mutation_score)`; the gate itself is never scaled,
+so a weak suite cannot buy a behaviour break — the right invariant, and
+directly tested. `build_dataset.py` stamps `mutation_score` on all 69 rows
+(js 0.85 ×28, py 0.95 ×21, rs 1.0 ×20); `train.py --reward {loc,mutation-weighted}`
+selects it and `--validate-config` now asserts both callables exist.
+`tests/test_grpo.py` is 22 tests including monotonicity in mutation score,
+gate-never-scaled, and an out-of-range clamp. Bonus fix beyond the defect: the
+reward's parse gate now covers js/rust (`node --check` / `cargo check`), not
+just python — the asymmetry I flagged in passing.
+
+**D10 — in-place reduce. RESOLVED, verified live.** `lc reduce --copy-to DIR`
+printed *"reducing a copy at … (original fixtures/py untouched)"* and
+`git status --porcelain fixtures/py/` came back empty afterwards. The in-place
+path warns on a dirty git tree, `--copy-to` refuses a non-empty destination,
+and `lc bench --keep-tree DIR` closes the other half (the root cause of D2).
+Six tests cover it.
+
+**D11 — tracked `.pyc`. RESOLVED.** Zero tracked byte-compiled files.
+
+## New defects introduced by the remediation
+
+I looked specifically for regressions: no test or fixture test file was
+modified (`git diff 6ef9a1a HEAD -- fixtures/` is additive only), no gate was
+loosened, all three mutation scores still clear 70 % (py 0.925, js 0.85,
+rs 1.0), all three fixtures still exceed the 300-LOC floor (537 / 601 / 392),
+and both C2 and C6 command gates still pass. I found nothing that bears on a
+criterion. Three cosmetic observations, none of which I count as defects:
+
+- **R1** — `rs-reduced-292/REPRODUCE.md` cites `round1.json`'s
+  `static_removed_symbols`, but none of the five delivered round reports carry
+  that field: they were written before it existed. The information is there as
+  `static_notes` ("removed dead pub item is_blank" …), which the same sentence
+  also cites, so nothing is unsupported. Notably `js-reduced-426/REPRODUCE.md`
+  discloses this timing gap explicitly for its own `round1.json`; the rs file
+  just did not get the same sentence. One-line fix, no bearing on any claim.
+- **R2** — the working tree carries an untracked
+  `bench/results/20260831T074518Z.jsonl` (a post-commit verification run,
+  stamped `e5f2b98-dirty`, py 537 → 357 = 33.52 %). It corroborates C3; it is
+  simply not part of the commit.
+- **R3** — `js-reduced-426/round1.log` shows 3 of the 6 attempt records
+  (the whole-file outcomes but not the interleaved `hunks-accepted` lines).
+  The complete trail is in `round1.json`, and the two reconcile.
+
+## Final verdict
+
+# PASS
+
+All eleven defects are resolved — nine outright, D3 by documentation I judge
+adequate against an irreducible non-determinism, and D4 by correcting a claim
+rather than pretending the gate did something it did not. No unresolved
+concrete defect remains.
+
+What moved this from FAIL to PASS is not that the numbers got better (though
+they did: py 28.6 → 33.5 %, js 25.96 → 29.1 %). It is that every headline claim
+is now backed by an artifact I could check on CPU without trusting the team:
+C3 regenerates byte-for-byte from a pristine fixture with no model in the loop,
+C4's reduced module rebuilds and passes 36 + 16 tests, and C5's crate compiles
+and passes 39 + 12. The remediation also volunteered two things it was not
+asked for — the always-empty `defs - set(referenced) & defs` bug and the
+python-only parse gate — and, where a fact was awkward (no bench row reaches
+25.51 %; the delivered crate exports three fewer functions; the LLM rounds
+cannot be replayed), it wrote the fact down instead of the number.
+
+Residual items for the record, none blocking: R1's stale field citation, and
+the standing disclosed caveat that `_rule_if_ladder_dict` is gated-not-proved
+for unhashable subjects.

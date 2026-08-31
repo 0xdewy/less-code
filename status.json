@@ -2,7 +2,7 @@
   "schema_version": 1,
   "goal": "Build the most effective hybrid (static + LLM + RL/GRPO) LOC-reduction system for Rust/JS/Python that significantly shrinks complex, well-tested code without breaking tests",
   "mode": "full",
-  "state": "in_progress",
+  "state": "passed",
   "cap": 15,
   "gate_type": "mixed",
   "criteria": [
@@ -29,7 +29,7 @@
     {
       "id": "demo-rs",
       "state": "passed",
-      "evidence": "iterative 7B whole-file+salvage on a persistent tree: 392 -> 292 canonical code-LOC = 25.51%, 39 frozen + 12 hidden tests green. Tree + round1-4 reports + the exact 4-command recipe at docs/evidence/rs-reduced-292/ (REPRODUCE.md, written for C7 D3). Decisive fix: syntax-error salvage (17a5b35) — rounds 3 and 4 differ only by that commit, 0 vs 19 lines. Public API preserved relative to the POST-STATIC surface (C7 D4): the static pass removed 3 provably-dead pub fns by design (is_blank, indent_lines, reverse_words), now listed in every report as static_removed_symbols with api_baseline: post-static. Mutation score 1.0. LLM rounds are non-deterministic; the artifact + suites are the verifiable evidence, the commands are the recipe."
+      "evidence": "iterative 7B whole-file+salvage on a persistent tree: 392 -> 292 canonical code-LOC = 25.51%, 39 frozen + 12 hidden tests green. Tree + round1-4 reports + the exact 4-command recipe at docs/evidence/rs-reduced-292/ (REPRODUCE.md, written for C7 D3). Decisive fix: syntax-error salvage (17a5b35) \u2014 rounds 3 and 4 differ only by that commit, 0 vs 19 lines. Public API preserved relative to the POST-STATIC surface (C7 D4): the static pass removed 3 provably-dead pub fns by design (is_blank, indent_lines, reverse_words), now listed in every report as static_removed_symbols with api_baseline: post-static. Mutation score 1.0. LLM rounds are non-deterministic; the artifact + suites are the verifiable evidence, the commands are the recipe."
     },
     {
       "id": "grpo",
@@ -38,13 +38,13 @@
     },
     {
       "id": "review",
-      "state": "pending",
-      "evidence": "First review (docs/evidence/C7-REVIEW.md) returned FAIL with 11 defects D1-D11. All 11 addressed in iterations/12-rs-settlement-and-c7-fixes.md: D1 fixture restored + C3 re-baselined, D2 js reproduced with a preserved tree, D3 rs recipe written down, D4 api_baseline + static_removed_symbols recorded and wording corrected, D5 dirty-tree commit stamps, D6/D7 README + status.json reconciled, D8 URLs carried into research.md, D9 mutation-weighted reward implemented, D10 --copy-to / --keep-tree, D11 .pyc untracked. Awaiting re-review."
+      "state": "passed",
+      "evidence": "independent adversarial review docs/evidence/C7-REVIEW.md: initial FAIL with 11 defects (D1-D11), all remediated in e5f2b98, re-review verdict PASS \u2014 every headline claim verified by execution on CPU (py byte-deterministic 33.52%, js artifact rebuilt 29.12%, rs tree re-verified 25.51%), no gate weakened, no test modified"
     }
   ],
   "current_iteration": 12,
   "attempts": 12,
-  "last_evidence": "C7 remediation complete: all three demos now have preserved, independently checkable artifacts (py 33.52% / js 29.12% / rs 25.51%) off pristine baselines; 259 tests pass",
+  "last_evidence": "goal PASS: all 7 criteria passed; demos py 33.5% / js 29.1% / rs 25.5%, all with preserved CPU-verifiable artifacts; C7 re-review PASS",
   "blockers": [],
-  "next_action": "C7 re-review: hand an independent reviewer the task + CRITERIA.md + status.json + README.md + the diff + docs/evidence/ (incl. C7-REVIEW.md and the three REPRODUCE.md files) and confirm no unresolved concrete defect remains. Keep state=in_progress until it returns."
+  "next_action": null
 }
