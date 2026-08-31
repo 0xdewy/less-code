@@ -84,6 +84,60 @@ def first_failure(tail: str) -> str:
             return line[:250]
     return best or tail[-250:]
 
+# cargo prints these after the real diagnostics; they name no code
+_RUST_NOISE = (
+    "error: aborting",
+    "error: could not compile",
+    "For more information about this error",
+)
+
+COMPILER_CHARS = 600
+
+
+def compiler_errors(text: str, lang: str, max_errors: int = 3, max_chars: int = COMPILER_CHARS) -> str:
+    """The compiler's own words, kept whole enough to be actionable.
+
+    Iteration 09 measured that 100% of the rust duplicate-group proposals died
+    at `cargo check` — and the model was never told why, because the outcome
+    string carried one truncated line of `first_failure()`, an extractor built
+    for pytest tails. A `-->` location and an `expected ... found ...` note are
+    exactly what turns "it did not compile" into a fixable instruction, so a
+    diagnostic is kept as a *block*: the `error[...]` line plus its location
+    and notes, for the first few errors.
+    """
+    lines = text.splitlines()
+    if lang == "rust":
+        blocks: list[str] = []
+        i = 0
+        while i < len(lines) and len(blocks) < max_errors:
+            line = lines[i]
+            if line.startswith("error") and not line.startswith(_RUST_NOISE):
+                block = [line.rstrip()]
+                j = i + 1
+                while j < len(lines) and len(block) < 6:
+                    nxt = lines[j]
+                    if nxt.startswith(("error", "warning")):
+                        break
+                    if nxt.strip():
+                        block.append(nxt.rstrip())
+                    j += 1
+                blocks.append("\n".join(block))
+                i = j
+                continue
+            i += 1
+        joined = "\n".join(blocks)
+        return joined[:max_chars] if joined else first_failure(text)[:max_chars]
+    # node --check: `path:line`, the offending source, a caret run, then the
+    # `SyntaxError:` line — the stack frames below it are about node, not the code
+    kept = [l.rstrip() for l in lines if l.strip() and not l.lstrip().startswith("at ")]
+    marker = next(
+        (i for i, l in enumerate(kept) if "Error" in l or l.lstrip().startswith("error")), None
+    )
+    if marker is None:
+        return first_failure(text)[:max_chars]
+    return "\n".join(kept[max(0, marker - 3) : marker + 2])[:max_chars]
+
+
 FENCE = re.compile(r"```[a-zA-Z0-9_+-]*\n(.*?)```", re.DOTALL)
 
 
@@ -96,6 +150,13 @@ def _feedback_for(outcome: str) -> str:
     """
     if outcome.startswith("api-changed:"):
         return api_feedback([v.strip() for v in outcome[len("api-changed:"):].split(" | ") if v.strip()])
+    if outcome.startswith("syntax-error:"):
+        # the compiler's own diagnostics, framed as an instruction
+        return (
+            "Your previous reply DID NOT COMPILE. The compiler said:\n"
+            + outcome[len("syntax-error:"):].strip()
+            + "\nFix exactly these errors. Do not change any public signature."
+        )
     return outcome
 
 
@@ -153,7 +214,7 @@ def syntax_check(path: Path, lang: str, root: Path) -> str:
     proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=600)
     if proc.returncode == 0:
         return ""
-    return first_failure(proc.stdout + proc.stderr)
+    return compiler_errors(proc.stdout + proc.stderr, lang)
 
 
 # rejection stages, cheapest first: most candidates die in milliseconds
@@ -183,7 +244,7 @@ def verify_candidate(
         path.write_text(candidate + "\n", encoding="utf-8")
         syntax = syntax_check(path, lang, root)
         if syntax:
-            return f"syntax-error: {syntax[:120]}", loc_after
+            return f"syntax-error: {syntax[:COMPILER_CHARS]}", loc_after
         api_after = EXTRACTORS[lang](candidate)
         violations = api_violations({str(path): api_before}, {str(path): api_after})
         if violations:
@@ -229,7 +290,7 @@ def verify_multifile(
             checked.add(marker)
             syntax = syntax_check(path, lang, root)
             if syntax:
-                return f"syntax-error: {syntax[:120]}", loc_before, loc_after
+                return f"syntax-error: {syntax[:COMPILER_CHARS]}", loc_before, loc_after
         before_api = {str(p): EXTRACTORS[lang](t) for p, t in originals.items()}
         after_api = {str(p): EXTRACTORS[lang](t) for p, t in candidates.items()}
         violations = api_violations(before_api, after_api)
@@ -729,6 +790,8 @@ Produce ONE shared helper and rewrite every member to call it:
 3. Behavior must be preserved EXACTLY, including error paths, exact error messages and exception/panic types.
 4. The total number of lines must go DOWN: helper + all rewritten members must be clearly fewer lines than the originals.
 5. No minification tricks, no one-letter names, no removed types.
+6. Exact error/panic messages and exact public signatures are PINNED BY THE TESTS. Copy every string literal character for character; never reword, never merge two different messages into one.
+7. You are given a computed token diff listing everything that differs between the members. That list is complete. Parameterize exactly those things and nothing else — the rest of the body is already identical and must be copied verbatim.
 RESPONSE FORMAT: your ENTIRE response must be exactly one fenced code block containing, in this order: the helper, then EVERY member rewritten, in the SAME order they were given, each as a complete top-level definition at column 0. Nothing else — no prose, no other code, no class statements."""
 
 
@@ -740,6 +803,32 @@ def build_dedup_prompt(group, lang: str, feedback: str = "", spec: str = "") -> 
         f"messages and exception types must match EXACTLY):\n```\n{spec}\n```\n"
         if spec else ""
     )
+    from .dedup import token_diff_slots
+
+    slots = token_diff_slots(group, lang)
+    if slots and len(group.members) == 2:
+        a, b = (m.key for m in group.members)
+        rows = "\n".join(
+            f"  {i}. in `{a}`: {left}\n     in `{b}`: {right}"
+            for i, (left, right) in enumerate(slots, 1)
+        )
+        diff = (
+            f"\nCOMPUTED TOKEN DIFF — this is the complete list of what differs "
+            f"between the two definitions ({len(slots)} item(s)). Everything else is "
+            f"already identical:\n{rows}\n"
+            f"So the helper needs at most {len(slots)} parameter(s) (or generic "
+            f"type parameter(s)), one per item above. Write the helper by copying "
+            f"`{a}` verbatim and replacing only those {len(slots)} item(s); then make "
+            f"both members one-line calls to it.\n"
+        )
+    elif slots:
+        rows = "\n".join(f"  {i}. {' | '.join(vals)}" for i, vals in enumerate(slots, 1))
+        diff = (
+            f"\nCOMPUTED TOKEN DIFF against member 1 — the complete list of what "
+            f"differs:\n{rows}\nParameterize exactly these and nothing else.\n"
+        )
+    else:
+        diff = ""
     blocks = []
     for i, member in enumerate(group.members, 1):
         note = ""
@@ -758,7 +847,7 @@ def build_dedup_prompt(group, lang: str, feedback: str = "", spec: str = "") -> 
         f"{len(group.members)} near-duplicate definitions (token similarity "
         f"{group.similarity:.2f}), {total} code lines in total:\n\n"
         + "\n\n".join(blocks)
-        + f"\n{fb}{tests}"
+        + f"\n{diff}{fb}{tests}"
         f"Write ONE private helper that captures what they share, then rewrite all "
         f"{len(group.members)} members to call it. Output the helper first, then the "
         f"{len(group.members)} members in the order above, all at column 0, in a single "

@@ -44,6 +44,20 @@ L1b rule library (less_code/rules.py): deterministic, semantics-preserving
               default=None)` — a numeric sentinel is declined, because
               `-1` is not provably equivalent to `default=None`
       on red the gate narrows rule by rule, keeping only what stays green
+L1c guard-block outlining (less_code/outline.py, python): project-wide, not
+      peephole. Runs of `if <test>: raise` / `name = expr` statements that
+      repeat >= 3 times across function bodies — after alpha-renaming and
+      constant abstraction — are outlined into one module-level `_`-prefixed
+      helper and each site becomes a single call line. Names the block binds
+      are returned and unpacked; names it reads are passed by value, and only
+      `Name`/`Constant` leaves may become arguments so an eagerly-evaluated
+      argument can never raise before a guard does. `return`/`break`/`yield`,
+      lambdas, nested defs, walruses and `global`/`nonlocal` targets are
+      refused, as is any free name not provably bound at the window. Error
+      messages are never rewritten: a message that is the same everywhere is
+      re-emitted verbatim, a message that differs becomes a literal argument.
+      A group that does not pay for its own helper in code lines is declined.
+      On the py fixture this is 107 code lines from four helpers.
 L1.5 audit: mutation score of the test suite (trust oracle)
       built-in mutation engine (py: AST, js/rust: masked token swaps)
 L2  LLM semantic reduction, verify-gated
@@ -150,9 +164,12 @@ CRITERIA.md  fixed acceptance criteria for the build
 ## Status vs goal
 
 research ✅ · tool ✅ · grpo scaffold ✅ (66 samples, config validated) ·
-**js demo (C4) ✅ 25.96 % canonical hybrid**, tests/API/hidden green
-(`docs/evidence/reduce-js-7b.md`) · py and rs still short of the 25 % bar —
-**py 7.4 %, rs 5.1 %** at 7B, tests/API/hidden green, 1 LLM acceptance in 36
-proposals across two model sizes and three granularities
-(`docs/evidence/reduce-py-rs-iteration09.md`,
-`iterations/09-methods-dedup-and-settlement.md`) · review pending py/rs demos.
+**py demo (C3) ✅ 30.4 % canonical hybrid** (500 → 357 static → 348), of which
+**28.6 % is deterministic** — 107 code lines from guard-block outlining, zero
+LLM calls (`docs/evidence/reduce-py-rs-iteration10.md`) ·
+**js demo (C4) ✅ 25.96 %** (`docs/evidence/reduce-js-7b.md`) ·
+rs demo (C5) still short of the bar — **14.29 %** at 7B whole-file+salvage,
+tests/API/hidden green; the pair-wise merge templates and compiler-diagnostic
+feedback took rust's duplicate-group acceptance rate from 0 % to 20 %, but 7 of
+8 whole-file proposals are still `cargo check` failures
+(`iterations/10-outlining-feedback-settlement.md`) · review pending rs demo.

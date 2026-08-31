@@ -1,0 +1,14 @@
+  [L2] lib.rs attempt=1 syntax-error 217->169
+  [L2] lib.rs attempt=2 syntax-error 217->169
+  [L2] lib.rs attempt=3 syntax-error 217->197
+  [L2] lib.rs attempt=4 syntax-error 217->106
+  [L2] stats.rs attempt=1 accepted 155->119
+  [L2] stats.rs attempt=2 syntax-error 119->102
+  [L2] stats.rs attempt=3 syntax-error 119->107
+  [L2] stats.rs attempt=4 syntax-error 119->97
+  [bench] rs written to bench/results/20260831T024743Z.jsonl
+| fixture | lang | config | LOC start | after static | final | static % | hybrid % | tests | api | hidden | calls | s | metric |
+|---|---|---|---:|---:|---:|---:|---:|---|---|---|---:|---:|---|
+| rs | rust | hybrid:qwen2.5-coder:7b:whole-file | 392 | 372 | 336 | 5.1 | 14.29 | ok | ok | ok | 8 | 1091.74 | canonical |
+
+rows: bench/results/20260831T024743Z.jsonl

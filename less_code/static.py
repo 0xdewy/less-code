@@ -698,6 +698,13 @@ def _python_layers(
             return out, notes
         return run
 
+    def outline_layer(sources: dict[Path, str]):
+        from .outline import outline_guards
+
+        changed, notes = outline_guards({str(p): t for p, t in sources.items()})
+        out = {p: changed.get(str(p), t) for p, t in sources.items()}
+        return out, notes
+
     def unreachable_layer(sources: dict[Path, str]):
         out, notes = {}, []
         for path, text in sources.items():
@@ -722,6 +729,8 @@ def _python_layers(
 
     layers: list[tuple[str, object]] = [("dead-code", dead_layer)]
     layers += [(f"rule {rule}", rule_layer(rule)) for rule in RULES]
+    # project-wide, so it runs after the peephole rules have shrunk the bodies
+    layers.append(("guard-outlining", outline_layer))
     layers.append(("unreachable-code", unreachable_layer))
     # ruff last: the layers above create new unused imports and locals for it
     layers.append(("ruff-safe", ruff_layer(False)))

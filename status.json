@@ -18,8 +18,8 @@
     },
     {
       "id": "demo-py",
-      "state": "pending",
-      "evidence": "best: 9.2% canonical hybrid (7B whole-file+salvage, bench/results/20260831T012153Z.jsonl), all gates green \u2014 MISS vs 25%"
+      "state": "passed",
+      "evidence": "bench/results/20260831T030620Z.jsonl: hybrid qwen2.5-coder:7b whole-file+salvage 500->357 (static 28.6%) ->348 canonical code-LOC (30.4%), tests/api/hidden all green, 4 LLM calls, 2019s. Static alone is 28.6% (bench/results/20260831T023655Z.jsonl): 107 of the 143 lines come from deterministic guard-block outlining (less_code/outline.py, 4 helpers over 30 sites). Table docs/evidence/reduce-py-rs-iteration10.md, attempt log docs/evidence/reduce-py-7b-wholefile-it10.log"
     },
     {
       "id": "demo-js",
@@ -29,7 +29,7 @@
     {
       "id": "demo-rs",
       "state": "pending",
-      "evidence": "best: 14.29% canonical hybrid (7B whole-file+salvage, bench/results/20260831T015018Z.jsonl), all gates green, first outright rust acceptance \u2014 MISS vs 25%"
+      "evidence": "best: 14.29% canonical hybrid (7B whole-file+salvage, 392->372->336, bench/results/20260831T024743Z.jsonl), all gates green - MISS vs 25% (needs <=294). Mixed strategy with the new pair-wise merge templates + compiler feedback reached 9.18% (356) and took the first two rust duplicate-group acceptances in the project (dedup-pair rate 0% -> 20%), but whole-file still wins on totals. 7 of 8 whole-file proposals were cargo-check syntax errors even with diagnostics in the prompt. docs/evidence/reduce-py-rs-iteration10.md"
     },
     {
       "id": "grpo",
@@ -42,13 +42,13 @@
       "evidence": null
     }
   ],
-  "current_iteration": 9,
-  "attempts": 9,
-  "last_evidence": "strategy sweep complete: js 25.96% PASS; py 9.2% / rs 14.29% best-ever but MISS; local-model ceiling documented",
+  "current_iteration": 10,
+  "attempts": 10,
+  "last_evidence": "C3 demo-py PASSED at 30.4% canonical hybrid (28.6% from static alone) on the back of deterministic guard-block outlining; C5 demo-rs best-ever-tied 14.29%, MISS; rust dedup acceptance rate 0% -> 20% from compiler feedback + computed merge templates",
   "blockers": [
-    "budget scheduling: the dedup pass took 6/10 calls at 0% acceptance and cost rs 2.3 points vs iteration 8",
-    "rust dies at cargo check at every granularity (5/10 proposals at 7B)",
-    "py/rs 25% bar may need a frontier model or the GRPO reducer, not more proposal shapes"
+    "rs is 42 code lines short of the bar and 7/8 whole-file proposals at 7B are cargo-check syntax errors even with the compiler's diagnostics in the prompt",
+    "strategies do not compose: mixed found 2 merges (372->356), whole-file found 1 rewrite (372->336), and nothing runs the second on the output of the first",
+    "guard outlining is python-only; the rust and js fixtures have the shape but the proof obligations are per-language"
   ],
-  "next_action": "schedule the LLM budget by measured acceptance rate (per-symbol/per-method first, dedup with the remainder); add hunk salvage to method and dedup-group rejects; add a test-spec selector so the 40k-char suite stops eating the 16k context; then re-bench py/rs"
+  "next_action": "C5: try diff-mode (search/replace block) proposals for rust so the model only emits changed lines, and/or chain --strategy mixed then whole-file; then the review criterion (if-ladder-to-dict unhashable caveat, outlined helper naming, fixtures/rs/target still tracked)"
 }

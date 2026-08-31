@@ -170,7 +170,8 @@ def find_duplicate_groups(
     threshold: float = 0.6,
     min_loc: int = 4,
     min_tokens: int = 20,
-    max_members: int = 5,
+    max_members: int = 3,
+    tight_threshold: float = 0.9,
 ) -> list[DupGroup]:
     """Group near-duplicate units project-wide, biggest total LOC first.
 
@@ -220,7 +221,12 @@ def find_duplicate_groups(
                 break
             if k in used or k in members:
                 continue
-            if all(ratio_of(k, m) >= threshold for m in members):
+            # a third member has to be a *tight* twin, not merely similar:
+            # iteration 09's 3-member rust groups produced token diffs twice
+            # the size of the pair's, and none of them compiled. A pair is the
+            # smallest merge that is still a merge.
+            floor = threshold if len(members) < 2 else tight_threshold
+            if all(ratio_of(k, m) >= floor for m in members):
                 members.append(k)
         used.update(members)
         ratios = [
@@ -231,5 +237,67 @@ def find_duplicate_groups(
             members=[units[m] for m in sorted(members)],
             similarity=round(sum(ratios) / len(ratios), 3) if ratios else 0.0,
         ))
-    groups.sort(key=lambda g: -g.loc)
+    # rank by *expected* yield, not raw size: a 0.99-similar pair is a
+    # template to fill in, a 0.7-similar pair is a redesign, and iteration 09
+    # measured that the models can only do the first
+    groups.sort(key=lambda g: -(g.loc * g.similarity))
     return groups
+
+
+# ---- the mechanical merge template -----------------------------------------
+
+# Like `_TOKEN` but string literals stay whole, because a differing error
+# message is exactly the kind of variation the helper has to parameterize.
+_RAW_TOKEN = re.compile(
+    r'"""(?:.|\n)*?"""|\'\'\'(?:.|\n)*?\'\'\''
+    r'|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\''
+    r"|[A-Za-z_][A-Za-z0-9_]*|\d[\d_.]*|[^\sA-Za-z0-9_]"
+)
+
+
+def raw_tokens(text: str, lang: str) -> list[str]:
+    """Tokens with comments stripped but names and literals kept."""
+    stripped = (_PY_COMMENT if lang == "python" else _C_COMMENT).sub(" ", text)
+    return _RAW_TOKEN.findall(stripped)
+
+
+def token_diff_slots(group, lang: str, max_slots: int = 8) -> list[tuple[str, ...]]:
+    """What actually differs between the members, computed not guessed.
+
+    Iteration 09's dedup proposals asked the model to *design* the merge:
+    invent a helper, decide what to abstract, and get every pinned error
+    message right, in one reply, in Rust. 0% landed. The diff between two
+    copy-pasted definitions is a mechanical fact, so it should be computed and
+    handed over: each differing token run is one thing the helper has to take
+    as a parameter, and the model's job shrinks to filling in a template.
+
+    Returns one tuple per differing run, member-aligned, first member first.
+    Runs that are only the definition's own name are dropped: renaming is not
+    parameterization.
+    """
+    if len(group.members) < 2:
+        return []
+    seqs = [raw_tokens(m.text, lang) for m in group.members]
+    names = {m.name for m in group.members}
+    slots: list[tuple[str, ...]] = []
+    seen: set[tuple[str, ...]] = set()
+    base = seqs[0]
+    for other, member in zip(seqs[1:], group.members[1:]):
+        matcher = difflib.SequenceMatcher(None, base, other, autojunk=False)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                continue
+            left = " ".join(base[i1:i2]).strip()
+            right = " ".join(other[j1:j2]).strip()
+            if not left and not right:
+                continue
+            if left in names and right in names:
+                continue
+            slot = (left or "(nothing)", right or "(nothing)")
+            if slot in seen:
+                continue
+            seen.add(slot)
+            slots.append(slot)
+            if len(slots) >= max_slots:
+                return slots
+    return slots
