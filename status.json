@@ -19,7 +19,7 @@
     {
       "id": "demo-py",
       "state": "pending",
-      "evidence": null
+      "evidence": "MISS: bench/results/20260831T010516Z.jsonl hybrid qwen2.5-coder:7b 500->463 canonical code-LOC (7.4%), static-only 7.0%, tests/api/hidden green, 8 LLM calls; bar is 25%. Table docs/evidence/reduce-py-rs-iteration09.md, attempt log docs/evidence/reduce-py-7b.log"
     },
     {
       "id": "demo-js",
@@ -29,7 +29,7 @@
     {
       "id": "demo-rs",
       "state": "pending",
-      "evidence": null
+      "evidence": "MISS: bench/results/20260831T011236Z.jsonl hybrid qwen2.5-coder:7b 392->372 canonical code-LOC (5.1%, all static), tests/api/hidden green, 8 LLM calls all rejected (5 at cargo check); bar is 25%. Table docs/evidence/reduce-py-rs-iteration09.md, attempt log docs/evidence/reduce-rs-7b.log"
     },
     {
       "id": "grpo",
@@ -42,11 +42,13 @@
       "evidence": null
     }
   ],
-  "current_iteration": 5,
-  "attempts": 5,
-  "last_evidence": "iteration 7+: C4 demo-js passed at 25.96% canonical hybrid (7B, all gates green)",
+  "current_iteration": 9,
+  "attempts": 9,
+  "last_evidence": "iteration 9: per-method + duplicate-group proposals and 2 ladder rules landed (199 tests); py 7.4% / rs 5.1% at 7B, both MISS the 25% bar; 1 acceptance in 36 proposals",
   "blockers": [
-    "shared GPU: C3-C5 reduce demos need ~10 min GPU each on the other machine; optional C6 smoke-train"
+    "budget scheduling: the dedup pass took 6/10 calls at 0% acceptance and cost rs 2.3 points vs iteration 8",
+    "rust dies at cargo check at every granularity (5/10 proposals at 7B)",
+    "py/rs 25% bar may need a frontier model or the GRPO reducer, not more proposal shapes"
   ],
-  "next_action": "on GPU machine: git pull; ollama serve; uv run lc reduce fixtures/py --model qwen2.5-coder:7b --attempts 2 --max-llm-calls 6 --num-ctx 16384 --out docs/evidence/reduce-py.json (repeat js/rs); then optional grpo/train.py --steps 10; then reviewer pass (C7)"
+  "next_action": "schedule the LLM budget by measured acceptance rate (per-symbol/per-method first, dedup with the remainder); add hunk salvage to method and dedup-group rejects; add a test-spec selector so the 40k-char suite stops eating the 16k context; then re-bench py/rs"
 }

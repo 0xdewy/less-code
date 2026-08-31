@@ -14,8 +14,11 @@ L1  static provably-safe pass
               tier automatically and the unsafe tier as its own gated layer
               (LOC-reducing families: RET/SIM/C4/PIE/UP/PLR1/PERF/FURB), plus
               unreachable-code removal after `return`/`raise` — all test-gated
-      rust:   cargo fix + clippy --fix (compiler-verified), then dead `pub`
-              item removal — brace-matched extraction incl. doc comments and
+      rust:   cargo fix + clippy --fix (compiler-verified), then the
+              `clippy::pedantic`/`::complexity` tier as its own gated,
+              tree-restoring step (on the rs fixture it ADDS 19 lines —
+              `#[must_use]`, `# Panics` docs — so the size gate drops it),
+              then dead `pub` item removal — brace-matched extraction incl. doc comments and
               attributes, kept only if no project file (tests included)
               mentions the name
       js:     dead exports via import-graph scan, cross-checked with
@@ -32,7 +35,14 @@ L1b rule library (less_code/rules.py): deterministic, semantics-preserving
               name (so evaluation order is provably unchanged);
               `t = 0` + `+=` loop -> `sum()` (float start preserved);
               fresh-list + `.sort()` -> `sorted()`;
-              `try/except X: raise` -> the try body
+              `try/except X: raise` -> the try body;
+              `if x == "A": return 1 / elif ... / return d` ladders ->
+              `{...}.get(x, d)` (one hashable non-bool key type only);
+              ordered threshold ladders -> a lazy `next(...)` tuple scan,
+              which keeps the comparisons and their order exactly;
+              a `None`-sentinel manual max loop -> `max(it, key=..., 
+              default=None)` — a numeric sentinel is declined, because
+              `-1` is not provably equivalent to `default=None`
       on red the gate narrows rule by rule, keeping only what stays green
 L1.5 audit: mutation score of the test suite (trust oracle)
       built-in mutation engine (py: AST, js/rust: masked token swaps)
@@ -43,8 +53,20 @@ L2  LLM semantic reduction, verify-gated
         rest of the file and the test spec. Each proposal goes through the
         same gate, so one budget buys ~20 independent bets instead of one
         all-or-nothing whole-file gamble
-      an optional whole-file sweep runs last (only it can dedup *across*
-        symbols) with hunk salvage on its rejects
+      **a big python class is decomposed into its methods** (`Class.method`
+        units over a 40-LOC threshold), each spliced over its own ast span,
+        prompted with the class's other method signatures and `__init__`'s
+        full body; the class docstring and attributes are outside every
+        method span and so are never touched
+      **duplicate-group proposals** (less_code/dedup.py) are the third
+        granularity: near-duplicate symbols/methods are found project-wide
+        (comments stripped, literals folded, identifiers erased, difflib
+        ratio >= 0.6), and each group gets ONE proposal — a shared
+        `_`-prefixed helper plus minimal rewrites of every member — applied
+        as a single MULTI-FILE candidate through a gate that snapshots and
+        restores every touched file. This is the only shape that can merge
+        `csv_escape_row`/`_owned`/`_rows` or six pasted SKU validators
+      an optional whole-file sweep runs last with hunk salvage on its rejects
       local ollama (qwen2.5-coder) or any OpenAI-compatible endpoint;
       test suite included in prompt as behavior spec; per-attempt feedback —
       a test failure *and* an `api-changed` rejection's concrete
@@ -129,6 +151,8 @@ CRITERIA.md  fixed acceptance criteria for the build
 
 research ✅ · tool ✅ · grpo scaffold ✅ (66 samples, config validated) ·
 **js demo (C4) ✅ 25.96 % canonical hybrid**, tests/API/hidden green
-(`docs/evidence/reduce-js-7b.md`) · py and rs still short of the 25 % bar
-(4.6 % / 7.4 % at 3B — `iterations/08-per-symbol-and-static-d1d2.md`) ·
-review pending py/rs demos.
+(`docs/evidence/reduce-js-7b.md`) · py and rs still short of the 25 % bar —
+**py 7.4 %, rs 5.1 %** at 7B, tests/API/hidden green, 1 LLM acceptance in 36
+proposals across two model sizes and three granularities
+(`docs/evidence/reduce-py-rs-iteration09.md`,
+`iterations/09-methods-dedup-and-settlement.md`) · review pending py/rs demos.

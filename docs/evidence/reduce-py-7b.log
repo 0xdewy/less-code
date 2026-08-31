@@ -1,0 +1,16 @@
+  [L2] dedup:parse_sku+Product.__init__+Inventory.receive+Inventory.allocate+Inventory.releas attempt=1 bad-dedup-reply 465->465
+  [L2] dedup:OrderLine.__init__+OrderLine.from_row attempt=1 tests-failed 465->459
+  [L2] dedup:plan_restock+valuate+tally_by_flag+reconcile attempt=1 tests-failed 465->427
+  [L2] inventory.py:Product attempt=1 syntax-error 465->441
+  [L2] inventory.py:Inventory.allocate attempt=1 tests-failed 465->448
+  [L2] inventory.py:OrderLine.from_row attempt=1 tests-failed 465->438
+  [L2] inventory.py:Inventory.receive attempt=1 tests-failed 465->452
+  [L2] inventory.py:apply_order attempt=1 accepted 465->463
+  [L2] inventory.py:OrderLine.__init__ attempt=1 backend-error 463->463
+  [L2] inventory.py attempt=1 backend-error 463->463
+  [bench] py written to bench/results/20260831T010516Z.jsonl
+| fixture | lang | config | LOC start | after static | final | static % | hybrid % | tests | api | hidden | calls | s | metric |
+|---|---|---|---:|---:|---:|---:|---:|---|---|---|---:|---:|---|
+| py | python | hybrid:qwen2.5-coder:7b | 500 | 465 | 463 | 7.0 | 7.4 | ok | ok | ok | 8 | 425.4 | canonical |
+
+rows: bench/results/20260831T010516Z.jsonl

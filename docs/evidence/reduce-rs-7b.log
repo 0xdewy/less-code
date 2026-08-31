@@ -1,0 +1,18 @@
+  [L2] dedup:word_frequencies+char_frequencies attempt=1 syntax-error 155->141
+  [L2] dedup:title_case+longest_line+count_leading_spaces+count_trailing_spaces attempt=1 syntax-error 217->210
+  [L2] dedup:csv_escape_row+csv_escape_row_owned+csv_escape_rows attempt=1 syntax-error 217->207
+  [L2] lib.rs:slugify attempt=1 syntax-error 217->205
+  [L2] lib.rs:render_template attempt=1 syntax-error 217->205
+  [L2] lib.rs:wrap_words attempt=1 tests-failed 217->216
+  [L2] lib.rs:csv_escape_field attempt=1 tests-failed 217->204
+  [L2] lib.rs:csv_escape_rows attempt=1 not-smaller 217->219
+  [L2] lib.rs:title_case attempt=1 backend-error 217->217
+  [L2] lib.rs attempt=1 backend-error 217->217
+  [L2] stats.rs:analyze attempt=1 backend-error 155->155
+  [L2] stats.rs attempt=1 backend-error 155->155
+  [bench] rs written to bench/results/20260831T011236Z.jsonl
+| fixture | lang | config | LOC start | after static | final | static % | hybrid % | tests | api | hidden | calls | s | metric |
+|---|---|---|---:|---:|---:|---:|---:|---|---|---|---:|---:|---|
+| rs | rust | hybrid:qwen2.5-coder:7b | 392 | 372 | 372 | 5.1 | 5.1 | ok | ok | ok | 8 | 186.61 | canonical |
+
+rows: bench/results/20260831T011236Z.jsonl
