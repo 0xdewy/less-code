@@ -1,0 +1,136 @@
+{
+  "reduce": {
+    "lang": "rust",
+    "files_considered": 2,
+    "loc_start": 311,
+    "loc_after_static": 311,
+    "loc_final": 311,
+    "static_only_loc_final": 311,
+    "static_pct": 0.0,
+    "hybrid_pct": 0.0,
+    "llm_extra_pct": 0.0,
+    "formatted_loc": true,
+    "tests_ok": true,
+    "api_ok": true,
+    "static_notes": [
+      "fix: exit 0",
+      "clippy: exit 0",
+      "clippy pedantic --fix: exit 0",
+      "clippy pedantic tier dropped: it ADDS 16 code lines"
+    ],
+    "attempts": [
+      {
+        "file": "dedup:wrap_words+csv_escape_field",
+        "attempt": 1,
+        "outcome": "syntax-error",
+        "loc_before": 194,
+        "loc_after": 193,
+        "detail": "syntax-error: error[E0308]: mismatched types\n   --> src/lib.rs:236:62\n    |\n222 | fn _shared_helper<T>(input: &str, delimiter_or_width: T, is_word_wrap: bool) -> String\n    |                   - found"
+      },
+      {
+        "file": "dedup:wrap_words+csv_escape_field",
+        "attempt": 2,
+        "outcome": "not-smaller",
+        "loc_before": 194,
+        "loc_after": 198,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "dedup:word_frequencies+char_frequencies",
+        "attempt": 1,
+        "outcome": "not-smaller",
+        "loc_before": 117,
+        "loc_after": 127,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "dedup:word_frequencies+char_frequencies",
+        "attempt": 2,
+        "outcome": "not-smaller",
+        "loc_before": 117,
+        "loc_after": 125,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "dedup:reading_time_seconds+average_word_length",
+        "attempt": 1,
+        "outcome": "not-smaller",
+        "loc_before": 117,
+        "loc_after": 117,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "dedup:reading_time_seconds+average_word_length",
+        "attempt": 2,
+        "outcome": "not-smaller",
+        "loc_before": 117,
+        "loc_after": 123,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "/tmp/claude-1000/-home-user-code-less-code/b9a238af-778c-45c9-bae4-028c7e5848dd/scratchpad/rs-final/rs/src/lib.rs:slugify",
+        "attempt": 1,
+        "outcome": "syntax-error",
+        "loc_before": 194,
+        "loc_after": 182,
+        "detail": "syntax-error: error: character literal may only contain one codepoint\n   --> src/lib.rs:199:24\n    |\n199 |                 '\u00df' => 'ss',\n    |                        ^^^^\n    |"
+      },
+      {
+        "file": "/tmp/claude-1000/-home-user-code-less-code/b9a238af-778c-45c9-bae4-028c7e5848dd/scratchpad/rs-final/rs/src/lib.rs:slugify",
+        "attempt": 2,
+        "outcome": "syntax-error",
+        "loc_before": 194,
+        "loc_after": 182,
+        "detail": "syntax-error: error: expected one of `(`, `.`, `::`, `;`, `?`, `}`, or an operator, found `'-'`\n   --> src/lib.rs:187:26\n    |\n187 |                 out.push '-';\n    |                          ^^^ ex"
+      },
+      {
+        "file": "/tmp/claude-1000/-home-user-code-less-code/b9a238af-778c-45c9-bae4-028c7e5848dd/scratchpad/rs-final/rs/src/lib.rs:render_template",
+        "attempt": 1,
+        "outcome": "syntax-error",
+        "loc_before": 194,
+        "loc_after": 188,
+        "detail": "syntax-error: error[E0308]: mismatched types\n  --> src/lib.rs:49:42\n   |\n49 |         Some(name) if name.is_empty() => Err(TemplateError::EmptyVariableName),\n   |                                      "
+      },
+      {
+        "file": "/tmp/claude-1000/-home-user-code-less-code/b9a238af-778c-45c9-bae4-028c7e5848dd/scratchpad/rs-final/rs/src/lib.rs:render_template",
+        "attempt": 2,
+        "outcome": "syntax-error",
+        "loc_before": 194,
+        "loc_after": 163,
+        "detail": "syntax-error: error: character literal may only contain one codepoint\n  --> src/lib.rs:49:33\n   |\n49 | ...   .map(|s| s.strip_prefix('{{').and_then(|s| s.strip_suffix('}}')).map_or(s.to_string(), |nam"
+      },
+      {
+        "file": "/tmp/claude-1000/-home-user-code-less-code/b9a238af-778c-45c9-bae4-028c7e5848dd/scratchpad/rs-final/rs/src/lib.rs:wrap_words",
+        "attempt": 1,
+        "outcome": "backend-error",
+        "loc_before": 194,
+        "loc_after": 194,
+        "detail": "LLM budget exhausted (10 calls)"
+      },
+      {
+        "file": "/tmp/claude-1000/-home-user-code-less-code/b9a238af-778c-45c9-bae4-028c7e5848dd/scratchpad/rs-final/rs/src/lib.rs",
+        "attempt": 1,
+        "outcome": "backend-error",
+        "loc_before": 194,
+        "loc_after": 194,
+        "detail": "LLM budget exhausted (10 calls)"
+      },
+      {
+        "file": "/tmp/claude-1000/-home-user-code-less-code/b9a238af-778c-45c9-bae4-028c7e5848dd/scratchpad/rs-final/rs/src/stats.rs:analyze",
+        "attempt": 1,
+        "outcome": "backend-error",
+        "loc_before": 117,
+        "loc_after": 117,
+        "detail": "LLM budget exhausted (10 calls)"
+      },
+      {
+        "file": "/tmp/claude-1000/-home-user-code-less-code/b9a238af-778c-45c9-bae4-028c7e5848dd/scratchpad/rs-final/rs/src/stats.rs",
+        "attempt": 1,
+        "outcome": "backend-error",
+        "loc_before": 117,
+        "loc_after": 117,
+        "detail": "LLM budget exhausted (10 calls)"
+      }
+    ]
+  }
+}

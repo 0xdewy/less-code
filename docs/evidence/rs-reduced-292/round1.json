@@ -1,0 +1,83 @@
+{
+  "reduce": {
+    "lang": "rust",
+    "files_considered": 2,
+    "loc_start": 392,
+    "loc_after_static": 372,
+    "loc_final": 311,
+    "static_only_loc_final": 372,
+    "static_pct": 5.1,
+    "hybrid_pct": 20.66,
+    "llm_extra_pct": 16.4,
+    "formatted_loc": true,
+    "tests_ok": true,
+    "api_ok": true,
+    "static_notes": [
+      "fix: exit 0",
+      "clippy: exit 0",
+      "clippy pedantic --fix: exit 0",
+      "clippy pedantic tier dropped: it ADDS 19 code lines",
+      "lib.rs: removed dead pub item is_blank",
+      "lib.rs: removed dead pub item indent_lines",
+      "lib.rs: removed dead pub item reverse_words"
+    ],
+    "attempts": [
+      {
+        "file": "/tmp/claude-1000/-home-user-code-less-code/b9a238af-778c-45c9-bae4-028c7e5848dd/scratchpad/rs-final/rs/src/lib.rs",
+        "attempt": 1,
+        "outcome": "syntax-error",
+        "loc_before": 217,
+        "loc_after": 110,
+        "detail": "syntax-error: error: unexpected `,` in pattern\n   --> src/lib.rs:135:118\n    |\n135 |             '\u00e1' | '\u00e0' | '\u00e2' | '\u00e4' | '\u00e3' | '\u00e5' => if !pending_dash && !out.is_empty() { out.push('-'); } out.push('a"
+      },
+      {
+        "file": "/tmp/claude-1000/-home-user-code-less-code/b9a238af-778c-45c9-bae4-028c7e5848dd/scratchpad/rs-final/rs/src/lib.rs",
+        "attempt": 2,
+        "outcome": "tests-failed",
+        "loc_before": 217,
+        "loc_after": 177,
+        "detail": "tests-failed: error: test failed, to rerun pass `--test integration`"
+      },
+      {
+        "file": "/tmp/claude-1000/-home-user-code-less-code/b9a238af-778c-45c9-bae4-028c7e5848dd/scratchpad/rs-final/rs/src/lib.rs",
+        "attempt": 2,
+        "outcome": "hunks-accepted",
+        "loc_before": 217,
+        "loc_after": 194,
+        "detail": "hunks 8/12 accepted=[sym:wrap_words,sym:csv_escape_field,sym:csv_escape_row,sym:csv_escape_row_owned,sym:count_leading_spaces,sym:count_trailing_spaces,gap:count_trailing_spaces,sym:title_case] reject"
+      },
+      {
+        "file": "/tmp/claude-1000/-home-user-code-less-code/b9a238af-778c-45c9-bae4-028c7e5848dd/scratchpad/rs-final/rs/src/lib.rs",
+        "attempt": 3,
+        "outcome": "not-smaller",
+        "loc_before": 194,
+        "loc_after": 318,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "/tmp/claude-1000/-home-user-code-less-code/b9a238af-778c-45c9-bae4-028c7e5848dd/scratchpad/rs-final/rs/src/stats.rs",
+        "attempt": 1,
+        "outcome": "accepted",
+        "loc_before": 155,
+        "loc_after": 124,
+        "detail": "accepted"
+      },
+      {
+        "file": "/tmp/claude-1000/-home-user-code-less-code/b9a238af-778c-45c9-bae4-028c7e5848dd/scratchpad/rs-final/rs/src/stats.rs",
+        "attempt": 2,
+        "outcome": "accepted",
+        "loc_before": 124,
+        "loc_after": 117,
+        "detail": "accepted"
+      },
+      {
+        "file": "/tmp/claude-1000/-home-user-code-less-code/b9a238af-778c-45c9-bae4-028c7e5848dd/scratchpad/rs-final/rs/src/stats.rs",
+        "attempt": 3,
+        "outcome": "syntax-error",
+        "loc_before": 117,
+        "loc_after": 82,
+        "detail": "syntax-error: error[E0277]: cannot divide `f64` by `u64`\n   --> src/stats.rs:56:44\n    |\n 56 |     text.split_whitespace().count() as f64 / (words_per_minute.max(1) as f64 * 60.0).floor() as u64\n    |"
+      }
+    ]
+  }
+}

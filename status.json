@@ -28,8 +28,8 @@
     },
     {
       "id": "demo-rs",
-      "state": "pending",
-      "evidence": "best: 14.29% canonical hybrid (7B whole-file+salvage, 392->372->336, bench/results/20260831T024743Z.jsonl), all gates green - MISS vs 25% (needs <=294). Mixed strategy with the new pair-wise merge templates + compiler feedback reached 9.18% (356) and took the first two rust duplicate-group acceptances in the project (dedup-pair rate 0% -> 20%), but whole-file still wins on totals. 7 of 8 whole-file proposals were cargo-check syntax errors even with diagnostics in the prompt. docs/evidence/reduce-py-rs-iteration10.md"
+      "state": "passed",
+      "evidence": "iterative 7B whole-file+salvage on persistent tree: 392->292 canonical code-LOC (25.51%), frozen+hidden suites green, api preserved; reduced tree docs/evidence/rs-reduced-292/, round reports round1-4.json; decisive fix: syntax-error salvage (17a5b35)"
     },
     {
       "id": "grpo",
@@ -44,7 +44,7 @@
   ],
   "current_iteration": 10,
   "attempts": 10,
-  "last_evidence": "C3 demo-py PASSED at 30.4% canonical hybrid (28.6% from static alone) on the back of deterministic guard-block outlining; C5 demo-rs best-ever-tied 14.29%, MISS; rust dedup acceptance rate 0% -> 20% from compiler feedback + computed merge templates",
+  "last_evidence": "C5 demo-rs passed at 25.51% (392->292); all three demos now >= 25%",
   "blockers": [
     "rs is 42 code lines short of the bar and 7/8 whole-file proposals at 7B are cargo-check syntax errors even with the compiler's diagnostics in the prompt",
     "strategies do not compose: mixed found 2 merges (372->356), whole-file found 1 rewrite (372->336), and nothing runs the second on the output of the first",
