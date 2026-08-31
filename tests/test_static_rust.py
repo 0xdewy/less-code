@@ -178,3 +178,85 @@ def test_crate_still_compiles_and_tests_pass_after_removal(crate: Path):
     )
     assert after.returncode == 0, after.stdout + after.stderr
     assert "reverse_words" not in (crate / "src" / "lib.rs").read_text()
+
+
+# ---- iteration 09: the clippy pedantic/complexity tier ---------------------
+
+
+PEDANTIC_LIB = textwrap.dedent(
+    """\
+    /// Sum a slice the long way — `clippy::needless_range_loop` territory.
+    pub fn total(values: &[u32]) -> u32 {
+        let mut sum = 0;
+        for i in 0..values.len() {
+            sum += values[i];
+        }
+        sum
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn it_sums() {
+            assert_eq!(total(&[1, 2, 3]), 6);
+        }
+    }
+    """
+)
+
+
+def _crate(tmp_path: Path, lib: str) -> Path:
+    root = tmp_path / "crate"
+    (root / "src").mkdir(parents=True)
+    (root / "Cargo.toml").write_text(
+        '[package]\nname = "peda"\nversion = "0.1.0"\nedition = "2021"\n'
+    )
+    (root / "src" / "lib.rs").write_text(lib)
+    return root
+
+
+def test_clippy_pedantic_is_optional_when_cargo_is_missing(tmp_path, monkeypatch):
+    from less_code import static as static_mod
+
+    monkeypatch.setattr(static_mod.shutil, "which", lambda _name: None)
+    root = _crate(tmp_path, PEDANTIC_LIB)
+    result = static_mod._rust_clippy_pedantic(root, [root / "src" / "lib.rs"])
+    assert result.changed_files == {}
+    assert "skipping clippy pedantic" in " ".join(result.notes)
+
+
+@cargo
+def test_clippy_pedantic_returns_edits_and_leaves_the_tree_untouched(tmp_path):
+    from less_code.static import _rust_clippy_pedantic
+
+    root = _crate(tmp_path, PEDANTIC_LIB)
+    lib = root / "src" / "lib.rs"
+    before = lib.read_text()
+    result = _rust_clippy_pedantic(root, [lib])
+    # whatever it decided, the tree is back the way it was: the edits travel
+    # as `changed_files`, inside the pipeline's revert set
+    assert lib.read_text() == before
+    if result.changed_files:
+        assert result.changed_files[str(lib)] != before
+
+
+@cargo
+def test_a_red_suite_drops_the_pedantic_tier_whole(tmp_path):
+    from less_code.static import _rust_clippy_pedantic
+
+    root = _crate(tmp_path, PEDANTIC_LIB)
+    lib = root / "src" / "lib.rs"
+    result = _rust_clippy_pedantic(
+        root, [lib], runner=lambda _r, _l: _Red()
+    )
+    assert result.changed_files == {}
+    assert any("reverted by the gate" in n for n in result.notes) or not any(
+        "kept" in n for n in result.notes
+    )
+
+
+class _Red:
+    ok = False
+    output_tail = "boom"

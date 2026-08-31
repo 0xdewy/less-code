@@ -78,6 +78,7 @@ def reduce_project(
     formatter: bool = True,
     test_timeout: int = 600,
     whole_file_sweep: bool = True,
+    dedup_groups: int = 3,
 ) -> ReduceStats:
     project = map_project(root, lang)
     stats = ReduceStats(lang=project.lang, files_considered=len(project.source_files))
@@ -141,7 +142,7 @@ def reduce_project(
     # ---- L2 LLM ----
     if backend is not None and backend.name != "none":
         from . import llm_reduce as _llm
-        from .llm_reduce import reduce_file, reduce_symbols
+        from .llm_reduce import reduce_duplicate_groups, reduce_file, reduce_symbols
 
         # live per-attempt output: a long GPU run must be readable while it
         # runs, not only once each file is finished.
@@ -159,6 +160,27 @@ def reduce_project(
         ordered = sorted(project.source_files, key=lambda f: -f.stat().st_size)
         if max_files:
             ordered = ordered[:max_files]
+
+        # C2b FIRST, and deliberately: it is project-wide, it targets the
+        # biggest opportunity both FIXTURE.md files document (cross-symbol
+        # copy-paste), and iteration 08's gap item 7 was that the greedy
+        # per-symbol loop spent the whole budget before any cross-symbol pass
+        # ever ran. Bounded to `max_groups * attempts` calls so the per-symbol
+        # loop still gets the rest.
+        dedup_records = reduce_duplicate_groups(
+            backend, root, project.source_files, project.lang, runner,
+            attempts_per_group=max(1, attempts_per_file - 1), spec=spec,
+            max_groups=dedup_groups,
+        )
+        for rec in dedup_records:
+            stats.attempt_records.append(
+                {
+                    "file": rec.file, "attempt": rec.attempt, "outcome": rec.outcome,
+                    "loc_before": rec.loc_before, "loc_after": rec.loc_after,
+                    "detail": rec.detail[:200],
+                }
+            )
+
         for path in ordered:
             source_before = path.read_text(encoding="utf-8", errors="replace")
             loc_before = measure(source_before, project.lang).code

@@ -33,6 +33,9 @@ RULES = (
     "accumulate-to-sum",
     "sort-to-sorted",
     "drop-bare-reraise",
+    "if-ladder-to-dict",
+    "threshold-ladder-to-scan",
+    "max-loop-to-max",
 )
 
 MAX_PASSES = 6
@@ -561,12 +564,307 @@ def _rule_bare_reraise(body: list[ast.stmt], i: int, scope_lines: dict, class_bo
                    _end_col([stmt], end))
 
 
+# ---- if/elif ladders and the manual max loop (iteration 09) -----------------
+#
+# FIXTURE.md names three ladder shapes as unclaimed opportunities on the py
+# fixture (`priority_for_status`, `classify_stock`, `discount_tier`) and one
+# manual max-over-a-dict loop (`busiest_area`). Two of the four are provably
+# rewritable and are taken here; the rest are declined on purpose and the
+# reasons are recorded rather than papered over.
+
+
+def _return_ladder(body: list[ast.stmt], i: int):
+    """`(tests, values, default, covered)` for a constant-returning ladder.
+
+    Accepts both spellings the fixture uses: an `if/elif/.../else` chain, and
+    a run of consecutive `if c: return v` statements ending in a bare
+    `return d` (semantically the same thing, because every arm returns).
+    """
+    stmt = body[i]
+    if not isinstance(stmt, ast.If):
+        return None
+    tests: list[ast.expr] = []
+    values: list[ast.expr] = []
+    covered: list[ast.stmt] = [stmt]
+    node = stmt
+    while True:
+        if len(node.body) != 1 or not isinstance(node.body[0], ast.Return):
+            return None
+        if node.body[0].value is None:
+            return None
+        tests.append(node.test)
+        values.append(node.body[0].value)
+        if len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If):
+            node = node.orelse[0]
+            continue
+        break
+    if len(node.orelse) == 1 and isinstance(node.orelse[0], ast.Return):
+        default = node.orelse[0].value
+        return (tests, values, default, covered) if default is not None else None
+    if node.orelse:
+        return None
+    j = i + 1
+    while j < len(body) and isinstance(body[j], ast.If) and not body[j].orelse:
+        inner = body[j]
+        if len(inner.body) != 1 or not isinstance(inner.body[0], ast.Return):
+            break
+        if inner.body[0].value is None:
+            break
+        tests.append(inner.test)
+        values.append(inner.body[0].value)
+        covered.append(inner)
+        j += 1
+    if j < len(body) and isinstance(body[j], ast.Return) and body[j].value is not None:
+        covered.append(body[j])
+        return tests, values, body[j].value, covered
+    return None
+
+
+def _same_subject(tests: list[ast.expr], ops: tuple) -> ast.expr | None:
+    """The shared left operand when every test is `<subject> <op> <const>`."""
+    subject = None
+    for test in tests:
+        if not isinstance(test, ast.Compare) or len(test.ops) != 1:
+            return None
+        if not isinstance(test.ops[0], ops):
+            return None
+        if not isinstance(test.comparators[0], ast.Constant):
+            return None
+        if subject is None:
+            subject = test.left
+        elif ast.dump(subject) != ast.dump(test.left):
+            return None
+    # the subject is evaluated ONCE in the dict form and N times in the scan
+    # form; either way it must be side-effect free to be interchangeable
+    return subject if subject is not None and _pure(subject) else None
+
+
+def _all_constants(nodes: list[ast.expr]) -> bool:
+    return all(isinstance(n, ast.Constant) for n in nodes)
+
+
+def _rule_if_ladder_dict(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
+    """`if x == 'A': return 1` ... `return 9` -> `return {...}.get(x, 9)`.
+
+    Only for `==` against constants of one hashable, non-bool type, all
+    distinct, with constant results and a constant fallback.
+
+    Recorded caveat, deliberately not hidden: if `x` is *unhashable* at
+    runtime, `{...}.get(x, d)` raises `TypeError` where the `==` ladder
+    returned `d`. Nothing in the AST can rule that out, so this rule — like
+    `_python_drop_unreachable` — is correct-by-construction only up to that
+    case and relies on the frozen suite, which is exactly what the layer gate
+    exists for. A ladder whose subject can be an arbitrary object is the one
+    shape to watch in review.
+    """
+    ladder = _return_ladder(body, i)
+    if ladder is None:
+        return None
+    tests, values, default, covered = ladder
+    if len(tests) < 3:
+        return None  # two branches do not pay for a dict literal
+    subject = _same_subject(tests, (ast.Eq,))
+    if subject is None or not _all_constants(values + [default]):
+        return None
+    keys = [t.comparators[0].value for t in tests]
+    if any(isinstance(k, bool) for k in keys) or not all(
+        isinstance(k, (str, int)) for k in keys
+    ):
+        return None  # bools alias ints as dict keys; floats invite 1 == 1.0
+    if len({type(k) for k in keys}) != 1 or len(set(keys)) != len(keys):
+        return None
+    table = ast.Dict(
+        keys=[t.comparators[0] for t in tests],
+        values=list(values),
+    )
+    call = _call("", [])
+    call.func = ast.Attribute(value=table, attr="get", ctx=ast.Load())
+    call.args = [subject, default]
+    start, end = _span(covered)
+    return Rewrite(
+        "if-ladder-to-dict", start, end, [ast.Return(value=call)],
+        covered[0].col_offset, _end_col(covered, end),
+    )
+
+
+_ORDER_OPS = {ast.Gt: ast.Gt, ast.GtE: ast.GtE, ast.Lt: ast.Lt, ast.LtE: ast.LtE}
+
+
+def _rule_threshold_ladder(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
+    """`if q >= 100: return .15` ... `return 0` -> an ordered tuple scan.
+
+    `next((v for t, v in ((100, .15), ...) if q >= t), 0.0)` evaluates the
+    same comparisons, in the same order, lazily — so unlike the dict rewrite
+    this one is exactly equivalent, including for a subject that is not
+    hashable or not orderable (the same `TypeError` is raised at the same
+    comparison). A `next` scan is the honest shape for a threshold ladder;
+    forcing it into a dict would not be.
+    """
+    ladder = _return_ladder(body, i)
+    if ladder is None:
+        return None
+    tests, values, default, covered = ladder
+    if len(tests) < 3:
+        return None
+    op_type = type(tests[0].ops[0]) if isinstance(tests[0], ast.Compare) and tests[0].ops else None
+    if op_type not in _ORDER_OPS:
+        return None
+    subject = _same_subject(tests, (op_type,))
+    if subject is None or not _all_constants(values + [default]):
+        return None
+    if not all(isinstance(t.comparators[0].value, (int, float)) for t in tests):
+        return None
+    if any(isinstance(t.comparators[0].value, bool) for t in tests):
+        return None
+    taken = _names(ast.Module(body=list(covered), type_ignores=[]))
+    key, val = _fresh("_t", taken), _fresh("_v", taken)
+    pairs = ast.Tuple(
+        elts=[
+            ast.Tuple(elts=[t.comparators[0], v], ctx=ast.Load())
+            for t, v in zip(tests, values)
+        ],
+        ctx=ast.Load(),
+    )
+    guard = ast.Compare(
+        left=subject, ops=[op_type()], comparators=[ast.Name(id=key, ctx=ast.Load())]
+    )
+    gen = ast.GeneratorExp(
+        elt=ast.Name(id=val, ctx=ast.Load()),
+        generators=[
+            ast.comprehension(
+                target=ast.Tuple(
+                    elts=[ast.Name(id=key, ctx=ast.Store()), ast.Name(id=val, ctx=ast.Store())],
+                    ctx=ast.Store(),
+                ),
+                iter=pairs, ifs=[guard], is_async=0,
+            )
+        ],
+    )
+    start, end = _span(covered)
+    return Rewrite(
+        "threshold-ladder-to-scan", start, end,
+        [ast.Return(value=_call("next", [gen, default]))],
+        covered[0].col_offset, _end_col(covered, end),
+    )
+
+
+def _fresh(base: str, taken: set[str]) -> str:
+    name = base
+    n = 2
+    while name in taken:
+        name = f"{base}{n}"
+        n += 1
+    return name
+
+
+def _rule_max_loop(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
+    """A `None`-sentinel manual max loop -> `max(it, key=..., default=None)`.
+
+    Exactly this shape, and no other::
+
+        best = None
+        best_v = None
+        for k in it:
+            v = <pure expr>
+            if best_v is None or v > best_v:
+                best = k
+                best_v = v
+
+    The `None` sentinel is what makes the rewrite provable: `max(..., key=...)`
+    also returns the FIRST maximal element, and `default=None` reproduces the
+    empty-iterable case exactly.
+
+    `busiest_area` in the py fixture is deliberately NOT taken: its sentinel is
+    `best_units = -1`, and `max(counts, key=counts.get, default=None)` differs
+    from it whenever every value is <= -1. That is not provable from the AST,
+    so it is left for the LLM layer rather than forced.
+    """
+    if i + 2 >= len(body):
+        return None
+    first, second, loop = body[i], body[i + 1], body[i + 2]
+    if not (isinstance(first, ast.Assign) and len(first.targets) == 1 and _is_name(first.targets[0])):
+        return None
+    if not (isinstance(second, ast.Assign) and len(second.targets) == 1 and _is_name(second.targets[0])):
+        return None
+    if not (_is_const(first.value, None) and _is_const(second.value, None)):
+        return None
+    best, best_v = first.targets[0].id, second.targets[0].id
+    if best == best_v or not isinstance(loop, ast.For) or loop.orelse:
+        return None
+    if not _is_name(loop.target):
+        return None
+    item = loop.target.id
+    if len(loop.body) != 2:
+        return None
+    value_stmt, guard = loop.body
+    if not (isinstance(value_stmt, ast.Assign) and len(value_stmt.targets) == 1 and _is_name(value_stmt.targets[0])):
+        return None
+    temp = value_stmt.targets[0].id
+    # the iterable is evaluated once, at the same point, in both forms, so it
+    # need not be pure; the per-item value expression becomes the `key` lambda
+    # and is called once per element in the same order — kept pure anyway as
+    # the conservative line the rest of this library holds.
+    if not _pure(value_stmt.value):
+        return None
+    if not isinstance(guard, ast.If) or guard.orelse or len(guard.body) != 2:
+        return None
+    test = guard.test
+    if not (isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or) and len(test.values) == 2):
+        return None
+    sentinel, compare = test.values
+    if not (
+        isinstance(sentinel, ast.Compare) and _is_name(sentinel.left, best_v)
+        and len(sentinel.ops) == 1 and isinstance(sentinel.ops[0], ast.Is)
+        and _is_const(sentinel.comparators[0], None)
+    ):
+        return None
+    if not (
+        isinstance(compare, ast.Compare) and _is_name(compare.left, temp)
+        and len(compare.ops) == 1 and isinstance(compare.ops[0], ast.Gt)
+        and _is_name(compare.comparators[0], best_v)
+    ):
+        return None
+    assigns = {}
+    for stmt in guard.body:
+        if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and _is_name(stmt.targets[0])):
+            return None
+        assigns[stmt.targets[0].id] = stmt.value
+    if set(assigns) != {best, best_v}:
+        return None
+    if not _is_name(assigns[best], item) or not _is_name(assigns[best_v], temp):
+        return None
+    # `best_v` must be dead after the loop: the rewrite stops maintaining it
+    covered = [first, second, loop]
+    start, end = _span(covered)
+    if _leaks(scope_lines, {best_v, temp}, start, end):
+        return None
+    key = ast.Lambda(
+        args=ast.arguments(
+            posonlyargs=[], args=[ast.arg(arg=item)], kwonlyargs=[],
+            kw_defaults=[], defaults=[],
+        ),
+        body=value_stmt.value,
+    )
+    call = _call(
+        "max", [loop.iter],
+        [ast.keyword(arg="key", value=key), ast.keyword(arg="default", value=ast.Constant(value=None))],
+    )
+    return Rewrite(
+        "max-loop-to-max", start, end,
+        [ast.Assign(targets=[ast.Name(id=best, ctx=ast.Store())], value=call)],
+        first.col_offset, _end_col(covered, end),
+    )
+
+
 _RULE_FNS = {
     "bool-return": _rule_bool_return,
     "append-loop-to-comprehension": _rule_append_loop,
     "accumulate-to-sum": _rule_accumulate_sum,
     "sort-to-sorted": _rule_sort_to_sorted,
     "drop-bare-reraise": _rule_bare_reraise,
+    "if-ladder-to-dict": _rule_if_ladder_dict,
+    "threshold-ladder-to-scan": _rule_threshold_ladder,
+    "max-loop-to-max": _rule_max_loop,
 }
 
 _BLOCK_FIELDS = ("body", "orelse", "finalbody")

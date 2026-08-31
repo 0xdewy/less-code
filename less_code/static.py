@@ -481,6 +481,83 @@ def _rust_cargo_fix(root: Path) -> StaticResult:
     return result
 
 
+# Iteration 09: clippy's *default* set is a correctness set, the same way ruff's
+# is (iteration 08 found ruff's default removed 0 lines and its opt-in families
+# removed 10). `pedantic` and `complexity` are the two groups whose fixes
+# actually collapse lines — `needless_range_loop`, `manual_let_else`,
+# `redundant_closure_for_method_calls`, `explicit_iter_loop`. They are OFF by
+# default because they are opinionated, which is exactly why this is its own
+# gated step rather than part of `_rust_cargo_fix`.
+CLIPPY_PEDANTIC = [
+    "cargo", "clippy", "--fix", "--allow-dirty", "--allow-staged",
+    "--allow-no-vcs", "--quiet", "--",
+    "-W", "clippy::pedantic", "-W", "clippy::complexity",
+]
+
+
+def _rust_clippy_pedantic(root: Path, source_files: list[Path], runner=None) -> StaticResult:
+    """`cargo clippy --fix` at the pedantic/complexity tier, gated on its own.
+
+    `cargo clippy --fix` mutates the tree, unlike `ruff --fix` over stdin, so
+    this snapshots every source file, runs it, reads the result back and
+    **restores the tree** — the edits leave here as `changed_files`, inside the
+    pipeline's revert set, exactly like `_rust_remove_dead_pub`. When a runner
+    is available the tier is additionally tested on its own and dropped whole
+    if it goes red, so an opinionated fix cannot take the safe tier down with
+    it.
+    """
+    result = StaticResult()
+    if shutil.which("cargo") is None:
+        result.notes.append("cargo not found; skipping clippy pedantic tier")
+        return result
+    originals = {p: p.read_text(encoding="utf-8", errors="replace") for p in source_files}
+
+    def _restore() -> None:
+        for path, text in originals.items():
+            path.write_text(text, encoding="utf-8")
+
+    try:
+        proc = subprocess.run(CLIPPY_PEDANTIC, cwd=root, capture_output=True, text=True, timeout=1200)
+    except (OSError, subprocess.SubprocessError) as exc:
+        result.notes.append(f"clippy pedantic tier failed to run: {exc}")
+        _restore()
+        return result
+    result.notes.append(f"clippy pedantic --fix: exit {proc.returncode}")
+    changed = {
+        str(path): path.read_text(encoding="utf-8", errors="replace")
+        for path in source_files
+        if path.read_text(encoding="utf-8", errors="replace") != originals[path]
+    }
+    if not changed:
+        _restore()
+        return result
+    removed = sum(
+        measure(originals[Path(p)], "rust").code - measure(t, "rust").code
+        for p, t in changed.items()
+    )
+    if removed <= 0:
+        # measured on the rs fixture: the pedantic tier is a net **+19 lines**
+        # there, because a good part of what it fixes is adding `#[must_use]`
+        # and `# Panics` doc sections. Correct code, more lines — and this pass
+        # only ever accepts states where code-LOC goes down.
+        _restore()
+        result.notes.append(
+            f"clippy pedantic tier dropped: it ADDS {-removed} code lines"
+        )
+        return result
+    green = runner(root, "rust").ok if runner is not None else True
+    _restore()
+    if not green:
+        result.notes.append("clippy pedantic tier reverted by the gate")
+        return result
+    result.changed_files = changed
+    result.loc_removed = max(0, removed)
+    result.notes.append(
+        f"clippy pedantic tier kept: {len(changed)} file(s), {removed} code lines"
+    )
+    return result
+
+
 # ---- D1: ruff --fix tiers and unreachable code ------------------------------
 
 
@@ -733,9 +810,24 @@ def static_pass(
         return _js_static(root, source_files, all_project_files, runner)
     if lang == "rust":
         result = _rust_cargo_fix(root)
+        pedantic = _rust_clippy_pedantic(root, source_files, runner)
+        # compose: the dead-`pub` scan must read the pedantic text, or the two
+        # edit sets would be alternative versions of the same file and the
+        # later `update()` would silently drop one of them.
+        pre_pedantic = {
+            path_str: Path(path_str).read_text(encoding="utf-8", errors="replace")
+            for path_str in pedantic.changed_files
+        }
+        for path_str, text in pedantic.changed_files.items():
+            Path(path_str).write_text(text, encoding="utf-8")
         dead = _rust_remove_dead_pub(source_files, all_project_files)
+        # …and put the tree back: this pass hands its edits to the pipeline as
+        # `changed_files` rather than leaving them on disk behind the gate.
+        for path_str, text in pre_pedantic.items():
+            Path(path_str).write_text(text, encoding="utf-8")
+        result.changed_files.update(pedantic.changed_files)
         result.changed_files.update(dead.changed_files)
-        result.loc_removed += dead.loc_removed
-        result.notes += dead.notes
+        result.loc_removed += pedantic.loc_removed + dead.loc_removed
+        result.notes += pedantic.notes + dead.notes
         return result
     return StaticResult(notes=[f"no static pass for {lang}"])

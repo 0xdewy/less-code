@@ -1,6 +1,7 @@
 """C4 rule library: before/after per rule, the guards that must *not* fire,
 and proof that a misfiring rule is caught by the pipeline's test gate."""
 
+import pathlib
 import textwrap
 
 import pytest
@@ -566,6 +567,9 @@ def test_every_rule_name_is_reachable():
         "accumulate-to-sum",
         "sort-to-sorted",
         "drop-bare-reraise",
+        "if-ladder-to-dict",
+        "threshold-ladder-to-scan",
+        "max-loop-to-max",
     }
 
 
@@ -719,3 +723,147 @@ def _behaves_the_same(before: str, after: str, fn: str, args: list) -> bool:
     exec(before, ns_a)
     exec(after, ns_b)
     return ns_a[fn](*args) == ns_b[fn](*[a for a in args])
+
+
+# ---- iteration 09: if/elif ladders and the manual max loop -----------------
+
+
+LADDER_EQ = textwrap.dedent('''
+    def priority(status):
+        if status == "STOCKOUT":
+            return 1
+        elif status == "LOW":
+            return 2
+        elif status == "BACKORDER":
+            return 3
+        return 9
+''').lstrip()
+
+LADDER_THRESHOLD = textwrap.dedent('''
+    def tier(qty):
+        if qty >= 100:
+            return 0.15
+        elif qty >= 50:
+            return 0.1
+        elif qty >= 10:
+            return 0.05
+        return 0.0
+''').lstrip()
+
+
+def test_equality_ladder_becomes_a_dict_lookup():
+    out, applied = apply_rules(LADDER_EQ, {"if-ladder-to-dict"})
+    assert applied == ["if-ladder-to-dict"]
+    assert '.get(status, 9)' in out
+    for arg in ("STOCKOUT", "LOW", "BACKORDER", "WAT", None):
+        assert _behaves_the_same(LADDER_EQ, out, "priority", [arg])
+
+
+def test_consecutive_ifs_are_the_same_ladder():
+    src = LADDER_EQ.replace("elif", "if").replace("    if status", "    if status")
+    out, applied = apply_rules(src, {"if-ladder-to-dict"})
+    assert applied == ["if-ladder-to-dict"]
+    assert _behaves_the_same(src, out, "priority", ["LOW"])
+
+
+def test_a_two_branch_ladder_is_left_alone():
+    src = 'def f(x):\n    if x == "a":\n        return 1\n    return 0\n'
+    assert apply_rules(src, {"if-ladder-to-dict"})[1] == []
+
+
+def test_mixed_key_types_are_refused():
+    src = 'def f(x):\n    if x == "a":\n        return 1\n    elif x == 2:\n        return 2\n    elif x == "c":\n        return 3\n    return 0\n'
+    assert apply_rules(src, {"if-ladder-to-dict"})[1] == []
+
+
+def test_bool_keys_are_refused_because_they_alias_ints():
+    src = "def f(x):\n    if x == True:\n        return 1\n    elif x == 0:\n        return 2\n    elif x == 2:\n        return 3\n    return 9\n"
+    assert apply_rules(src, {"if-ladder-to-dict"})[1] == []
+
+
+def test_a_ladder_with_a_call_in_the_subject_is_refused():
+    src = 'def f(x):\n    if x.get() == "a":\n        return 1\n    elif x.get() == "b":\n        return 2\n    elif x.get() == "c":\n        return 3\n    return 0\n'
+    assert apply_rules(src, {"if-ladder-to-dict"})[1] == []
+
+
+def test_a_non_constant_arm_is_refused():
+    src = 'def f(x, y):\n    if x == "a":\n        return y\n    elif x == "b":\n        return 2\n    elif x == "c":\n        return 3\n    return 0\n'
+    assert apply_rules(src, {"if-ladder-to-dict"})[1] == []
+
+
+def test_threshold_ladder_becomes_an_ordered_scan_not_a_dict():
+    out, applied = apply_rules(LADDER_THRESHOLD, {"if-ladder-to-dict", "threshold-ladder-to-scan"})
+    assert applied == ["threshold-ladder-to-scan"]
+    assert "next(" in out and ".get(" not in out
+    for qty in (0, 9, 10, 49, 50, 99, 100, 1000):
+        assert _behaves_the_same(LADDER_THRESHOLD, out, "tier", [qty])
+
+
+def test_a_threshold_scan_keeps_the_comparison_so_a_type_error_still_raises():
+    out, _applied = apply_rules(LADDER_THRESHOLD, {"threshold-ladder-to-scan"})
+    ns: dict = {}
+    exec(out, ns)
+    with pytest.raises(TypeError):
+        ns["tier"]("not a number")
+
+
+def test_mixed_comparison_operators_are_refused():
+    src = "def f(x):\n    if x >= 100:\n        return 1\n    elif x <= 5:\n        return 2\n    elif x >= 10:\n        return 3\n    return 0\n"
+    assert apply_rules(src, {"threshold-ladder-to-scan"})[1] == []
+
+
+def test_the_scan_variable_does_not_capture_the_subject_name():
+    src = "def f(_t):\n    if _t >= 100:\n        return 1\n    elif _t >= 50:\n        return 2\n    elif _t >= 10:\n        return 3\n    return 0\n"
+    out, applied = apply_rules(src, {"threshold-ladder-to-scan"})
+    assert applied == ["threshold-ladder-to-scan"]
+    for qty in (0, 10, 50, 100):
+        assert _behaves_the_same(src, out, "f", [qty])
+
+
+MAX_LOOP = textwrap.dedent('''
+    def busiest(counts):
+        best = None
+        best_units = None
+        for area in sorted(counts):
+            units = counts[area]
+            if best_units is None or units > best_units:
+                best = area
+                best_units = units
+        return best
+''').lstrip()
+
+
+def test_a_none_sentinel_max_loop_becomes_max_with_a_key():
+    out, applied = apply_rules(MAX_LOOP, {"max-loop-to-max"})
+    assert applied == ["max-loop-to-max"]
+    assert "max(sorted(counts), key=lambda area: counts[area], default=None)" in out
+    for counts in ({}, {"a": 1}, {"b": 2, "a": 2}, {"a": 1, "b": 5, "c": 5}):
+        assert _behaves_the_same(MAX_LOOP, out, "busiest", [counts])
+
+
+def test_a_numeric_sentinel_max_loop_is_refused():
+    """`busiest_area` in the py fixture: `best_units = -1` is NOT equivalent to
+    `default=None` when every value is <= -1, and the AST cannot prove it is
+    not. Declined on purpose, left for the LLM layer."""
+    src = MAX_LOOP.replace("best_units = None", "best_units = -1").replace(
+        "best_units is None or units > best_units", "units > best_units"
+    )
+    assert apply_rules(src, {"max-loop-to-max"})[1] == []
+
+
+def test_a_max_loop_whose_sentinel_is_read_afterwards_is_refused():
+    src = MAX_LOOP.replace("    return best", "    return best, best_units")
+    assert apply_rules(src, {"max-loop-to-max"})[1] == []
+
+
+def test_a_max_loop_with_an_impure_value_is_refused():
+    src = MAX_LOOP.replace("units = counts[area]", "units = compute(area)")
+    assert apply_rules(src, {"max-loop-to-max"})[1] == []
+
+
+def test_the_new_rules_fire_on_the_py_fixture():
+    """The two ladder rules exist because FIXTURE.md documents these shapes."""
+    source = pathlib.Path("fixtures/py/inventory.py").read_text()
+    _out, applied = apply_rules(source)
+    assert "if-ladder-to-dict" in applied
+    assert "threshold-ladder-to-scan" in applied
