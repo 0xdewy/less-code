@@ -57,16 +57,37 @@ class BenchRow:
     # not diagnosable after the fact: the scratch tree is deleted and the
     # attempt records live only in ReduceStats.
     attempt_outcomes: dict[str, int] = field(default_factory=dict)
+    # `api_ok` is measured against the POST-static surface: L1 removes
+    # provably-dead public items by design. Without these two fields a green
+    # `api_ok` reads as "identical API", which for the rs fixture is false by
+    # three `pub fn`s (C7 review D4).
+    api_baseline: str = "post-static"
+    static_removed_symbols: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
 def git_commit(repo: Path) -> str:
+    """Provenance stamp for a bench row.
+
+    A row records the code that produced it, so a run made from a tree with
+    uncommitted changes gets a `-dirty` suffix (D5): the bare sha would claim a
+    reproducibility that the recorded commit cannot deliver.
+    """
     try:
         proc = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"], cwd=repo,
             capture_output=True, text=True, timeout=30,
         )
-        return proc.stdout.strip() or "unknown"
+        sha = proc.stdout.strip()
+        if not sha:
+            return "unknown"
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=repo,
+            capture_output=True, text=True, timeout=30,
+        )
+        if status.returncode == 0 and status.stdout.strip():
+            return f"{sha}-dirty"
+        return sha
     except (OSError, subprocess.SubprocessError):
         return "unknown"
 
@@ -83,8 +104,15 @@ def bench_fixture(
     num_ctx: int = 16384,
     llm_timeout: int = 600,
     strategy: str = "mixed",
+    keep_tree: Path | None = None,
 ) -> BenchRow:
-    """Reduce one fixture in a scratch copy and score it."""
+    """Reduce one fixture in a scratch copy and score it.
+
+    `keep_tree` copies the reduced scratch tree to `keep_tree/<fixture>` before
+    it is deleted. Without it a bench row is the tool's own self-report about a
+    tree nobody can look at — which is exactly why C4 (js) had no artifact and
+    was the one criterion the C7 reviewer could establish nothing about (D2).
+    """
     from .loc import formatter_available
 
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -141,7 +169,17 @@ def bench_fixture(
             row.hidden_ok = hidden.ok
             if not hidden.ok:
                 row.notes.append(f"hidden: {hidden.output_tail[-300:]}")
+        row.api_baseline = stats.api_baseline
+        row.static_removed_symbols = stats.static_removed_symbols
         row.notes += stats.static_notes
+        if keep_tree is not None:
+            dest = Path(keep_tree) / fixture.name
+            if dest.exists():
+                shutil.rmtree(dest)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(scratch, dest, ignore=COPY_IGNORE)
+            row.notes.append(f"reduced tree preserved at {dest}")
+            print(f"  [bench] {fixture.name} tree kept at {dest}", flush=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return row

@@ -315,3 +315,156 @@ class TestRawMetricIsLoud:
                              timestamp="t", metric="canonical")
         table = markdown_table([raw, canonical])
         assert "**RAW**" in table and "canonical" in table
+
+
+class TestDirtyTreeProvenance:
+    """C7 review D5: three py bench rows carry `commit: 90073b1`, a commit whose
+    tree has no `less_code/outline.py` — the very pass credited with 107 of the
+    reduced lines. They were run from a dirty tree and stamped with the last
+    commit, so the recorded provenance cannot reproduce the row."""
+
+    @staticmethod
+    def _repo(tmp_path):
+        import subprocess
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        run = lambda *a: subprocess.run(a, cwd=repo, capture_output=True, check=True)
+        run("git", "init", "-q")
+        run("git", "config", "user.email", "t@example.com")
+        run("git", "config", "user.name", "t")
+        (repo / "a.txt").write_text("one\n")
+        run("git", "add", "-A")
+        run("git", "commit", "-qm", "init")
+        return repo, run
+
+    def test_clean_tree_stamps_the_bare_sha(self, tmp_path):
+        from less_code.bench import git_commit
+
+        repo, _ = self._repo(tmp_path)
+        assert not git_commit(repo).endswith("-dirty")
+        assert git_commit(repo) != "unknown"
+
+    def test_modified_file_stamps_dirty(self, tmp_path):
+        from less_code.bench import git_commit
+
+        repo, _ = self._repo(tmp_path)
+        clean = git_commit(repo)
+        (repo / "a.txt").write_text("two\n")
+        assert git_commit(repo) == f"{clean}-dirty"
+
+    def test_untracked_file_stamps_dirty(self, tmp_path):
+        from less_code.bench import git_commit
+
+        repo, _ = self._repo(tmp_path)
+        (repo / "new.py").write_text("x = 1\n")
+        assert git_commit(repo).endswith("-dirty")
+
+    def test_non_repo_is_unknown_not_dirty(self, tmp_path):
+        from less_code.bench import git_commit
+
+        assert git_commit(tmp_path) == "unknown"
+
+
+class TestReduceCopyTo:
+    """C7 review D10: `lc reduce` rewrote whatever tree it was pointed at, which
+    is how the pristine py fixture was overwritten (D1). `--copy-to` reduces a
+    copy; in-place use warns when the target has uncommitted changes."""
+
+    def test_copy_to_leaves_the_original_untouched(self, tmp_path):
+        from less_code.cli import main
+
+        src = _project(tmp_path, hidden=False)
+        before = (src / "mod.py").read_text()
+        dest = tmp_path / "out"
+        rc = main([
+            "reduce", str(src), "--static-only", "--copy-to", str(dest),
+            "--out", str(tmp_path / "r.json"),
+        ])
+        assert rc == 0
+        assert (src / "mod.py").read_text() == before, "original must not be touched"
+        assert (dest / "mod.py").exists()
+        assert (dest / "mod.py").read_text() != before, "the copy is what got reduced"
+
+    def test_copy_to_refuses_a_non_empty_destination(self, tmp_path):
+        from less_code.cli import main
+
+        src = _project(tmp_path, hidden=False)
+        dest = tmp_path / "out"
+        dest.mkdir()
+        (dest / "keepme.txt").write_text("precious\n")
+        with pytest.raises(SystemExit):
+            main(["reduce", str(src), "--static-only", "--copy-to", str(dest),
+                  "--out", str(tmp_path / "r.json")])
+        assert (dest / "keepme.txt").read_text() == "precious\n"
+
+    def test_in_place_on_a_dirty_git_tree_warns(self, tmp_path, capsys):
+        import subprocess
+
+        from less_code.cli import main
+
+        src = _project(tmp_path, hidden=False)
+        run = lambda *a: subprocess.run(a, cwd=src, capture_output=True, check=True)
+        run("git", "init", "-q")
+        run("git", "config", "user.email", "t@example.com")
+        run("git", "config", "user.name", "t")
+        # committed nothing: every file is untracked, i.e. unrecoverable if lost
+        main(["reduce", str(src), "--static-only", "--out", str(tmp_path / "r.json")])
+        err = capsys.readouterr().err
+        assert "IN PLACE" in err and "--copy-to" in err
+
+
+class TestApiBaselineIsReported:
+    """C7 review D4: `api_ok: true` means "preserved across the LLM layer",
+    measured against the POST-static surface. The static layer deletes
+    provably-dead public items by design, so the report must name the baseline
+    and list what it dropped rather than implying an identical API."""
+
+    def test_report_names_the_baseline_and_lists_static_removals(self, tmp_path):
+        from less_code.pipeline import reduce_project
+
+        root = _project(tmp_path, hidden=False)
+        stats = reduce_project(root, backend=None)
+        payload = stats.to_json()
+        assert payload["api_baseline"] == "post-static"
+        assert payload["api_ok"] is True
+        # `dead_never_used` is public, referenced nowhere, and removed by L1
+        assert "dead_never_used" in " ".join(payload["static_removed_symbols"])
+        assert "dead_never_used" not in (root / "mod.py").read_text()
+
+    def test_static_removal_note_lists_the_symbol(self, tmp_path):
+        """The note used to render `removed []` for every run: `defs - set(r) & d`
+        parses as `defs - (set(r) & defs)`, which is always empty."""
+        from less_code.pipeline import reduce_project
+
+        root = _project(tmp_path, hidden=False)
+        stats = reduce_project(root, backend=None)
+        assert any("dead_never_used" in n for n in stats.static_notes)
+
+
+class TestBenchKeepTree:
+    """C7 review D2's other half: `lc bench` reduced in a scratch copy and then
+    deleted it, so a row was the tool's own self-report about a tree nobody
+    could look at. That is why C4 (js) had no artifact."""
+
+    def test_keep_tree_preserves_the_reduced_copy(self, tmp_path):
+        fixtures = tmp_path / "fixtures"
+        fixtures.mkdir()
+        root = _project(fixtures)
+        kept = tmp_path / "kept"
+        rows, _ = run_bench(fixtures, tmp_path / "results", config="static-only",
+                            keep_tree=kept)
+        assert rows and rows[0].tests_ok
+        preserved = kept / "proj" / "mod.py"
+        assert preserved.exists()
+        assert "dead_never_used" not in preserved.read_text()
+        assert "dead_never_used" in (root / "mod.py").read_text(), "source untouched"
+        assert any("preserved at" in n for n in rows[0].notes)
+
+    def test_without_the_flag_nothing_is_kept(self, tmp_path):
+        fixtures = tmp_path / "fixtures"
+        fixtures.mkdir()
+        _project(fixtures)
+        rows, _ = run_bench(fixtures, tmp_path / "results", config="static-only")
+        assert rows
+        assert not (tmp_path / "kept").exists()

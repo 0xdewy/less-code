@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -53,7 +55,42 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return 0 if result.score >= args.min_score else 1
 
 
+def _resolve_reduce_target(path: Path, copy_to: str | None) -> Path:
+    """Decide which tree `lc reduce` is allowed to rewrite.
+
+    `reduce` edits its target in place — that is how the pristine py fixture was
+    once overwritten (review defect D1/D10). `--copy-to DIR` copies the project
+    first and reduces the COPY, leaving the original untouched; reducing in
+    place inside a git repo with uncommitted changes for the target now warns on
+    stderr, because a revert is then not a `git checkout` away.
+    """
+    if copy_to:
+        dest = Path(copy_to)
+        if dest.exists() and any(dest.iterdir()):
+            raise SystemExit(f"--copy-to {dest} exists and is not empty")
+        shutil.copytree(path, dest, dirs_exist_ok=True)
+        print(f"reducing a copy at {dest} (original {path} untouched)", file=sys.stderr)
+        return dest
+    try:
+        proc = subprocess.run(
+            ["git", "status", "--porcelain", "--", str(path)],
+            cwd=path if path.is_dir() else path.parent,
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return path
+    if proc.returncode == 0 and proc.stdout.strip():
+        print(
+            f"WARNING: reducing {path} IN PLACE and it has uncommitted changes — "
+            "the original cannot be restored with `git checkout`. Use --copy-to DIR "
+            "to reduce a copy instead.",
+            file=sys.stderr,
+        )
+    return path
+
+
 def cmd_reduce(args: argparse.Namespace) -> int:
+    target = _resolve_reduce_target(Path(args.path), args.copy_to)
     backend = None
     if not args.static_only:
         from .backends import BudgetBackend, make_backend
@@ -62,7 +99,7 @@ def cmd_reduce(args: argparse.Namespace) -> int:
         if args.max_llm_calls:
             backend = BudgetBackend(backend, args.max_llm_calls)
     stats = reduce_project(
-        Path(args.path), lang=args.lang, backend=backend,
+        target, lang=args.lang, backend=backend,
         attempts_per_file=args.attempts, max_files=args.max_files,
         formatter=not args.no_format, test_timeout=args.timeout,
         strategy=args.strategy,
@@ -96,6 +133,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
         num_ctx=args.num_ctx,
         llm_timeout=args.llm_timeout,
         strategy=args.strategy,
+        keep_tree=Path(args.keep_tree) if args.keep_tree else None,
     )
     table = markdown_table(rows)
     print(table)
@@ -121,11 +159,17 @@ def cmd_report(args: argparse.Namespace) -> int:
         f"(static {r['loc_after_static']})",
         f"- reduction: static **{r['static_pct']}%** + LLM **{r['llm_extra_pct']}%**"
         f" = hybrid **{r['hybrid_pct']}%**",
-        f"- tests green: {r['tests_ok']}  |  API preserved: {r['api_ok']}",
+        f"- tests green: {r['tests_ok']}  |  API preserved: {r['api_ok']} "
+        f"(baseline: {r.get('api_baseline', 'post-static')})",
         f"- LOC counted after canonical formatting: {r.get('formatted_loc', False)}",
         f"- attempts: {len(r['attempts'])} "
         f"(accepted: {sum(1 for a in r['attempts'] if a['outcome'] == 'accepted')})",
     ]
+    if r.get("static_removed_symbols"):
+        lines.append(
+            "- public symbols removed by the static layer as provably dead: "
+            + ", ".join(f"`{n}`" for n in r["static_removed_symbols"])
+        )
     if "audit" in data:
         a = data["audit"]
         lines.append(f"- mutation score: {a['score'] * 100:.1f}% "
@@ -173,6 +217,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--strategy", default="mixed", choices=["mixed", "whole-file"],
                    help="mixed = dedup + per-symbol + sweep; whole-file = repeated "
                         "whole-file rewrites with hunk salvage (the recipe that passed js)")
+    p.add_argument("--copy-to", default=None, metavar="DIR",
+                   help="copy the project to DIR and reduce the COPY, leaving the "
+                        "original untouched. Without it `reduce` rewrites the tree "
+                        "it is pointed at, and warns when that tree has uncommitted "
+                        "changes")
     p.add_argument("--out", default="reduce-report.json")
     p.set_defaults(func=cmd_reduce)
 
@@ -192,6 +241,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--fixture", default=None,
                    help="bench only this fixture directory (e.g. `js`)")
     p.add_argument("--out-dir", default="bench/results")
+    p.add_argument("--keep-tree", default=None, metavar="DIR",
+                   help="copy each reduced scratch tree to DIR/<fixture> instead of "
+                        "deleting it, so a row can be checked against the code that "
+                        "produced it")
     p.add_argument("--markdown", default=None, help="also write the table here")
     p.set_defaults(func=cmd_bench)
 

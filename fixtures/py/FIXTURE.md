@@ -23,28 +23,46 @@ module with same-size mutants faster than the clock ticks, so stale
 bytecode otherwise gets tested instead of the mutant (produced false
 survivors during fixture bring-up).
 
-## Status 2026-08-30
+## Status 2026-08-31 — pristine baseline restored
 
-The "Measured" table and the line references below describe the fixture **as
-built**. Since then the tool has actually run against it, and two things moved:
+`inventory.py` on disk is the ORIGINAL fixture again, byte-identical to
+`6ef9a1a`. Between `8177df1` and this commit it was not: an in-place `lc reduce`
+run had been committed over it, deleting the whole legacy section (five public
+symbols) and dropping it to 500 canonical code-LOC. The C7 review flagged that
+as defect D1 — a tool-modified baseline is not a baseline — and it is now
+reverted. `lc reduce` grew a `--copy-to DIR` flag and an in-place warning
+(review D10) so the same accident cannot recur.
 
-- The three dead legacy symbols (`legacy_ledger_rows`, `old_flag_code`,
-  `LegacyReorderCalculator`, plus their `if/elif` flag ladders) were removed by
-  the python static pass and that removal was committed in `8177df1`. The
-  fixture is therefore **500 code-LOC**, not 525, and the dead-code bullets
-  below are history, not a to-do list. The surviving-mutant note in the
-  Measured table refers to those now-deleted lines.
-- The deterministic rule library (`less_code/rules.py`, added 2026-08-30)
-  now also takes `Product.is_low` (`if c: return True/return False`),
-  `Inventory.sorted_skus` (append-loop + `.sort()`), both `total_units`
-  accumulation loops and the pointless `try/except InventoryError: raise`
-  in `receive` — 13 code-LOC, 2.6%. Those bullets below are done too.
+Baseline as it stands, all re-measured on the restored file:
 
-Everything else in the list is still present and still unclaimed: the pasted
-SKU/qty validators, the `if/elif` ladders, `low_stock` / `tally_by_flag` /
-`busiest_area`, `total_value` and `valuate` (whose loop bodies read a temp
+| check | command | result |
+|---|---|---|
+| tests | `uv run python -m pytest fixtures/py -q` | 97 passed |
+| hidden | `uv run python -m pytest fixtures/py/tests_hidden -q` | 32 passed |
+| LOC | `uv run lc analyze fixtures/py` | **537 canonical code-LOC** (525 raw) |
+| audit | `uv run lc audit fixtures/py --max-mutants 40` | **score 0.925** (37/40) |
+
+The "Measured" table above quotes 525 because it predates canonical-formatted
+counting (B1); 525 raw and 537 canonical are the same file under two metrics,
+and every C3 number is canonical. The three surviving mutants are the ones the
+note describes, inside the dead legacy section.
+
+C3 evidence off this baseline: `lc reduce <copy> --static-only` gives
+537 -> 357 = **33.5 %** with both suites green
+(`docs/evidence/py-static-357/`). The legacy section is again removed by the
+static pass at reduce time — where it belongs — rather than pre-removed in the
+fixture; the report now lists those five symbols under
+`static_removed_symbols`.
+
+The deterministic rule library (`less_code/rules.py`) additionally takes
+`Product.is_low`, `Inventory.sorted_skus`, both `total_units` accumulation
+loops and the pointless `try/except InventoryError: raise` in `receive`, and
+guard-block outlining (`less_code/outline.py`) takes 107 code lines across four
+helpers. Everything else in the list below is still present and unclaimed: the
+pasted SKU/qty validators the LLM layer targets, `low_stock` / `tally_by_flag`
+/ `busiest_area`, `total_value` and `valuate` (whose loop bodies read a temp
 twice, so the sum rule deliberately refuses them), and the unreachable
-`from_row` guard. Those are the LLM layer's target.
+`from_row` guard.
 
 ## Embedded reduction opportunities
 

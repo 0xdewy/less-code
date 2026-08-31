@@ -89,7 +89,8 @@ def _python_remove_dead(files: list[Path], all_project_files: list[Path]) -> Sta
             if after < before:
                 result.changed_files[str(path)] = new_source
                 result.loc_removed += before - after
-                result.notes.append(f"{path.name}: removed {sorted(defs - set(referenced) & defs)}")
+                dropped = sorted(n for n in defs if not referenced[n])
+                result.notes.append(f"{path.name}: removed {dropped}")
     return result
 
 

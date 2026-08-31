@@ -120,4 +120,72 @@ HumanEvalPack, EvalPlus, QuixBugs, Project CodeNet, code_contests,
 exercism/python, mutants.rs, mutmut, stryker, Rosetta Code, GitHub code-search
 docs.
 
-(53 distinct URLs total across the three reports.)
+The bare names above are expanded to followable URLs below, so this synthesis
+is self-contained (C7 review D8: this document previously carried zero URLs).
+### Numbered URL list
+
+
+**`docs/research/static.md` — 18 sources**
+
+1. <https://knip.dev/>
+2. <https://github.com/bnjbvr/cargo-machete>
+3. <https://github.com/est31/cargo-udeps>
+4. <https://doc.rust-lang.org/rustc/lints/listing/warn-by-default.html>
+5. <https://doc.rust-lang.org/rustc/lints/listing/allowed-by-default.html>
+6. <https://doc.rust-lang.org/clippy/>
+7. <https://eslint.org/docs/latest/use/command-line-interface>
+8. <https://biomejs.dev/formatter/>
+9. <https://dprint.dev/>
+10. <https://docs.astral.sh/ruff/linter/>
+11. <https://github.com/jendrikseipp/vulture>
+12. <https://github.com/PyCQA/pyflakes>
+13. <https://github.com/kucherenko/jscpd>
+14. <https://docs.pmd-code.org/latest/pmd_userdocs_cpd.html>
+15. <https://mutmut.readthedocs.io/en/latest/>
+16. <https://stryker-mutator.io/docs/>
+17. <https://stryker-mutator.io/docs/stryker-js/introduction/>
+18. <https://github.com/sourcefrog/cargo-mutants>
+
+**`docs/research/rl.md` — 20 sources**
+
+1. <https://arxiv.org/abs/2501.12948>
+2. <https://arxiv.org/abs/2402.03300>
+3. <https://huggingface.co/docs/trl/grpo_trainer>
+4. <https://arxiv.org/abs/2409.12122>
+5. <https://qwenlm.github.io/blog/qwen3/>
+6. <https://arxiv.org/abs/2207.01780>
+7. <https://arxiv.org/abs/2410.02089>
+8. <https://arxiv.org/abs/2503.15478>
+9. <https://arxiv.org/abs/2309.03409>
+10. <https://arxiv.org/abs/2305.14314>
+11. <https://arxiv.org/abs/2412.20367>
+12. <https://arxiv.org/abs/2608.23611>
+13. <https://arxiv.org/abs/2608.00924>
+14. <https://arxiv.org/abs/2506.11076>
+15. <https://arxiv.org/abs/2608.04611>
+16. <https://arxiv.org/abs/2606.01326>
+17. <https://arxiv.org/abs/2608.07147>
+18. <https://arxiv.org/abs/2608.24135>
+19. <https://arxiv.org/abs/2503.23383>
+20. <http://export.arxiv.org/api/query?search_query=all:GRPO+AND+all:%22lines+of+code%22>
+
+**`docs/research/data.md` — 15 sources**
+
+1. <https://huggingface.co/datasets/bigcode/the-stack-v2>
+2. <https://bigcode-bench.github.io>
+3. <https://huggingface.co/datasets/bigcode/bigcodebench>
+4. <https://huggingface.co/datasets/bigcode/commitpackft>
+5. <https://huggingface.co/datasets/bigcode/humanevalpack>
+6. <https://evalplus.github.io/leaderboard.html>
+7. <https://github.com/jkoppel/QuixBugs>
+8. <https://github.com/IBM/Project_CodeNet>
+9. <https://github.com/google-deepmind/code_contests>
+10. <https://github.com/exercism/python>
+11. <https://mutants.rs/>
+12. <https://mutmut.readthedocs.io/en/latest/>
+13. <https://stryker-mutator.io/>
+14. <https://rosettacode.org/wiki/Rosetta_Code>
+15. <https://docs.github.com/en/search-github/searching-on-github/searching-code>
+
+Total: 53 entries, 52 distinct URLs (1 cited in two reports).
+

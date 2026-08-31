@@ -1,5 +1,17 @@
 # Iteration 10 — py/rs settlement runs (canonical metric)
 
+> **Superseded baseline (2026-08-31).** Every py number below starts from
+> **500**, which was `fixtures/py/inventory.py` *after* an in-place `lc reduce`
+> run had been committed over it in `8177df1`. The C7 review caught that
+> (defect D1); the pristine 537-LOC fixture is restored and the static pass
+> re-derived on a clean copy gives **537 -> 357 = 33.52 %**
+> (`bench/results/20260831T073226Z.jsonl`, tree at
+> `docs/evidence/py-static-357/`). The 357 endpoint, the four outlined helpers
+> and the 107-line attribution below are all unchanged — only the denominator
+> moved, and it moved in the conservative direction. rs and js numbers below
+> are unaffected.
+
+
 Machine: RTX 2060 Max-Q, 6 GB. Backend: ollama. All runs sequential,
 `ollama stop qwen2.5-coder:7b` between models. Canonical metric = the
 formatter-normalized code-LOC the bench reports; no gate was relaxed.

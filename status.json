@@ -9,46 +9,42 @@
     {
       "id": "research",
       "state": "passed",
-      "evidence": "docs/research.md sections a-d + docs/research/{static,rl,data}.md, 53 cited URLs total"
+      "evidence": "docs/research.md sections a-d + docs/research/{static,rl,data}.md; the synthesis now ends with the full numbered URL list (53 entries, 52 distinct URLs, 1 cited in two sub-reports) so it is self-contained (C7 D8)"
     },
     {
       "id": "tool",
       "state": "passed",
-      "evidence": "uv run pytest -q -> 21 passed exit 0; lc --help exit 0; verify-gate proven via broken-backend rejection test"
+      "evidence": "uv run pytest -q -> 259 passed exit 0; uv run lc --help exit 0; verify-gate proven via broken-backend rejection test (test_pipeline_rejects_behavior_breaking, test_pipeline_rejects_not_smaller, test_a_scripted_misfire_is_reverted_by_the_gate, test_a_merge_that_breaks_a_test_is_reverted_whole). C7 D10 fixed: lc reduce --copy-to DIR reduces a copy, in-place use warns on a dirty git tree; lc bench --keep-tree DIR preserves the reduced tree. C7 D5 fixed: bench rows from a dirty tree stamp <sha>-dirty."
     },
     {
       "id": "demo-py",
       "state": "passed",
-      "evidence": "bench/results/20260831T030620Z.jsonl: hybrid qwen2.5-coder:7b whole-file+salvage 500->357 (static 28.6%) ->348 canonical code-LOC (30.4%), tests/api/hidden all green, 4 LLM calls, 2019s. Static alone is 28.6% (bench/results/20260831T023655Z.jsonl): 107 of the 143 lines come from deterministic guard-block outlining (less_code/outline.py, 4 helpers over 30 sites). Table docs/evidence/reduce-py-rs-iteration10.md, attempt log docs/evidence/reduce-py-7b-wholefile-it10.log"
+      "evidence": "PRISTINE baseline restored (C7 D1): fixtures/py/inventory.py is byte-identical to 6ef9a1a again, 537 canonical code-LOC, 97 frozen + 32 hidden tests green, mutation 0.925 (lc audit --max-mutants 40). Static-only on a scratch copy: 537 -> 357 = 33.52%, tests/api/hidden green (bench/results/20260831T073226Z.jsonl; tree + report at docs/evidence/py-static-357/). 180 lines: 107 from deterministic guard-block outlining (less_code/outline.py, 4 helpers over 30 sites), 37 from dead-code removal of the legacy section, the rest from the rule library and ruff tiers. Static-vs-hybrid split in docs/evidence/reduce-py-rs-iteration10.md (whose 500-baseline numbers are marked superseded); the earlier hybrid run added 9 more lines (357 -> 348) on the tainted baseline."
     },
     {
       "id": "demo-js",
       "state": "passed",
-      "evidence": "bench/results/20260831T002030Z.jsonl: hybrid qwen2.5-coder:7b 601->445 canonical code-LOC (25.96%), tests/api/hidden all green, 2 LLM calls; table docs/evidence/reduce-js-7b.md, attempt log docs/evidence/reduce-js-7b.log"
+      "evidence": "REPRODUCED WITH A PRESERVED ARTIFACT (C7 D2): one bounded 7B whole-file round on a persistent tree, 601 -> 553 static -> 426 canonical code-LOC = 29.12%, 36 frozen + 16 hidden tests green, 3 LLM calls, ~20 min GPU. Tree + report + log + recipe at docs/evidence/js-reduced-426/ (REPRODUCE.md). All three whole-file proposals were rejected (api-changed / syntax-error / tests-failed) and all 127 L2 lines came from hunk salvage. Mutation score 0.85 (>= 0.70). Supersedes the earlier unpreserved 25.96% run (bench/results/20260831T002030Z.jsonl)."
     },
     {
       "id": "demo-rs",
       "state": "passed",
-      "evidence": "iterative 7B whole-file+salvage on persistent tree: 392->292 canonical code-LOC (25.51%), frozen+hidden suites green, api preserved; reduced tree docs/evidence/rs-reduced-292/, round reports round1-4.json; decisive fix: syntax-error salvage (17a5b35)"
+      "evidence": "iterative 7B whole-file+salvage on a persistent tree: 392 -> 292 canonical code-LOC = 25.51%, 39 frozen + 12 hidden tests green. Tree + round1-4 reports + the exact 4-command recipe at docs/evidence/rs-reduced-292/ (REPRODUCE.md, written for C7 D3). Decisive fix: syntax-error salvage (17a5b35) — rounds 3 and 4 differ only by that commit, 0 vs 19 lines. Public API preserved relative to the POST-STATIC surface (C7 D4): the static pass removed 3 provably-dead pub fns by design (is_blank, indent_lines, reverse_words), now listed in every report as static_removed_symbols with api_baseline: post-static. Mutation score 1.0. LLM rounds are non-deterministic; the artifact + suites are the verifiable evidence, the commands are the recipe."
     },
     {
       "id": "grpo",
       "state": "passed",
-      "evidence": "grpo/build_dataset.py -> 66 samples exit 0; train.py --validate-config exit 0; reward gate unit-tested (30 pytest passed)"
+      "evidence": "python grpo/build_dataset.py -> 69 samples exit 0, byte-reproducible, each stamped with its fixture's mutation score (py 0.95, js 0.85, rs 1.0) measured by less_code.audit on a throwaway copy. python grpo/train.py --validate-config exit 0 (also asserts both reward callables exist); --reward {loc,mutation-weighted} selects the reward. BOTH C6 reward variants now implemented (C7 D9): reward_fn = gate*(1+0.5*loc_delta)-penalties, reward_fn_mutation_weighted = gate*(1+0.5*loc_delta*mutation_score); the gate is never scaled, so weighting cannot buy a behavior break. 21 reward/dataset tests. The reward's parse gate now covers js/rust too (node --check / cargo check), not just python."
     },
     {
       "id": "review",
       "state": "pending",
-      "evidence": null
+      "evidence": "First review (docs/evidence/C7-REVIEW.md) returned FAIL with 11 defects D1-D11. All 11 addressed in iterations/12-rs-settlement-and-c7-fixes.md: D1 fixture restored + C3 re-baselined, D2 js reproduced with a preserved tree, D3 rs recipe written down, D4 api_baseline + static_removed_symbols recorded and wording corrected, D5 dirty-tree commit stamps, D6/D7 README + status.json reconciled, D8 URLs carried into research.md, D9 mutation-weighted reward implemented, D10 --copy-to / --keep-tree, D11 .pyc untracked. Awaiting re-review."
     }
   ],
-  "current_iteration": 10,
-  "attempts": 10,
-  "last_evidence": "C5 demo-rs passed at 25.51% (392->292); all three demos now >= 25%",
-  "blockers": [
-    "rs is 42 code lines short of the bar and 7/8 whole-file proposals at 7B are cargo-check syntax errors even with the compiler's diagnostics in the prompt",
-    "strategies do not compose: mixed found 2 merges (372->356), whole-file found 1 rewrite (372->336), and nothing runs the second on the output of the first",
-    "guard outlining is python-only; the rust and js fixtures have the shape but the proof obligations are per-language"
-  ],
-  "next_action": "C5: try diff-mode (search/replace block) proposals for rust so the model only emits changed lines, and/or chain --strategy mixed then whole-file; then the review criterion (if-ladder-to-dict unhashable caveat, outlined helper naming, fixtures/rs/target still tracked)"
+  "current_iteration": 12,
+  "attempts": 12,
+  "last_evidence": "C7 remediation complete: all three demos now have preserved, independently checkable artifacts (py 33.52% / js 29.12% / rs 25.51%) off pristine baselines; 259 tests pass",
+  "blockers": [],
+  "next_action": "C7 re-review: hand an independent reviewer the task + CRITERIA.md + status.json + README.md + the diff + docs/evidence/ (incl. C7-REVIEW.md and the three REPRODUCE.md files) and confirm no unresolved concrete defect remains. Keep state=in_progress until it returns."
 }

@@ -5,6 +5,17 @@ JavaScript / Python, with a hard verify gate: **a reduction is accepted only
 if the frozen test suite stays green, the public API is preserved, and
 code-LOC shrinks.** Everything else reverts.
 
+"Public API preserved" means preserved **relative to the post-static surface**:
+the L1 static layer removes provably-dead public items by design (nothing in the
+project, tests included, references them), and every layer above it is then held
+to that surface exactly. So a reduced tree's API can be *smaller* than the
+original's by exactly the dead items L1 dropped — the report names the baseline
+(`api_baseline: "post-static"`) and lists them (`static_removed_symbols`), and
+`REPRODUCE.md` in each evidence directory repeats the list. Read those two
+fields before treating a reduced tree as a drop-in replacement: on the rust
+fixture L1 dropped `is_blank`, `indent_lines` and `reverse_words`, and on the
+python one the five symbols of the legacy section.
+
 ## Architecture
 
 ```
@@ -93,7 +104,10 @@ L2  LLM semantic reduction, verify-gated
         symbol boundaries and delta-debugged, so the correct 2 of 3 functions
         are accepted instead of the whole candidate being thrown away
 L3  GRPO-trained reducer (Qwen2.5-Coder QLoRA, 8GB-friendly)
-      reward = frozen-test gate x LOC delta - anti-hack penalties
+      reward = frozen-test gate x LOC delta - anti-hack penalties, plus a
+      mutation-weighted variant that scales the LOC term by the sample suite's
+      mutant kill rate (a saving is only as trustworthy as the oracle that
+      certified it); the gate itself is never scaled
 ```
 
 **Metric**: code-LOC is counted *after canonical formatting* (`ruff format` /
@@ -106,7 +120,8 @@ the prompt spec and from the frozen verify gate. Only `lc bench` runs it, as
 an independent check that a reduction did not change behaviour the visible
 suite failed to pin.
 
-Research basis: `docs/research.md` (synthesis; 53 cited sources, incl. the
+Research basis: `docs/research.md` (synthesis; 53 numbered sources, 52
+distinct URLs, all listed in full at the end of that file, incl. the
 verified gap that no published GRPO-for-LOC-reduction work exists).
 
 ## Quickstart
@@ -116,6 +131,7 @@ uv sync
 uv run lc analyze fixtures/py            # map + LOC baseline
 uv run lc audit fixtures/py              # mutation score of the suite
 uv run lc reduce fixtures/py \
+    --copy-to /tmp/py-work \             # reduce a COPY; fixtures/ stays pristine
     --model qwen2.5-coder:7b \           # needs: ollama serve
     --attempts 2 --max-llm-calls 6 \
     --num-ctx 16384 --out report.json
@@ -134,7 +150,14 @@ marked `"metric": "raw"`, shouted about on stderr and printed as `**RAW**` in
 the table — raw physical lines are not comparable with canonical ones.
 
 `--static-only` runs L1 only (no GPU). `--max-llm-calls N` bounds GPU time.
-`--fixture NAME` benches a single fixture.
+`--fixture NAME` benches a single fixture. `--keep-tree DIR` copies each
+reduced scratch tree to `DIR/<fixture>` instead of deleting it — **use it for
+any run whose number you intend to cite**: a bench row without the tree that
+produced it is the tool's own self-report and nothing more.
+
+Likewise `lc reduce --copy-to DIR` reduces a copy and leaves the original
+alone. `reduce` rewrites its target in place otherwise, and warns on stderr
+when that target is a git tree with uncommitted changes.
 
 ## GRPO
 
@@ -142,17 +165,33 @@ the table — raw physical lines are not comparable with canonical ones.
 uv run python grpo/build_dataset.py      # CPU: verify-gated samples from fixtures
 uv run python grpo/train.py --validate-config   # CPU: config check, no model load
 uv run python grpo/train.py --steps 10   # GPU: QLoRA smoke (0.5B, ~minutes)
+uv run python grpo/train.py --steps 10 --reward mutation-weighted   # weighted variant
 ```
 
 Dataset rows: `prompt` (instruction + verbose unit + frozen tests as spec),
-`unit_source`/`unit_loc` for reward normalization. Reward (grpo/rewards.py):
-`gate × (1 + 0.5·loc_delta) − penalties` with api-preservation,
-minification, and degenerate-output guards; tests run on CPU inside the reward.
+`unit_source`/`unit_loc` for reward normalization, and `mutation_score` — the
+kill rate of that sample's fixture suite, measured on a throwaway copy by
+`less_code.audit` (`--mutants N`, default 20; `--mutants 0` skips it).
+
+Two TRL-compatible reward callables in `grpo/rewards.py`:
+
+| callable | reward | when |
+|---|---|---|
+| `reward_fn` | `gate × (1 + 0.5·loc_delta) − penalties` | default |
+| `reward_fn_mutation_weighted` | `gate × (1 + 0.5·loc_delta × mutation_score)` | mixed-quality corpora |
+
+Both share the same gate — frozen tests green **and** public API preserved,
+else exactly −1 — plus api-preservation, minification and degenerate-output
+guards; tests run on CPU inside the reward. The weighted variant scales only
+the *shaping* term, so a weak oracle earns less credit for the same line delta
+while a behavior break is still −1 no matter how strong the suite is. At
+`mutation_score == 1.0`, and for samples with no score recorded, the two are
+identical.
 
 ## Repo layout
 
 ```
-less_code/   the tool        tests/      153 tests (unit + integration + reward)
+less_code/   the tool        tests/      255 tests (unit + integration + reward)
 fixtures/    py/js/rs demo targets (mutation-scored suites + tests_hidden/)
 bench/       results/*.jsonl — one bench row per fixture/config/commit
 grpo/        dataset builder, reward fn, TRL trainer
@@ -163,13 +202,32 @@ CRITERIA.md  fixed acceptance criteria for the build
 
 ## Status vs goal
 
-research ✅ · tool ✅ · grpo scaffold ✅ (66 samples, config validated) ·
-**py demo (C3) ✅ 30.4 % canonical hybrid** (500 → 357 static → 348), of which
-**28.6 % is deterministic** — 107 code lines from guard-block outlining, zero
-LLM calls (`docs/evidence/reduce-py-rs-iteration10.md`) ·
-**js demo (C4) ✅ 25.96 %** (`docs/evidence/reduce-js-7b.md`) ·
-rs demo (C5) still short of the bar — **14.29 %** at 7B whole-file+salvage,
-tests/API/hidden green; the pair-wise merge templates and compiler-diagnostic
-feedback took rust's duplicate-group acceptance rate from 0 % to 20 %, but 7 of
-8 whole-file proposals are still `cargo check` failures
-(`iterations/10-outlining-feedback-settlement.md`) · review pending rs demo.
+All three demos pass their ≥ 25 % bar, **each with a preserved, independently
+checkable reduced tree** and both suites (frozen + hidden) green. Every number
+is canonical code-LOC measured off the pristine fixture.
+
+| criterion | result | artifact |
+|---|---|---|
+| C1 research | ✅ | `docs/research.md` + three sub-reports, 53 numbered sources |
+| C2 tool | ✅ | `uv run pytest -q` → **259 passed**; `uv run lc --help` exit 0 |
+| **C3 py** | ✅ **33.5 %** — 537 → 357, static only, 0 LLM calls | `docs/evidence/py-static-357/` |
+| **C4 js** | ✅ **29.1 %** — 601 → 553 static → 426, 3 LLM calls | `docs/evidence/js-reduced-426/` (+ `REPRODUCE.md`) |
+| **C5 rs** | ✅ **25.5 %** — 392 → 372 static → 292, 4 chained rounds | `docs/evidence/rs-reduced-292/` (+ `REPRODUCE.md`) |
+| C6 grpo | ✅ | 69 samples with mutation scores; both reward variants; `--validate-config` exit 0 |
+| C7 review | 🔄 in progress | first pass FAILed with 11 defects (`docs/evidence/C7-REVIEW.md`); all addressed in `iterations/12-rs-settlement-and-c7-fixes.md`, re-review pending |
+
+Two things the numbers do not say on their own:
+
+- **py's 33.5 % is entirely deterministic** — no model, no GPU, reproducible to
+  the line. 107 of the 180 lines are guard-block outlining (four helpers over
+  30 sites), the rest dead-code removal, the rule library and ruff's
+  LOC-reducing tiers.
+- **js and rs are carried by hunk salvage.** Across both, *every* whole-file
+  proposal a 7B model made was rejected — wrong API, unparseable, or a red
+  test — and *every* accepted line was recovered by splitting those rejects at
+  symbol boundaries and delta-debugging them. Discarding a rejected candidate
+  whole was throwing away all of the model's usable output.
+
+LLM rounds are not deterministic: re-running the recipes in the two
+`REPRODUCE.md` files will land on different numbers. The preserved trees, not
+the logs, are the evidence.

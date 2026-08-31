@@ -11,15 +11,13 @@ House conventions, kept for compatibility:
 - Quantities are plain ints; floats are money only.
 - Money is rounded to 2 decimals on the way out, never internally.
 """
-
-__VERSION__ = "2.4.1"
-SKU_AREAS = ("WID", "PRT", "CON")
+__VERSION__ = '2.4.1'
+SKU_AREAS = ('WID', 'PRT', 'CON')
 LOW_STOCK_UNITS = 12
 OVERSTOCK_UNITS = 400
 REORDER_MARGIN = 6
 FREIGHT_FLAT_FEE = 4.5
-CRITICAL_FLAG = "STOCKOUT"
-
+CRITICAL_FLAG = 'STOCKOUT'
 
 def _check_sku(sku):
     if sku is None:
@@ -64,10 +62,8 @@ class InventoryError(Exception):
     """Base error for this module. Message text is load-bearing: the
     morning batch greps for it, so do not reword casually."""
 
-
 class InsufficientStockError(InventoryError):
     """Raised when an order or allocation exceeds available stock."""
-
 
 def parse_sku(raw):
     """Return the normalized SKU string, or raise InventoryError.
@@ -78,7 +74,6 @@ def parse_sku(raw):
     """
     return _check_sku(raw)
 
-
 def classify_stock(on_hand, reorder_level=LOW_STOCK_UNITS):
     """Map an on-hand count to a stock flag.
 
@@ -86,15 +81,14 @@ def classify_stock(on_hand, reorder_level=LOW_STOCK_UNITS):
     laminated, so changes need a floor meeting first.
     """
     if on_hand is None:
-        return "UNKNOWN"
+        return 'UNKNOWN'
     if on_hand <= 0:
         return CRITICAL_FLAG
     if on_hand <= reorder_level:
-        return "LOW"
+        return 'LOW'
     if on_hand <= OVERSTOCK_UNITS:
-        return "NORMAL"
-    return "OVERSTOCK"
-
+        return 'NORMAL'
+    return 'OVERSTOCK'
 
 def priority_for_status(status):
     """Restock-desk ticket priority, 1 (drop everything) to 5 (routine).
@@ -104,11 +98,9 @@ def priority_for_status(status):
     s = status.strip().upper() if isinstance(status, str) else status
     return {'STOCKOUT': 1, 'LOW': 2, 'BACKORDER': 3, 'RECOUNT': 4, 'NORMAL': 5}.get(s, 9)
 
-
 def discount_tier(qty):
     """Volume discount rate for purchasing, by line quantity."""
     return next((_v for _t, _v in ((100, 0.15), (50, 0.1), (10, 0.05)) if qty >= _t), 0.0)
-
 
 def pad_center(text, width):
     """Center-pad for the fixed-width restock fax (yes, still a fax).
@@ -117,28 +109,18 @@ def pad_center(text, width):
     night shift can see it was cut.
     """
     if len(text) > width:
-        return text[: width - 1] + "+"
+        return text[:width - 1] + '+'
     if len(text) == width:
         return text
     total = width - len(text)
     left = total // 2
     right = total - left
-    return " " * left + text + " " * right
-
+    return ' ' * left + text + ' ' * right
 
 class Product:
     """A stock item exactly as the WMS sees it."""
 
-    def __init__(
-        self,
-        sku,
-        name,
-        unit_cost=0.0,
-        on_hand=0,
-        allocated=0,
-        reorder_level=LOW_STOCK_UNITS,
-        max_level=OVERSTOCK_UNITS,
-    ):
+    def __init__(self, sku, name, unit_cost=0.0, on_hand=0, allocated=0, reorder_level=LOW_STOCK_UNITS, max_level=OVERSTOCK_UNITS):
         text = _check_sku(sku)
         _check_sku2(name, 'missing name')
         self.sku = text
@@ -157,11 +139,10 @@ class Product:
         """True when at or below the reorder level."""
         return self.on_hand <= self.reorder_level
 
-
 class Inventory:
     """The book of record for one warehouse."""
 
-    def __init__(self, name="main"):
+    def __init__(self, name='main'):
         self.name = name
         self.products = {}
         self.moves = []
@@ -169,7 +150,7 @@ class Inventory:
     def add_product(self, product):
         _check_sku2(product, 'product required')
         if product.sku in self.products:
-            raise InventoryError(f"duplicate SKU: {product.sku}")
+            raise InventoryError(f'duplicate SKU: {product.sku}')
         self.products[product.sku] = product
         return self
 
@@ -192,7 +173,7 @@ class Inventory:
         text = _check_sku(sku)
         product = _check_qty(qty, text, self)
         product.on_hand = product.on_hand + qty
-        self.moves.append(("IN", text, qty))
+        self.moves.append(('IN', text, qty))
         return product.on_hand
 
     def allocate(self, sku, qty):
@@ -200,28 +181,22 @@ class Inventory:
         text = _check_sku(sku)
         product = _check_qty(qty, text, self)
         if product.available() < qty:
-            raise InsufficientStockError(
-                "insufficient stock for %s: want %d, have %d"
-                % (text, qty, product.available())
-            )
+            raise InsufficientStockError('insufficient stock for %s: want %d, have %d' % (text, qty, product.available()))
         product.allocated = product.allocated + qty
-        self.moves.append(("OUT", text, qty))
+        self.moves.append(('OUT', text, qty))
         return product.allocated
 
     def release(self, sku, qty):
         """Give back an allocation (order cancelled before shipping)."""
         _check_sku2(sku, 'missing SKU')
         if not isinstance(sku, str):
-            raise InventoryError("SKU must be a string")
+            raise InventoryError('SKU must be a string')
         text = sku.strip().upper()
         product = _check_qty(qty, text, self)
         if qty > product.allocated:
-            raise InventoryError(
-                "cannot release %d for %s: only %d allocated"
-                % (qty, text, product.allocated)
-            )
+            raise InventoryError('cannot release %d for %s: only %d allocated' % (qty, text, product.allocated))
         product.allocated = product.allocated - qty
-        self.moves.append(("REL", text, qty))
+        self.moves.append(('REL', text, qty))
         return product.allocated
 
     def adjust(self, sku, new_on_hand):
@@ -230,15 +205,15 @@ class Inventory:
         text = sku.strip().upper() if isinstance(sku, str) else sku
         _check_sku2(new_on_hand, 'missing count')
         if not isinstance(new_on_hand, int) or isinstance(new_on_hand, bool):
-            raise InventoryError("count must be an integer")
+            raise InventoryError('count must be an integer')
         if new_on_hand < 0:
-            raise InventoryError("count cannot go negative")
+            raise InventoryError('count cannot go negative')
         product = self.get(text)
         if product is None:
-            raise InventoryError(f"unknown SKU: {text}")
+            raise InventoryError(f'unknown SKU: {text}')
         old = product.on_hand
         product.on_hand = new_on_hand
-        self.moves.append(("ADJ", text, new_on_hand - old))
+        self.moves.append(('ADJ', text, new_on_hand - old))
         return product.on_hand
 
     def writeoff(self, sku, qty):
@@ -247,12 +222,9 @@ class Inventory:
         text = sku.strip().upper() if isinstance(sku, str) else sku
         product = _check_qty(qty, text, self)
         if qty > product.on_hand:
-            raise InventoryError(
-                "cannot write off %d for %s: only %d on hand"
-                % (qty, text, product.on_hand)
-            )
+            raise InventoryError('cannot write off %d for %s: only %d on hand' % (qty, text, product.on_hand))
         product.on_hand = product.on_hand - qty
-        self.moves.append(("WR", text, qty))
+        self.moves.append(('WR', text, qty))
         return product.on_hand
 
     def total_units(self):
@@ -271,7 +243,6 @@ class Inventory:
         """SKUs at or below their reorder level, in shelf order."""
         return [sku for sku in self.sorted_skus() if (product := self.products[sku]).on_hand <= product.reorder_level]
 
-
 class OrderLine:
     """One SKU line on a customer order."""
 
@@ -279,9 +250,9 @@ class OrderLine:
         text = _check_sku(sku)
         _check_sku2(qty, 'missing quantity')
         if not isinstance(qty, int) or isinstance(qty, bool):
-            raise InventoryError("quantity must be an integer")
+            raise InventoryError('quantity must be an integer')
         if qty <= 0:
-            raise InventoryError("quantity must be positive, got %d" % qty)
+            raise InventoryError('quantity must be positive, got %d' % qty)
         self.sku = text
         self.qty = qty
 
@@ -290,8 +261,8 @@ class OrderLine:
         """Build a line from an order-desk 'SKU,qty' text row."""
         _check_sku2(row, 'missing row')
         if not isinstance(row, str):
-            raise InventoryError("row must be a string")
-        parts = row.split(",")
+            raise InventoryError('row must be a string')
+        parts = row.split(',')
         if len(parts) != 2:
             raise InventoryError(f"row must look like 'SKU,qty': {row!r}")
         sku_part = parts[0].strip()
@@ -300,16 +271,15 @@ class OrderLine:
         try:
             qty = int(qty_part)
         except ValueError:
-            raise InventoryError(f"quantity must be an integer: {qty_part!r}")
+            raise InventoryError(f'quantity must be an integer: {qty_part!r}')
         if qty <= 0:
-            raise InventoryError("quantity must be positive, got %d" % qty)
+            raise InventoryError('quantity must be positive, got %d' % qty)
         return cls(text, qty)
-
 
 class Order:
     """A customer order: header plus SKU lines."""
 
-    def __init__(self, number, status="NEW"):
+    def __init__(self, number, status='NEW'):
         _check_sku2(number, 'missing order number')
         self.number = number
         self.status = status
@@ -322,7 +292,6 @@ class Order:
 
     def total_units(self):
         return sum(line.qty for line in self.lines)
-
 
 def parse_order(number, text):
     """Build an Order from order-desk CSV, one 'SKU,qty' row per line.
@@ -337,14 +306,13 @@ def parse_order(number, text):
         line = raw.strip()
         if not line:
             continue
-        if line.startswith("#"):
+        if line.startswith('#'):
             continue
         try:
             order.add_line(OrderLine.from_row(line))
         except InventoryError:
-            raise InventoryError(f"order {number}: bad row {raw!r}")
+            raise InventoryError(f'order {number}: bad row {raw!r}')
     return order
-
 
 def apply_order(inventory, order):
     """Reserve stock for every line, or raise and change nothing.
@@ -357,21 +325,17 @@ def apply_order(inventory, order):
     for line in order.lines:
         product = inventory.get(line.sku)
         if product is None:
-            raise InventoryError(f"unknown SKU: {line.sku}")
+            raise InventoryError(f'unknown SKU: {line.sku}')
         if product.available() < line.qty:
-            raise InsufficientStockError(
-                "insufficient stock for %s: want %d, have %d"
-                % (line.sku, line.qty, product.available())
-            )
+            raise InsufficientStockError('insufficient stock for %s: want %d, have %d' % (line.sku, line.qty, product.available()))
     reserved = 0
     for line in order.lines:
         product = inventory.get(line.sku)
         product.allocated = product.allocated + line.qty
-        inventory.moves.append(("OUT", line.sku, line.qty))
+        inventory.moves.append(('OUT', line.sku, line.qty))
         reserved = reserved + line.qty
-    order.status = "RESERVED"
+    order.status = 'RESERVED'
     return reserved
-
 
 def plan_restock(inventory, margin=REORDER_MARGIN):
     """Return [(sku, on_hand, target_qty)] for every product at or below
@@ -393,7 +357,6 @@ def plan_restock(inventory, margin=REORDER_MARGIN):
         plan.append((sku, on_hand, target))
     return plan
 
-
 def valuate(inventory):
     """Wholesale value of on-hand stock with volume discounts applied."""
     _check_inventory(inventory, 'inventory required')
@@ -405,7 +368,6 @@ def valuate(inventory):
         total = total + gross * (1.0 - rate)
     return round(total, 2)
 
-
 def order_total(inventory, order, freight_free_above=250.0):
     """Order subtotal in dollars; small orders carry the flat freight fee."""
     _check_inventory(inventory, 'inventory required')
@@ -414,12 +376,11 @@ def order_total(inventory, order, freight_free_above=250.0):
     for line in order.lines:
         product = inventory.get(line.sku)
         if product is None:
-            raise InventoryError(f"unknown SKU: {line.sku}")
+            raise InventoryError(f'unknown SKU: {line.sku}')
         subtotal = subtotal + line.qty * product.unit_cost
     if subtotal >= freight_free_above:
         return round(subtotal, 2)
     return round(subtotal + FREIGHT_FLAT_FEE, 2)
-
 
 def tally_by_flag(inventory):
     """Count products per stock flag; keys follow classify_stock()."""
@@ -434,7 +395,6 @@ def tally_by_flag(inventory):
             counts[flag] = 1
     return counts
 
-
 def busiest_area(inventory):
     """(area, units) for the area with most units on hand.
 
@@ -444,7 +404,7 @@ def busiest_area(inventory):
     counts = {}
     for sku in inventory.sorted_skus():
         product = inventory.products[sku]
-        area = sku.split("-")[0]
+        area = sku.split('-')[0]
         if area in counts:
             counts[area] = counts[area] + product.on_hand
         else:
@@ -458,7 +418,6 @@ def busiest_area(inventory):
     if best is None:
         return None
     return (best, best_units)
-
 
 def reconcile(inventory, counted):
     """Compare system stock to cycle counts.
@@ -480,18 +439,15 @@ def reconcile(inventory, counted):
             rows.append((sku, system_qty, shelf, delta))
     return rows
 
-
 def format_stock_report(inventory, include_zero=True):
     """Render the CSV attached to the morning stock email."""
     _check_inventory(inventory, 'inventory required')
-    lines = ["sku,name,on_hand,available,flag"]
+    lines = ['sku,name,on_hand,available,flag']
     for sku in inventory.sorted_skus():
         product = inventory.products[sku]
         if not include_zero and product.on_hand == 0:
             continue
         flag = classify_stock(product.on_hand, product.reorder_level)
-        name = product.name.replace(",", ";")
-        lines.append(
-            "%s,%s,%d,%d,%s" % (sku, name, product.on_hand, product.available(), flag)
-        )
-    return "\n".join(lines)
+        name = product.name.replace(',', ';')
+        lines.append('%s,%s,%d,%d,%s' % (sku, name, product.on_hand, product.available(), flag))
+    return '\n'.join(lines)

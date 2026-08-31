@@ -57,8 +57,13 @@ def validate_config(cfg: dict, dataset: Path) -> list[str]:
     if "/" not in cfg["model"]:
         errors.append("model must be a HF hub id (org/name)")
     try:
-        import rewards as grpo_rewards  # noqa: F401
+        import rewards as grpo_rewards
 
+        # C6 names both variants; a missing one is a config error, not a surprise
+        # at step 1 of a GPU run.
+        for name in ("reward_fn", "reward_fn_mutation_weighted"):
+            if not callable(getattr(grpo_rewards, name, None)):
+                errors.append(f"reward module has no callable {name}")
     except ImportError as exc:
         errors.append(f"reward module not importable: {exc}")
     return errors
@@ -68,6 +73,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", default=DEFAULTS["model"])
     ap.add_argument("--dataset", type=Path, default=REPO / "grpo" / "dataset.jsonl")
+    ap.add_argument(
+        "--reward", default="loc", choices=["loc", "mutation-weighted"],
+        help="loc = gate x (1 + lambda*loc_delta) - penalties; mutation-weighted "
+             "additionally scales the shaping term by the sample's suite kill rate "
+             "(needs `mutation_score` in the dataset; absent means 1.0)",
+    )
     ap.add_argument("--steps", type=int, default=10)
     ap.add_argument("--validate-config", action="store_true")
     args = ap.parse_args()
@@ -95,7 +106,10 @@ def main() -> int:
               f"uv pip install trl peft transformers datasets torch", file=sys.stderr)
         return 2
 
-    from rewards import reward_fn
+    from rewards import reward_fn, reward_fn_mutation_weighted
+
+    reward = reward_fn_mutation_weighted if args.reward == "mutation-weighted" else reward_fn
+    print(f"reward: {reward.__name__}")
 
     rows = [json.loads(l) for l in args.dataset.open()]
     ds = Dataset.from_list(
@@ -136,7 +150,7 @@ def main() -> int:
         model=model,
         args=gcfg,
         train_dataset=ds,
-        reward_funcs=[reward_fn],
+        reward_funcs=[reward],
         peft_config=lora,
     )
     trainer.train()

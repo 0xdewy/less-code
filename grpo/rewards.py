@@ -1,7 +1,11 @@
 """Reward for GRPO rollouts — gated LOC reduction (CPU; tests run on CPU).
 
-    r = gate * (1 + lambda * loc_delta) - penalties
+    r = gate * (1 + lambda * loc_delta) - penalties          (compute_reward)
+    r = gate * (1 + lambda * loc_delta * mutation_score)     (…_mutation_weighted)
     gate          : +1 if frozen tests pass AND api preserved, else -1
+    mutation_score: the sample suite's kill rate in [0, 1] (default 1.0), so a
+                    saving certified by a weak oracle is shaped down; the gate
+                    itself is never scaled
     loc_delta     : clip((loc_before - loc_after)/loc_before, 0, 0.9)
     penalties     : degenerate-output guards (LOC is counted after canonical
                     formatting, so minification cannot win; the line-density
@@ -11,7 +15,8 @@ Reward-hacking mitigations (research rl.md §Reward design):
 - tests are FROZEN env state: policy output is the code unit only, never tests
 - api surface must match exactly (underscor helpers allowed)
 - reward 0-band candidates (not smaller) get gate but no shaping term
-- min-behavior: parse/compile check + identical public symbols
+- min-behavior: parse/compile check (ast for python, `node --check` /
+  `cargo check` for js/rust) + identical public symbols
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ sys.path.insert(0, str(REPO))
 
 from less_code.api_check import EXTRACTORS, api_violations  # noqa: E402
 from less_code.loc import formatter_available, measure  # noqa: E402
+from less_code.llm_reduce import syntax_check  # noqa: E402
 from less_code.testrunners import run_tests  # noqa: E402
 
 LAMBDA = 0.5
@@ -84,6 +90,10 @@ def compute_reward(
         return RewardBreakdown(-1.0, -1, 0.0, 0.0, "no-code-block")
     if not formatter_available(lang) and _looks_minified(code):
         return RewardBreakdown(-1.0, -1, 0.0, MINIFICATION_PENALTY, "minified")
+    # python parses in-process before anything is written; js/rust need the
+    # spliced file on disk (`node --check` / `cargo check`), so their parse gate
+    # runs below, just before the suite. Either way an unparseable rollout is
+    # -1.0 and never reaches the test runner (C7 review D9, second note).
     try:
         if lang == "python":
             import ast
@@ -115,12 +125,51 @@ def compute_reward(
                     break
         if not replaced:
             return RewardBreakdown(-1.0, -1, 0.0, 0.0, "unit-not-found")
+        if lang != "python" and syntax_check(rel, lang, scratch):
+            return RewardBreakdown(-1.0, -1, 0.0, 0.0, "syntax-error")
         result = run_tests(scratch, lang, timeout=300)
         if not result.ok:
             return RewardBreakdown(-1.0, -1, loc_delta, 0.0, "tests-failed")
         return RewardBreakdown(1.0 + LAMBDA * loc_delta, 1, loc_delta, 0.0, "accepted")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def compute_reward_mutation_weighted(
+    completion: str,
+    sample: dict,
+    repo_root: Path | None = None,
+) -> RewardBreakdown:
+    """Mutation-weighted variant of `compute_reward` (CRITERIA C6).
+
+        r = gate * (1 + LAMBDA * loc_delta * mutation_score)
+
+    Rationale (research rl.md §Reward design): the frozen suite is the reward's
+    only oracle, so a rollout's accepted LOC saving is exactly as trustworthy as
+    the suite that certified it. `mutation_score` in [0, 1] is the fraction of
+    injected mutants that sample's suite kills; shaping is scaled by it so a
+    weak suite pays less for the same line delta and the policy is pushed toward
+    reductions that are actually pinned down.
+
+    The GATE IS NOT SCALED: a red suite, a broken API or unparseable output is
+    still exactly -1.0 no matter how strong or weak the suite is, so weighting
+    can never buy a behavior break. At `mutation_score == 1.0` this is identical
+    to `compute_reward`; samples with no recorded score default to 1.0, so
+    datasets built before the field existed keep their old rewards.
+    """
+    breakdown = compute_reward(completion, sample, repo_root)
+    if breakdown.gate < 0:
+        return breakdown
+    raw = sample.get("mutation_score")
+    score = 1.0 if raw is None else max(0.0, min(1.0, float(raw)))
+    reward = breakdown.gate * (1.0 + LAMBDA * breakdown.loc_delta * score)
+    return RewardBreakdown(
+        reward,
+        breakdown.gate,
+        breakdown.loc_delta,
+        breakdown.penalty,
+        f"{breakdown.reason}+mutation-weighted({score:.3f})",
+    )
 
 
 def reward_fn(completions: list[str], prompts: list[str] | None = None, **dataset_columns) -> list[float]:
@@ -132,4 +181,20 @@ def reward_fn(completions: list[str], prompts: list[str] | None = None, **datase
             out.append(-1.0)
             continue
         out.append(compute_reward(completion, sample).reward)
+    return out
+
+
+def reward_fn_mutation_weighted(
+    completions: list[str], prompts: list[str] | None = None, **dataset_columns
+) -> list[float]:
+    """TRL-compatible reward callable using the mutation-weighted shaping term.
+
+    Drop-in swap for `reward_fn` in `train.py` (`reward_funcs=[...]`)."""
+    samples = dataset_columns.get("sample_meta") or [None] * len(completions)
+    out = []
+    for completion, sample in zip(completions, samples):
+        if sample is None:
+            out.append(-1.0)
+            continue
+        out.append(compute_reward_mutation_weighted(completion, sample).reward)
     return out

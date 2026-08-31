@@ -30,6 +30,14 @@ class ReduceStats:
     tests_ok: bool = False
     api_ok: bool = False
     reduction_pct: float = 0.0
+    #: Which surface `api_ok` is measured against. The static layer removes
+    #: provably-dead public items by design, so the baseline the LLM layer is
+    #: held to is the POST-static surface, not the original one.
+    api_baseline: str = "post-static"
+    #: Public symbols the static layer deleted (dead code). These are gone
+    #: from the delivered tree relative to the ORIGINAL sources, so
+    #: `api_ok: true` must never be read as "identical to the input API".
+    static_removed_symbols: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict:
         d = {
@@ -45,6 +53,8 @@ class ReduceStats:
             "formatted_loc": formatter_available(self.lang),
             "tests_ok": self.tests_ok,
             "api_ok": self.api_ok,
+            "api_baseline": self.api_baseline,
+            "static_removed_symbols": self.static_removed_symbols,
             "static_notes": self.static_notes,
             "attempts": self.attempt_records,
         }
@@ -127,6 +137,7 @@ def reduce_project(
         runner=lambda r, l: run_tests(r, l, timeout=test_timeout, use_cache=False),
     )
     stats.static_notes = static.notes
+    api_pre_static = api_surface(project.source_files, project.lang)
     originals = {p: p.read_text(encoding="utf-8", errors="replace") for p in project.source_files}
     for path_str, new_source in static.changed_files.items():
         Path(path_str).write_text(new_source, encoding="utf-8")
@@ -139,6 +150,11 @@ def reduce_project(
     # static-layer removals are intentional (dead code); the LLM layer must
     # preserve the post-static surface exactly.
     api_ref = api_surface(project.source_files, project.lang)
+    stats.static_removed_symbols = sorted(
+        name
+        for file, api in api_pre_static.items()
+        for name in set(api) - set(api_ref.get(file, {}))
+    )
 
     # ---- L2 LLM ----
     if backend is not None and backend.name != "none":
