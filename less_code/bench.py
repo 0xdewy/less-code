@@ -82,6 +82,7 @@ def bench_fixture(
     timeout: int = 600,
     num_ctx: int = 16384,
     llm_timeout: int = 600,
+    strategy: str = "mixed",
 ) -> BenchRow:
     """Reduce one fixture in a scratch copy and score it."""
     from .loc import formatter_available
@@ -105,6 +106,7 @@ def bench_fixture(
         start = time.monotonic()
         stats = reduce_project(
             scratch, backend=backend, attempts_per_file=attempts, test_timeout=timeout,
+            strategy=strategy,
         )
         row.seconds = round(time.monotonic() - start, 2)
         payload = stats.to_json()

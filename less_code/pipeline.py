@@ -79,6 +79,7 @@ def reduce_project(
     test_timeout: int = 600,
     whole_file_sweep: bool = True,
     dedup_groups: int = 3,
+    strategy: str = "mixed",
 ) -> ReduceStats:
     project = map_project(root, lang)
     stats = ReduceStats(lang=project.lang, files_considered=len(project.source_files))
@@ -167,7 +168,7 @@ def reduce_project(
         # per-symbol loop spent the whole budget before any cross-symbol pass
         # ever ran. Bounded to `max_groups * attempts` calls so the per-symbol
         # loop still gets the rest.
-        dedup_records = reduce_duplicate_groups(
+        dedup_records = [] if strategy == "whole-file" else reduce_duplicate_groups(
             backend, root, project.source_files, project.lang, runner,
             attempts_per_group=max(1, attempts_per_file - 1), spec=spec,
             max_groups=dedup_groups,
@@ -190,18 +191,22 @@ def reduce_project(
             # Iteration 07 measured zero outright whole-file acceptances at 3B
             # and 7B; a per-symbol proposal is a short output through the same
             # gate, so the same budget buys ~20 independent bets instead of 1.
-            records = reduce_symbols(
+            # strategy="whole-file": the recipe that passed C4 on js — repeated
+            # whole-file rewrites whose rejects feed hunk salvage. Skips the
+            # dedup/per-symbol loops entirely.
+            records = [] if strategy == "whole-file" else reduce_symbols(
                 backend, root, path, project.lang, runner,
                 attempts_per_symbol=max(1, attempts_per_file - 1), spec=spec,
             )
-            if whole_file_sweep:
+            if whole_file_sweep or strategy == "whole-file":
                 # optional final sweep: only a whole-file rewrite can dedup
                 # ACROSS symbols, and its rejects still feed hunk salvage.
                 current = path.read_text(encoding="utf-8", errors="replace")
                 loc_now = measure(current, project.lang).code
                 best, best_loc, sweep_records = reduce_file(
                     backend, root, path, project.lang, runner,
-                    attempts=1, spec=spec,
+                    attempts=attempts_per_file if strategy == "whole-file" else 1,
+                    spec=spec,
                 )
                 records += sweep_records
                 if best_loc < loc_now:

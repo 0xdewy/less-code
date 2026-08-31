@@ -65,6 +65,7 @@ def cmd_reduce(args: argparse.Namespace) -> int:
         Path(args.path), lang=args.lang, backend=backend,
         attempts_per_file=args.attempts, max_files=args.max_files,
         formatter=not args.no_format, test_timeout=args.timeout,
+        strategy=args.strategy,
     )
     out = Path(args.out)
     write_report(stats, out)
@@ -83,7 +84,8 @@ def cmd_bench(args: argparse.Namespace) -> int:
     rows, out = run_bench(
         Path(args.path),
         Path(args.out_dir),
-        config="static-only" if args.static_only else f"hybrid:{args.model or args.backend}",
+        config="static-only" if args.static_only
+        else f"hybrid:{args.model or args.backend}:{args.strategy}",
         repo=Path(__file__).resolve().parent.parent,
         fixture=args.fixture,
         backend_spec=args.backend,
@@ -93,6 +95,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
         timeout=args.timeout,
         num_ctx=args.num_ctx,
         llm_timeout=args.llm_timeout,
+        strategy=args.strategy,
     )
     table = markdown_table(rows)
     print(table)
@@ -167,6 +170,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--llm-timeout", type=int, default=600,
                    help="seconds to wait for one LLM response before recording "
                         "backend-error (a slow GPU needs more than the 600s default)")
+    p.add_argument("--strategy", default="mixed", choices=["mixed", "whole-file"],
+                   help="mixed = dedup + per-symbol + sweep; whole-file = repeated "
+                        "whole-file rewrites with hunk salvage (the recipe that passed js)")
     p.add_argument("--out", default="reduce-report.json")
     p.set_defaults(func=cmd_reduce)
 
@@ -182,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--llm-timeout", type=int, default=600,
                    help="seconds to wait for one LLM response before recording "
                         "backend-error (a slow GPU needs more than the 600s default)")
+    p.add_argument("--strategy", default="mixed", choices=["mixed", "whole-file"])
     p.add_argument("--fixture", default=None,
                    help="bench only this fixture directory (e.g. `js`)")
     p.add_argument("--out-dir", default="bench/results")

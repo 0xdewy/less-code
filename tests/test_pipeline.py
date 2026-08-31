@@ -118,3 +118,29 @@ def test_pipeline_static_only(tmp_path):
     assert stats.tests_ok and stats.api_ok
     assert "dead_never_used" not in (root / "mod.py").read_text()
     assert stats.loc_final < stats.loc_start
+
+
+def test_whole_file_strategy_skips_symbol_loops(tmp_path):
+    """--strategy whole-file: repeated whole-file rewrites through the gate,
+    no dedup/per-symbol records, acceptance still verify-gated."""
+    (tmp_path / "mod.py").write_text(VERBOSE_MODULE)
+    (tmp_path / "test_mod.py").write_text(TESTS)
+
+    class WholeFileBackend(Backend):
+        def __init__(self):
+            super().__init__("fake")
+            self.calls = 0
+
+        def complete(self, system, prompt, temperature=0.2):
+            self.calls += 1
+            return f"```python\n{SMALLER_MODULE}```"
+
+    backend = WholeFileBackend()
+    stats = reduce_project(tmp_path, backend=backend, attempts_per_file=2, strategy="whole-file")
+    j = stats.to_json()
+    assert j["tests_ok"] and j["api_ok"]
+    assert j["loc_final"] < j["loc_start"]
+    outcomes = [a["outcome"] for a in j["attempts"]]
+    assert "accepted" in outcomes
+    assert not any(a["file"].endswith("(dedup)") or ":" in pathlib.Path(a["file"]).name.replace(".py", "")
+                   for a in j["attempts"] if a["outcome"] == "accepted"), "no symbol/dedup records expected"
