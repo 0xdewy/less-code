@@ -1,0 +1,17 @@
+# Rust build artefacts. `cargo fix`/`cargo test` create these inside the
+# fixture during a static pass or a bench run; they are not part of the fixture.
+fixtures/rs/target/
+target/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# tool output written by ad-hoc runs
+reduce-report.json
+audit.json
+REDUCTION.md
+__pycache__/
+*.pyc

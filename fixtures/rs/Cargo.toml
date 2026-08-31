@@ -4,3 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+
+# Hidden safety-net target: excluded from `cargo test` (the frozen verify
+# gate) and from the prompt spec; run explicitly with
+# `cargo test --test hidden` by `lc bench` after a reduction.
+[[test]]
+name = "hidden"
+path = "tests_hidden/hidden.rs"
+test = false

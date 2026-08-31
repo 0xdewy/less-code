@@ -2,14 +2,28 @@
 
 This is the authoritative reduction metric. Excluding comments/docstrings
 prevents gaming the number by stripping docs instead of shrinking code.
+
+Counting is *canonical* wherever a reduction is measured (roadmap B1): the
+source is piped through `ruff format` / `prettier` / `rustfmt` at a fixed
+width first, so joining statements onto one line or minifying cannot buy a
+smaller number. When the formatter is missing the raw count is used and the
+`Loc.formatted` flag says so. `tokens` and `ast_nodes` are secondary metrics
+that stay honest even if a rewrite only merges lines.
 """
 
 from __future__ import annotations
 
+import ast
 import io
+import re
+import shutil
+import subprocess
 import tokenize
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
+
+PRINT_WIDTH = 88
 
 
 @dataclass(frozen=True)
@@ -17,10 +31,60 @@ class Loc:
     code: int
     comment: int
     blank: int
+    formatted: bool = False
+    tokens: int = 0
+    ast_nodes: int = 0
 
     @property
     def total(self) -> int:
         return self.code + self.comment + self.blank
+
+
+TOKEN_RE = re.compile(r"\w+|[^\s\w]")
+
+
+def count_tokens(source: str) -> int:
+    """Rough language-agnostic token count (identifiers + punctuation)."""
+    return len(TOKEN_RE.findall(source))
+
+
+def count_ast_nodes(source: str, lang: str) -> int:
+    """Python: real AST node count. Other languages: token count as a proxy."""
+    if lang == "python":
+        try:
+            return sum(1 for _ in ast.walk(ast.parse(source)))
+        except SyntaxError:
+            return 0
+    return count_tokens(source)
+
+
+FORMAT_CMDS = {
+    "python": ["ruff", "format", "--line-length", str(PRINT_WIDTH), "--stdin-filename", "x.py", "-"],
+    "javascript": ["prettier", "--stdin-filepath", "x.js", "--print-width", str(PRINT_WIDTH)],
+    "typescript": ["prettier", "--stdin-filepath", "x.ts", "--print-width", str(PRINT_WIDTH)],
+    "rust": ["rustfmt", "--emit", "stdout", "--config", f"max_width={PRINT_WIDTH}"],
+}
+
+
+def formatter_available(lang: str) -> bool:
+    cmd = FORMAT_CMDS.get(lang)
+    return bool(cmd) and shutil.which(cmd[0]) is not None
+
+
+@lru_cache(maxsize=512)
+def canonical_format(source: str, lang: str) -> tuple[str, bool]:
+    """(text, formatted). Falls back to the raw text when the tool is absent
+    or rejects the input (a syntactically broken candidate, typically)."""
+    cmd = FORMAT_CMDS.get(lang)
+    if not cmd or shutil.which(cmd[0]) is None:
+        return source, False
+    try:
+        proc = subprocess.run(cmd, input=source, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return source, False
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return source, False
+    return proc.stdout, True
 
 
 def count_python(source: str) -> Loc:
@@ -109,19 +173,39 @@ LANG_COUNTERS = {
 }
 
 
-def count_source(source: str, lang: str) -> Loc:
-    return LANG_COUNTERS[lang](source)
+def count_source(source: str, lang: str, format_first: bool = False) -> Loc:
+    """Count code-LOC. `format_first` canonicalises the text first (B1)."""
+    text, formatted = canonical_format(source, lang) if format_first else (source, False)
+    base = LANG_COUNTERS[lang](text)
+    return Loc(
+        base.code, base.comment, base.blank,
+        formatted=formatted,
+        tokens=count_tokens(text),
+        ast_nodes=count_ast_nodes(text, lang),
+    )
 
 
-def count_file(path: Path, lang: str) -> Loc:
-    return count_source(path.read_text(encoding="utf-8", errors="replace"), lang)
+def measure(source: str, lang: str) -> Loc:
+    """The reduction metric: canonical-format count wherever it is available."""
+    return count_source(source, lang, format_first=True)
 
 
-def count_tree(files: list[Path], lang: str) -> Loc:
-    code = comment = blank = 0
+def count_file(path: Path, lang: str, format_first: bool = False) -> Loc:
+    return count_source(
+        path.read_text(encoding="utf-8", errors="replace"), lang, format_first
+    )
+
+
+def count_tree(files: list[Path], lang: str, format_first: bool = False) -> Loc:
+    code = comment = blank = tokens = nodes = 0
+    formatted = True
     for f in files:
-        loc = count_file(f, lang)
+        loc = count_file(f, lang, format_first)
         code += loc.code
         comment += loc.comment
         blank += loc.blank
-    return Loc(code, comment, blank)
+        tokens += loc.tokens
+        nodes += loc.ast_nodes
+        formatted = formatted and loc.formatted
+    return Loc(code, comment, blank, formatted=formatted and format_first,
+               tokens=tokens, ast_nodes=nodes)

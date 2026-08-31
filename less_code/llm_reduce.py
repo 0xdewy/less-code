@@ -8,13 +8,16 @@ binary and evidence-based; the model never sees the tests' internals.
 from __future__ import annotations
 
 import ast
+import shutil
+import subprocess
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .api_check import EXTRACTORS, api_violations
 from .backends import Backend
-from .loc import count_source
+from .hunks import decompose, search
+from .loc import measure
 
 PROGRESS = None  # set by CLI to a printer for live per-attempt output
 
@@ -113,6 +116,32 @@ def extract_code(response: str) -> str | None:
     return None
 
 
+def syntax_check(path: Path, lang: str, root: Path) -> str:
+    """Cheap parse gate (B3). Returns '' when the file on disk parses."""
+    if lang == "python":
+        try:
+            ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError as exc:
+            return f"{exc.msg} (line {exc.lineno})"
+        return ""
+    if lang in ("javascript", "typescript"):
+        cmd = ["node", "--check", str(path)]
+    elif lang == "rust":
+        cmd = ["cargo", "check", "--quiet", "--tests"]
+    else:
+        return ""
+    if shutil.which(cmd[0]) is None:
+        return ""
+    proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=600)
+    if proc.returncode == 0:
+        return ""
+    return first_failure(proc.stdout + proc.stderr)
+
+
+# rejection stages, cheapest first: most candidates die in milliseconds
+STAGES = ("not-smaller", "syntax-error", "api-changed", "tests-failed")
+
+
 def verify_candidate(
     path: Path,
     lang: str,
@@ -122,17 +151,25 @@ def verify_candidate(
     run_tests_fn,
     root: Path,
 ) -> tuple[str, int]:
-    """Apply-write-test-revert. Returns (outcome, loc_after)."""
+    """Apply-write-test-revert with cheap pre-gates. Returns (outcome, loc_after).
+
+    Order is not-smaller -> parse -> API -> tests (roadmap B3): the size check
+    needs no disk write at all and the parse gate costs milliseconds, so a full
+    suite run is only ever spent on a candidate that could plausibly pass.
+    """
+    loc_after = measure(candidate, lang).code
+    if loc_after >= loc_before:
+        return "not-smaller", loc_after
     original = path.read_text(encoding="utf-8", errors="replace")
     try:
         path.write_text(candidate + "\n", encoding="utf-8")
+        syntax = syntax_check(path, lang, root)
+        if syntax:
+            return f"syntax-error: {syntax[:120]}", loc_after
         api_after = EXTRACTORS[lang](candidate)
         violations = api_violations({str(path): api_before}, {str(path): api_after})
         if violations:
-            return f"api-changed: {violations[0][:120]}", loc_before
-        loc_after = count_source(candidate, lang).code
-        if loc_after >= loc_before:
-            return "not-smaller", loc_after
+            return f"api-changed: {violations[0][:120]}", loc_after
         result = run_tests_fn(root, lang)
         if not result.ok:
             return f"tests-failed: {first_failure(result.output_tail)}", loc_after
@@ -150,10 +187,15 @@ def reduce_file(
     attempts: int = 3,
     spec: str = "",
     focus: str = "",
+    decompose_rejected: bool = True,
 ) -> tuple[str, int, list[AttemptRecord]]:
-    """Greedy multi-attempt reduction of one file. Returns (best_source, loc, records)."""
+    """Greedy multi-attempt reduction of one file. Returns (best_source, loc, records).
+
+    A rejected whole-file rewrite is not thrown away: it is decomposed into
+    symbol-aligned hunks and the largest passing subset is accepted (C1).
+    """
     source = path.read_text(encoding="utf-8", errors="replace")
-    loc_before = count_source(source, lang).code
+    loc_before = measure(source, lang).code
     api_before = EXTRACTORS[lang](source)
     records: list[AttemptRecord] = []
     best = source
@@ -182,8 +224,28 @@ def reduce_file(
             best, best_loc = candidate, loc_after
             path.write_text(candidate + "\n", encoding="utf-8")
             feedback = ""
-        else:
-            feedback = outcome
+            continue
+        feedback = outcome
+        if not decompose_rejected or not outcome.startswith(("tests-failed", "api-changed")):
+            continue
+        # C1: the rewrite is usually right about most symbols — keep those.
+        hunks = decompose(best, candidate, lang)
+        if len(hunks) < 2:
+            continue
+        found = search(
+            path, lang, best, hunks, api_before, best_loc, run_tests_fn, root,
+        )
+        records.append(
+            AttemptRecord(
+                str(path), attempt,
+                "hunks-accepted" if found.loc < best_loc else "hunks-none",
+                best_loc, found.loc, found.summary(),
+            )
+        )
+        if found.loc < best_loc:
+            best, best_loc = found.source, found.loc
+            path.write_text(best + "\n", encoding="utf-8")
+            feedback = ""
     return best, best_loc, records
 
 
@@ -227,11 +289,11 @@ def reduce_file_chunked(
             attempted.add(name)
             lines = source.splitlines()
             chunk = "\n".join(lines[start : end + 1])
-            if count_source(chunk, "python").code < min_chunk_loc:
+            if measure(chunk, "python").code < min_chunk_loc:
                 continue
-            chunk_loc = count_source(chunk, "python").code
+            chunk_loc = measure(chunk, "python").code
             api_before = EXTRACTORS["python"](source)
-            full_loc = count_source(source, "python").code
+            full_loc = measure(source, "python").code
             feedback = ""
             for attempt in range(1, attempts_per_chunk + 1):
                 try:
@@ -279,7 +341,7 @@ def focused_passes(
     spans = sorted(spans, key=lambda s: s[1] - s[0], reverse=True)[:top_k]
     for start, end, name, kind in spans:
         current = path.read_text(encoding="utf-8", errors="replace")
-        loc_now = count_source(current, "python").code
+        loc_now = measure(current, "python").code
         if loc_now < 15:
             break
         focus = (

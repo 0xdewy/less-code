@@ -4,6 +4,7 @@
   lc audit <path>            # mutation score of the test suite (trust oracle)
   lc reduce <path>           # static + verify-gated LLM reduction
   lc report <path>           # render markdown summary from reduce JSON
+  lc bench [dir]             # reduce every fixture, score it, append a row
 """
 
 from __future__ import annotations
@@ -16,19 +17,24 @@ from pathlib import Path
 from . import __version__
 from .audit import audit, audit_to_json
 from .langdetect import map_project
-from .loc import count_tree
+from .loc import count_tree, formatter_available
 from .pipeline import ReduceStats, reduce_project, write_report
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
     project = map_project(Path(args.path), args.lang)
-    loc = count_tree(project.source_files, project.lang)
+    loc = count_tree(project.source_files, project.lang, format_first=True)
     print(json.dumps({
         "root": str(project.root),
         "lang": project.lang,
         "source_files": [str(p) for p in project.source_files],
         "test_files": [str(p) for p in project.test_files],
-        "loc": {"code": loc.code, "comment": loc.comment, "blank": loc.blank},
+        "loc": {
+            "code": loc.code, "comment": loc.comment, "blank": loc.blank,
+            "tokens": loc.tokens, "ast_nodes": loc.ast_nodes,
+            # canonical-format counting (B1); raw counts when the tool is absent
+            "formatted": loc.formatted and formatter_available(project.lang),
+        },
     }, indent=2))
     return 0
 
@@ -51,7 +57,8 @@ def cmd_reduce(args: argparse.Namespace) -> int:
     backend = None
     if not args.static_only:
         from .backends import BudgetBackend, make_backend
-        backend = make_backend(args.backend, args.model, num_ctx=args.num_ctx)
+        backend = make_backend(args.backend, args.model, num_ctx=args.num_ctx,
+                               timeout=args.llm_timeout)
         if args.max_llm_calls:
             backend = BudgetBackend(backend, args.max_llm_calls)
     stats = reduce_project(
@@ -70,6 +77,35 @@ def cmd_reduce(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_bench(args: argparse.Namespace) -> int:
+    from .bench import markdown_table, run_bench
+
+    rows, out = run_bench(
+        Path(args.path),
+        Path(args.out_dir),
+        config="static-only" if args.static_only else f"hybrid:{args.model or args.backend}",
+        repo=Path(__file__).resolve().parent.parent,
+        backend_spec=args.backend,
+        model=args.model,
+        attempts=args.attempts,
+        max_llm_calls=args.max_llm_calls,
+        timeout=args.timeout,
+        num_ctx=args.num_ctx,
+        llm_timeout=args.llm_timeout,
+    )
+    table = markdown_table(rows)
+    print(table)
+    print(f"\nrows: {out}")
+    if args.markdown:
+        Path(args.markdown).write_text(table + "\n", encoding="utf-8")
+    # bench measures; it only fails on a broken run (red tests, changed API,
+    # or a hidden-test regression the visible gate let through)
+    ok = all(
+        r.tests_ok and r.api_ok and r.hidden_ok is not False for r in rows
+    )
+    return 0 if rows and ok else 1
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     data = json.loads(Path(args.json).read_text())
     r = data["reduce"]
@@ -82,6 +118,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         f"- reduction: static **{r['static_pct']}%** + LLM **{r['llm_extra_pct']}%**"
         f" = hybrid **{r['hybrid_pct']}%**",
         f"- tests green: {r['tests_ok']}  |  API preserved: {r['api_ok']}",
+        f"- LOC counted after canonical formatting: {r.get('formatted_loc', False)}",
         f"- attempts: {len(r['attempts'])} "
         f"(accepted: {sum(1 for a in r['attempts'] if a['outcome'] == 'accepted')})",
     ]
@@ -126,8 +163,27 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-llm-calls", type=int, default=8,
                    help="hard cap on LLM calls (GPU budget on shared machines)")
     p.add_argument("--num-ctx", type=int, default=16384, help="context window for local backend")
+    p.add_argument("--llm-timeout", type=int, default=600,
+                   help="seconds to wait for one LLM response before recording "
+                        "backend-error (a slow GPU needs more than the 600s default)")
     p.add_argument("--out", default="reduce-report.json")
     p.set_defaults(func=cmd_reduce)
+
+    p = sub.add_parser("bench", help="reduce every fixture, score it, append a bench row")
+    p.add_argument("path", nargs="?", default="fixtures")
+    p.add_argument("--backend", default="ollama", choices=["none", "ollama", "openai"])
+    p.add_argument("--model", default=None)
+    p.add_argument("--static-only", action="store_true")
+    p.add_argument("--attempts", type=int, default=2)
+    p.add_argument("--max-llm-calls", type=int, default=6)
+    p.add_argument("--num-ctx", type=int, default=16384)
+    p.add_argument("--timeout", type=int, default=600)
+    p.add_argument("--llm-timeout", type=int, default=600,
+                   help="seconds to wait for one LLM response before recording "
+                        "backend-error (a slow GPU needs more than the 600s default)")
+    p.add_argument("--out-dir", default="bench/results")
+    p.add_argument("--markdown", default=None, help="also write the table here")
+    p.set_defaults(func=cmd_bench)
 
     p = sub.add_parser("report", help="markdown summary from reduce JSON")
     p.add_argument("--json", default="reduce-report.json")

@@ -49,7 +49,45 @@ class TestApiCheck:
     def test_python_api_extraction(self):
         src = "def f(a, b=1):\n    pass\n\nclass C:\n    pass\n\n_helper = 1\n"
         api = python_api(src)
-        assert api == {"f": "def(a,b)", "C": "class"}
+        assert api == {"f": "def(a,b=1)", "C": "class"}
+
+    def test_python_api_includes_methods_with_defaults(self):
+        src = textwrap.dedent('''
+            class Product(object):
+                def __init__(self, sku, cost=0.0, *, unit="ea", **extra):
+                    pass
+
+                @property
+                def available(self):
+                    pass
+
+                @classmethod
+                def from_row(cls, row):
+                    pass
+        ''').strip()
+        api = python_api(src)
+        assert api["Product"] == "class(object)"
+        assert api["Product.__init__"] == "def(self,sku,cost=0.0,*,unit='ea',**extra)"
+        assert api["Product.available"] == "@property def(self)"
+        assert api["Product.from_row"] == "@classmethod def(cls,row)"
+
+    def test_python_api_notices_changed_default_and_dropped_method(self):
+        before = {"a.py": python_api("class C:\n    def m(self, x=1):\n        pass\n")}
+        after_default = {"a.py": python_api("class C:\n    def m(self, x=2):\n        pass\n")}
+        after_gone = {"a.py": python_api("class C:\n    pass\n")}
+        assert any("C.m" in v for v in api_violations(before, after_default))
+        assert any("missing" in v for v in api_violations(before, after_gone))
+
+    def test_python_api_allows_new_underscore_helper_method(self):
+        before = {"a.py": python_api("class C:\n    def m(self):\n        pass\n")}
+        after = {"a.py": python_api(
+            "class C:\n    def m(self):\n        pass\n\n    def _h(self):\n        pass\n"
+        )}
+        assert api_violations(before, after) == []
+
+    def test_python_api_varargs_and_posonly(self):
+        api = python_api("def f(a, /, b, *args, c=3, **kw):\n    pass\n")
+        assert api["f"] == "def(a,/,b,*args,c=3,**kw)"
 
     def test_violations_detect_removal_rename_signature(self):
         before = {"a.py": {"f": "def(x)", "g": "def()"}}
@@ -63,9 +101,55 @@ class TestApiCheck:
         src = "export function f() {}\nexport const g = 1;\nconst h = 2;\n"
         assert set(js_api(src)) == {"f", "g"}
 
+    def test_js_api_export_list_and_default(self):
+        src = (
+            "function a() {}\nfunction b() {}\nconst c = 3;\n"
+            "export { a, b as bee };\nexport default c;\n"
+        )
+        assert set(js_api(src)) == {"a", "bee", "default"}
+
+    def test_js_api_export_default_function(self):
+        assert "default" in js_api("export default function run() {}\n")
+
+    def test_js_api_commonjs_forms(self):
+        obj = "module.exports = { alpha, beta: inner };\n"
+        assert set(js_api(obj)) == {"alpha", "beta"}
+        assert set(js_api("module.exports.gamma = 1;\nexports.delta = 2;\n")) == {
+            "gamma", "delta"
+        }
+        assert set(js_api("function only() {}\nmodule.exports = only;\n")) == {"only"}
+
     def test_rust_api(self):
         src = "pub fn f() {}\npub struct S;\nfn private() {}\npub(crate) fn g() {}\n"
         assert set(rust_api(src)) == {"f", "S", "g"}
+
+    def test_rust_api_impl_methods_and_pub_fields(self):
+        src = textwrap.dedent('''
+            pub struct Stats {
+                pub words: usize,
+                hidden: usize,
+            }
+
+            impl Stats {
+                pub fn new(words: usize) -> Self { Stats { words, hidden: 0 } }
+                fn secret(&self) -> usize { self.hidden }
+            }
+
+            impl fmt::Display for Stats {
+                fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { Ok(()) }
+            }
+        ''').strip()
+        api = rust_api(src)
+        assert api["Stats"] == "pub"
+        assert api["Stats.words"] == "pub usize"
+        assert "Stats.hidden" not in api
+        assert api["Stats::new"] == "pub fn(words: usize)"
+        assert "Stats::secret" not in api
+
+    def test_rust_api_flags_changed_method_signature(self):
+        before = {"l.rs": rust_api("impl S {\n    pub fn m(&self, a: i32) {}\n}\n")}
+        after = {"l.rs": rust_api("impl S {\n    pub fn m(&self, a: i64) {}\n}\n")}
+        assert any("S::m" in v for v in api_violations(before, after))
 
 
 class TestMutator:

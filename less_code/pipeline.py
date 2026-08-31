@@ -13,7 +13,7 @@ from pathlib import Path
 from .api_check import api_surface, api_violations
 from .langdetect import map_project
 from .llm_reduce import reduce_file
-from .loc import count_source
+from .loc import formatter_available, measure
 from .static import static_pass
 from .testrunners import run_tests
 
@@ -42,6 +42,7 @@ class ReduceStats:
             "static_pct": pct(self.loc_start, self.loc_after_static),
             "hybrid_pct": pct(self.loc_start, self.loc_final),
             "llm_extra_pct": pct(self.loc_after_static, self.loc_final),
+            "formatted_loc": formatter_available(self.lang),
             "tests_ok": self.tests_ok,
             "api_ok": self.api_ok,
             "static_notes": self.static_notes,
@@ -55,7 +56,7 @@ def pct(before: int, after: int) -> float:
 
 
 def tree_loc(files: list[Path], lang: str) -> int:
-    return sum(count_source(f.read_text(encoding="utf-8", errors="replace"), lang).code for f in files)
+    return sum(measure(f.read_text(encoding="utf-8", errors="replace"), lang).code for f in files)
 
 
 def run_formatter(root: Path, lang: str) -> None:
@@ -118,7 +119,10 @@ def reduce_project(
     stats.loc_start = tree_loc(project.source_files, project.lang)
 
     # ---- L1 static ----
-    static = static_pass(root, project.lang, project.source_files, all_files)
+    static = static_pass(
+        root, project.lang, project.source_files, all_files,
+        runner=lambda r, l: run_tests(r, l, timeout=test_timeout, use_cache=False),
+    )
     stats.static_notes = static.notes
     originals = {p: p.read_text(encoding="utf-8", errors="replace") for p in project.source_files}
     for path_str, new_source in static.changed_files.items():
@@ -147,7 +151,7 @@ def reduce_project(
             ordered = ordered[:max_files]
         for path in ordered:
             source_before = path.read_text(encoding="utf-8", errors="replace")
-            loc_before = count_source(source_before, project.lang).code
+            loc_before = measure(source_before, project.lang).code
             if loc_before < 8:
                 continue
             if project.lang == "python":
@@ -158,7 +162,7 @@ def reduce_project(
                 if best_loc < loc_before:
                     path.write_text(best + "\n", encoding="utf-8")
                 records += focused_passes(backend, root, path, project.lang, runner, spec=spec)
-                now = count_source(
+                now = measure(
                     path.read_text(encoding="utf-8", errors="replace"), project.lang
                 ).code
                 if now > 1000:  # very large file: per-symbol fallback

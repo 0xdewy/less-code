@@ -23,6 +23,29 @@ module with same-size mutants faster than the clock ticks, so stale
 bytecode otherwise gets tested instead of the mutant (produced false
 survivors during fixture bring-up).
 
+## Status 2026-08-30
+
+The "Measured" table and the line references below describe the fixture **as
+built**. Since then the tool has actually run against it, and two things moved:
+
+- The three dead legacy symbols (`legacy_ledger_rows`, `old_flag_code`,
+  `LegacyReorderCalculator`, plus their `if/elif` flag ladders) were removed by
+  the python static pass and that removal was committed in `8177df1`. The
+  fixture is therefore **500 code-LOC**, not 525, and the dead-code bullets
+  below are history, not a to-do list. The surviving-mutant note in the
+  Measured table refers to those now-deleted lines.
+- The deterministic rule library (`less_code/rules.py`, added 2026-08-30)
+  now also takes `Product.is_low` (`if c: return True/return False`),
+  `Inventory.sorted_skus` (append-loop + `.sort()`), both `total_units`
+  accumulation loops and the pointless `try/except InventoryError: raise`
+  in `receive` — 13 code-LOC, 2.6%. Those bullets below are done too.
+
+Everything else in the list is still present and still unclaimed: the pasted
+SKU/qty validators, the `if/elif` ladders, `low_stock` / `tally_by_flag` /
+`busiest_area`, `total_value` and `valuate` (whose loop bodies read a temp
+twice, so the sum rule deliberately refuses them), and the unreachable
+`from_row` guard. Those are the LLM layer's target.
+
 ## Embedded reduction opportunities
 
 Dead legacy code (static pass will remove; unreferenced anywhere,

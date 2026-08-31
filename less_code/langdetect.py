@@ -18,6 +18,9 @@ EXT_LANG = {
 SKIP_DIRS = {
     "node_modules", ".git", "target", "__pycache__", ".venv", "venv",
     "dist", "build", ".tox", ".mypy_cache", ".pytest_cache", "coverage",
+    # hidden tests are the bench's safety net: never mapped, so they stay out
+    # of the prompt spec, the frozen gate and every LOC measurement.
+    "tests_hidden",
 }
 
 TEST_HINTS = ("test", "spec")

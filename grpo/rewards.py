@@ -3,7 +3,9 @@
     r = gate * (1 + lambda * loc_delta) - penalties
     gate          : +1 if frozen tests pass AND api preserved, else -1
     loc_delta     : clip((loc_before - loc_after)/loc_before, 0, 0.9)
-    penalties     : minification/degenerate-output guards
+    penalties     : degenerate-output guards (LOC is counted after canonical
+                    formatting, so minification cannot win; the line-density
+                    heuristic survives only as a no-formatter fallback)
 
 Reward-hacking mitigations (research rl.md §Reward design):
 - tests are FROZEN env state: policy output is the code unit only, never tests
@@ -25,7 +27,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from less_code.api_check import EXTRACTORS, api_violations  # noqa: E402
-from less_code.loc import count_source  # noqa: E402
+from less_code.loc import formatter_available, measure  # noqa: E402
 from less_code.testrunners import run_tests  # noqa: E402
 
 LAMBDA = 0.5
@@ -54,6 +56,9 @@ def extract_completion(completion: str) -> str | None:
 
 
 def _looks_minified(code: str) -> bool:
+    """Fallback line-density guard, used ONLY when no canonical formatter is
+    installed for the language. With B1 formatted counting, minification buys
+    nothing (the formatter undoes it), so the heuristic is not consulted."""
     lines = [l for l in code.splitlines() if l.strip()]
     if not lines:
         return False
@@ -72,12 +77,12 @@ def compute_reward(
     fixture = repo_root / sample["fixture"]
     lang = sample["lang"]
     unit = sample["unit_source"]
-    loc_before = count_source(unit, lang).code
+    loc_before = measure(unit, lang).code
 
     code = extract_completion(completion)
     if code is None:
         return RewardBreakdown(-1.0, -1, 0.0, 0.0, "no-code-block")
-    if _looks_minified(code):
+    if not formatter_available(lang) and _looks_minified(code):
         return RewardBreakdown(-1.0, -1, 0.0, MINIFICATION_PENALTY, "minified")
     try:
         if lang == "python":
@@ -92,7 +97,7 @@ def compute_reward(
     if api_violations({sample["fixture"]: api_before}, {sample["fixture"]: api_after}):
         return RewardBreakdown(-1.0, -1, 0.0, 0.0, "api-changed")
 
-    loc_after = count_source(code, lang).code
+    loc_after = measure(code, lang).code
     loc_delta = max(0.0, min(0.9, (loc_before - loc_after) / max(loc_before, 1)))
 
     # splice the unit into a scratch copy of the fixture, run frozen tests

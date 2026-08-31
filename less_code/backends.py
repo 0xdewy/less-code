@@ -10,6 +10,13 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
+# A whole-file rewrite of a 500-LOC module by a 7B model on a 6GB card takes
+# well over ten minutes, and a request that outlives this ceiling is recorded
+# as `backend-error` — a lost LLM call, not a rejected candidate. It is a knob
+# (`lc reduce/bench --llm-timeout`) because the right value is a property of
+# the hardware, not of the tool.
+DEFAULT_TIMEOUT = 600
+
 
 @dataclass
 class Backend:
@@ -28,11 +35,18 @@ class NullBackend(Backend):
 
 
 class OllamaBackend(Backend):
-    def __init__(self, model: str = "qwen2.5-coder:1.5b", host: str = "http://127.0.0.1:11434", num_ctx: int = 32768) -> None:
+    def __init__(
+        self,
+        model: str = "qwen2.5-coder:1.5b",
+        host: str = "http://127.0.0.1:11434",
+        num_ctx: int = 32768,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> None:
         super().__init__("ollama")
         self.model = model
         self.host = host.rstrip("/")
         self.num_ctx = num_ctx
+        self.timeout = timeout
 
     def complete(self, system: str, prompt: str, temperature: float = 0.2) -> str:
         payload = json.dumps(
@@ -51,14 +65,21 @@ class OllamaBackend(Backend):
             data=payload,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=600) as resp:
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             data = json.loads(resp.read().decode())
         return data.get("message", {}).get("content", "")
 
 
 class OpenAICompatBackend(Backend):
-    def __init__(self, model: str, base_url: str | None = None, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        model: str,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> None:
         super().__init__("openai")
+        self.timeout = timeout
         self.model = model
         self.base_url = (base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
@@ -83,7 +104,7 @@ class OpenAICompatBackend(Backend):
                 "Authorization": f"Bearer {self.api_key}",
             },
         )
-        with urllib.request.urlopen(req, timeout=600) as resp:
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             data = json.loads(resp.read().decode())
         return data["choices"][0]["message"]["content"]
 
@@ -131,16 +152,23 @@ class BudgetBackend(Backend):
         return self.inner.complete(system, prompt, temperature)
 
 
-def make_backend(spec: str, model: str | None = None, num_ctx: int = 32768) -> Backend:
+def make_backend(
+    spec: str,
+    model: str | None = None,
+    num_ctx: int = 32768,
+    timeout: int = DEFAULT_TIMEOUT,
+) -> Backend:
     if spec == "none":
         return NullBackend()
     if spec == "ollama":
         try:
-            backend = OllamaBackend(model=model or "qwen2.5-coder:1.5b", num_ctx=num_ctx)
+            backend = OllamaBackend(
+                model=model or "qwen2.5-coder:1.5b", num_ctx=num_ctx, timeout=timeout
+            )
             backend.complete("ping", "ping", temperature=0.0)
             return backend
         except Exception:
             return ensure_ollama(model=model or "qwen2.5-coder:1.5b")
     if spec == "openai":
-        return OpenAICompatBackend(model=model or "gpt-4o-mini")
+        return OpenAICompatBackend(model=model or "gpt-4o-mini", timeout=timeout)
     raise ValueError(f"unknown backend {spec}")
