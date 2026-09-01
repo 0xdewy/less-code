@@ -77,6 +77,15 @@ L1c guard-block outlining (less_code/outline.py, python): project-wide, not
 L1.5 audit: mutation score of the test suite (trust oracle)
       built-in mutation engine (py: AST, js/rust: masked token swaps)
 L2  LLM semantic reduction, verify-gated
+      pre-gates (cheapest first): not-smaller -> docs-preservation ->
+        parse (ast/node --check/cargo check) -> API surface -> frozen
+        tests, + a content-hash cache so the same tree is never tested
+        twice. The docs gate rejects ANY deletion or rewording of
+        documentation (python docstrings and `#` comments incl. `#:`
+        Sphinx docs, js `/** */`, rust `///`) — doc loss is invisible to
+        the suite and free in code-LOC, and doc-eating is measurably a 7B
+        model's DEFAULT strategy on mature code (40% of its click
+        proposals)
       **per-symbol proposals are the default**: the model rewrites ONE
         top-level symbol at a time, biggest first (python via ast, js/rust via
         the brace matcher), given that symbol, a signatures-only map of the
@@ -102,9 +111,6 @@ L2  LLM semantic reduction, verify-gated
       a test failure *and* an `api-changed` rejection's concrete
       missing/changed/added symbol list both go into the next prompt;
       hard LLM-call budget for shared-GPU machines
-      pre-gates (cheapest first): not-smaller -> parse (ast/node --check/
-        cargo check) -> API surface -> frozen tests, + a content-hash cache
-        so the same tree is never tested twice
       hunk decomposition: a rejected whole-file rewrite is split at top-level
         symbol boundaries and delta-debugged, so the correct 2 of 3 functions
         are accepted instead of the whole candidate being thrown away

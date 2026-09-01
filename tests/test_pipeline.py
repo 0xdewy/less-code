@@ -241,6 +241,26 @@ class TestDocsPreservationGate:
         rs_after = "pub fn f(x: i32) -> i32 {\n    x + 1\n}\n"
         assert len(docs_lost(rs_before, rs_after, "rust")) == 1
 
+    def test_sphinx_and_plain_comment_loss_is_detected_for_python(self):
+        """The docstring-only gate let an accepted click rewrite eat 10 `#:`
+        Sphinx attribute docs and a multi-line `#` comment citing the issue
+        a workaround exists for. All `#` comment lines are documentation."""
+        from less_code.llm_reduce import docs_lost
+
+        before = (
+            "class C:\n"
+            "    #: the name the command thinks it has\n"
+            "    name = ''\n"
+            "    # Refs: https://github.com/pallets/click/issues/3071\n"
+            "    def f(self):\n"
+            "        return 1\n"
+        )
+        after = "class C:\n    name = ''\n\n    def f(self):\n        return 1\n"
+        lost = docs_lost(before, after, "python")
+        assert len(lost) == 2  # the `#:` line and the issue-reference comment
+        assert any(l.startswith("#:") for l in lost)
+        assert any("Refs:" in l for l in lost)
+
     def test_multifile_candidate_losing_docs_anywhere_is_rejected(self, tmp_path):
         from less_code.llm_reduce import verify_multifile
 

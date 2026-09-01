@@ -286,3 +286,101 @@ Suggested order of the next ten working days, all CPU except day 1:
   command and opens a reviewable PR with per-hunk evidence.
 - The RL policy is measurably better than its base model *inside the same
   search*, with the ablation written up.
+
+---
+
+## Phase H — external repos (planned 2026-08-31, after the first click sprint)
+
+Phase A-G were written against the fixtures. The first real-repo sprint
+(click 8.5.1, commits `6b625a4..6699da9`) measured what actually happens on
+a mature library, and every number below is from that run. The plan that
+follows is ranked by those numbers, not by intuition.
+
+### What click measured
+
+| fact | number | consequence |
+|---|---|---|
+| static-only yield | **0.62 %** (dead code 0, ruff ≈ exhausted — click lints itself in CI, outline 1 line, rules 1 line) | deterministic layers bottom out on mature code; Phase D is done for this class of repo |
+| 7B per-symbol yield | **+0.17 %** for 40 calls | thin but real; proposer and search both waste most of the budget |
+| accept rate | 5/40 = 12.5 % (50 % tests-failed, 27 % not-smaller) | the 7B cannot hold pinned behavior on half its tries |
+| dedup executed | 0/2 groups (bad reply format, not-smaller) | the one mechanical layer that targets real fat failed at the proposal step |
+| budget allocation | 100 % of calls in `core.py` (biggest-first); 13/17 files never reached | scheduling, not model, cut coverage 13× |
+| suite trust | mutation 0.626; 4/17 files invisible on linux (platform-dead + re-exports) → `--skip-files` | the oracle caps aggressiveness; on weak files it certifies nothing |
+| accepted patterns | else-after-raise collapse, `None`-guard → `or {}`, loop → `dict.update`, import modernization — **exactly ruff's non-autofixed gap** (RET505/SIM108/PERF403/UP) | the 7B *discovered* deterministic rules; those belong in `rules.py`, not behind a GPU |
+| docs | the model's default minimization is deleting documentation; took two gate rounds (docstrings, then `#`/`#:` comments) to make doc-eating impossible | docs are now outside the metric AND touching them rejects |
+
+The deep read: on mature code the remaining fat is (a) lint families that
+have no safe autofix, (b) cross-symbol duplication, (c) over-defensive
+guards, (d) platform-conditional legacy. (a) is deterministic — the LLM
+should *discover* those rules, then never be asked again. (b) is
+mechanical — the token diff is already computed; the merge is template
+filling, not design. That leaves (c) and (d) as the genuinely-semantic
+residue, which is exactly where a stronger proposer and a stronger oracle
+matter.
+
+### Sprint A — harvest the autofix gap (CPU + one GPU evening)
+
+Turn the click findings into deterministic, zero-cost yield.
+
+- A1. **Rules from accepted hunks.** Every accepted rewrite from the hybrid
+  runs is a candidate `rules.py` entry: else-after-`raise`/`return` collapse
+  (provable), loop-merge → `dict.update` with the condition preserved
+  (provable), `None`-guard → `or` only when falsy-equivalence is provable
+  from types (else keep the guard — click's `or {}` passed only because a
+  falsy MutableMapping is an empty one). Each rule ships with an equivalence
+  argument and fixture tests, exactly like the existing library.
+- A2. **Deterministic dedup merge.** `token_diff_slots` (less_code/dedup.py)
+  already computes the exact differing runs. Build the merge mechanically —
+  parameterize those runs in member 1's body, emit one-line call members —
+  and verify-gate it. The LLM gets asked only when the mechanical merge is
+  declined; on click it never got asked successfully at all.
+- A3. **Yield-ranked scheduling (C7, now with data).** `lc audit --per-file`
+  (the audit already iterates per file; record per-file totals) → rank
+  files by code-LOC × per-file mutation score → round-robin the budget
+  across them instead of biggest-first. 13 files never visited is a
+  scheduling bug, not a model limit.
+- A4. **Few-shot from accepted hunks (C6 lite).** One accepted rewrite as an
+  example in the symbol prompt: teaches output shape, doc preservation and
+  signature-pinning better than instructions do.
+- Exit gate: same 40-call click budget → accept rate ≥ 25 %, ≥ 5 files
+  touched, static-only click ≥ 1.5 %, ≥ 1 dedup group merged mechanically.
+
+### Sprint B — manufacture trust (B7, mostly CPU + LLM for synthesis)
+
+The external-repo safety story: hidden tests don't exist out there, so grow
+them from observed behavior.
+
+- B1. **`lc characterize`**: for units in files whose per-file mutation
+  score is below threshold, propose tests; keep only those that pass on the
+  original AND kill ≥ 1 surviving mutant; freeze into the gate before
+  reduction. Both engines already exist (`mutator.py`, `testrunners.py`).
+- B2. Re-audit → un-skip files whose score rose → re-run click on the wider
+  surface (`--skip-files` shrinks).
+- B3. Differential fuzzing (B8) for pure functions — the cheap supplement.
+- Exit gate: click aggregate 0.626 → ≥ 0.75; ≥ 2 of the 4 skipped files
+  unskippable; zero hidden-regression catches by the characterization suite
+  on the Sprint A evidence tree (it must flag nothing that the frozen suite
+  already caught — and at least one injected fault it alone catches).
+
+### Sprint C — proposer ceiling + corpus (one GPU evening + CPU)
+
+- C1. **The frontier-model ablation.** The identical click run through the
+  openai-compat backend. This is a decision experiment, not a demo: if a
+  frontier proposer multiplies yield (≥ 3×), the RL path (Phase F: SFT on
+  mined accepted pairs first, GRPO after Sprint B's oracle) becomes the top
+  priority; if it doesn't, the task on mature code is genuinely hard and
+  corpus breadth wins instead.
+- C2. **Corpus to 8-10 external repos** (py: packaging, tenacity, attrs,
+  rich; js: chalk, p-limit; rs: small crates — the staged clones exist for
+  three already). Each row: audit → static-only → bounded hybrid → preserved
+  evidence dir. LOCBench v0 falls out of this for free.
+- Exit gate: proposer ceiling quantified with one number; 8 external rows
+  with preserved trees; the RL-vs-corpus decision written down with evidence.
+
+### Sequencing
+
+A before B: A's rules work at any trust level (they are gated), and A3's
+per-file audit is B's targeting input. C1 can run any evening the GPU is
+free — it needs no new code, only a model name. Nothing here touches the
+fixtures' guarantees: every addition is a new layer or a stricter gate,
+never a loosened one.

@@ -272,20 +272,28 @@ STAGES = ("not-smaller", "syntax-error", "api-changed", "tests-failed")
 def _docstrings(source: str, lang: str) -> list[str]:
     """The documentation a rewrite must preserve: python docstrings (module,
     class, function and enum-member level — click renders them on its docs
-    site) and js/ts `/** */` / rust `///` doc comments. Docstrings are not
-    code-LOC, so the size gate ignores them; without this check a 7B model
-    'reduces' click by deleting the published documentation wholesale."""
+    site) and `#` comments (incl. `#:` Sphinx attribute docs and `# type:`
+    directives — an accepted click rewrite once ate a multi-line comment
+    citing the issue it fixed); js/ts `/** */` doc blocks; rust `///`, `//!`.
+    None of it counts as code-LOC, so the size gate ignores it all — without
+    this check a 7B model 'reduces' a mature library by deleting its
+    published documentation wholesale."""
     if lang == "python":
         try:
             tree = ast.parse(source)
         except SyntaxError:
             return []
         documentable = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-        return [
+        docs = [
             doc
             for node in ast.walk(tree)
             if isinstance(node, documentable)
             and (doc := ast.get_docstring(node, clean=False))
+        ]
+        return docs + [
+            line.strip()
+            for line in source.splitlines()
+            if line.lstrip().startswith("#")
         ]
     if lang in ("javascript", "typescript"):
         return re.findall(r"/\*\*(.*?)\*/", source, re.DOTALL)

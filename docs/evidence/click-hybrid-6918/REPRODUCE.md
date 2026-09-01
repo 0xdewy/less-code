@@ -1,5 +1,10 @@
 # click 8.5.1 — first external-repo hybrid reduction
 
+> **SUPERSEDED by `docs/evidence/click-hybrid-6926/`**: this tree predates
+> the `#`-comment half of the docs gate — it kept all 93 docstrings but
+> still lost 10 `#:` Sphinx attribute docs and an issue-reference comment
+> block in `core.py`. The 6926 tree loses nothing.
+
 - baseline: pristine clone at `36baa15` ("Start 8.5.1"), editable-installed
   into the host venv; `qwen2.5-coder:7b` via ollama on a RTX 3070 (8 GB)
 - result: **6973 -> 6918 canonical code-LOC = 0.79%** (static 0.62% + LLM
