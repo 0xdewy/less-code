@@ -13,7 +13,7 @@ from pathlib import Path
 from .api_check import api_surface, api_violations
 from .langdetect import map_project
 from .loc import formatter_available, measure
-from .static import static_pass
+from .static import StaticResult, static_pass
 from .testrunners import run_tests, shadowed_imports
 import contextlib
 
@@ -92,6 +92,7 @@ def reduce_project(
     skip_files: set[str] | None = None,
     trust: dict[str, float] | None = None,
     symbols_per_sweep: int = 3,
+    run_static: bool = True,
 ) -> ReduceStats:
     project = map_project(root, lang)
     stats = ReduceStats(lang=project.lang, files_considered=len(project.source_files))
@@ -147,11 +148,18 @@ def reduce_project(
     stats.loc_start = tree_loc(project.source_files, project.lang)
 
     # ---- L1 static ----
-    static = static_pass(
-        root, project.lang, project.source_files, all_files,
-        runner=lambda r, l: run_tests(r, l, timeout=test_timeout, use_cache=False),
-    )
-    stats.static_notes = static.notes
+    if not run_static:
+        # mining mode: the LLM layer sees PRISTINE code, where the verbose
+        # patterns still exist — pairs mined on a post-static floor are all
+        # rejections (measured: 25 calls on the reduced py fixture, 0 accepted)
+        stats.static_notes = ["static pass skipped (--no-static)"]
+        static = StaticResult()
+    else:
+        static = static_pass(
+            root, project.lang, project.source_files, all_files,
+            runner=lambda r, l: run_tests(r, l, timeout=test_timeout, use_cache=False),
+        )
+        stats.static_notes = static.notes
     api_pre_static = api_surface(project.source_files, project.lang)
     originals = {p: p.read_text(encoding="utf-8", errors="replace") for p in project.source_files}
     for path_str, new_source in static.changed_files.items():

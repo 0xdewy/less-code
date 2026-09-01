@@ -143,6 +143,7 @@ def cmd_reduce(args: argparse.Namespace) -> int:
         strategy=args.strategy,
         skip_files=(set(args.skip_files.split(",")) if args.skip_files else None),
         trust=_load_trust(args.trust),
+        run_static=not args.no_static,
     )
     out = Path(args.out)
     write_report(stats, out)
@@ -247,6 +248,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--attempts", type=int, default=3)
     p.add_argument("--max-files", type=int, default=None)
     p.add_argument("--no-format", action="store_true")
+    p.add_argument("--no-static", action="store_true",
+                   help="skip the L1 static pass (mining on pristine code, or "
+                        "isolating L2 yield)")
     p.add_argument("--timeout", type=int, default=600)
     p.add_argument("--max-llm-calls", type=int, default=8,
                    help="hard cap on LLM calls (GPU budget on shared machines)")
