@@ -150,7 +150,9 @@ def main() -> int:
         learning_rate=cfg["lr"],
         bf16=True,
         logging_steps=5,
-        save_strategy="no",
+        save_strategy="steps",   # the GPU is shared: a kill at step 37 loses
+        save_steps=50,           # everything otherwise
+        save_total_limit=2,
         report_to=[],
         max_length=cfg["max_length"],
     )
