@@ -1,0 +1,118 @@
+{
+  "total": 80,
+  "killed": 52,
+  "score": 0.65,
+  "survivors": [
+    "__init__.py:py-site-7",
+    "__init__.py:py-site-9",
+    "_compat.py:py-site-0",
+    "_compat.py:py-site-21",
+    "_compat.py:py-site-64",
+    "_compat.py:py-site-86",
+    "_termui_impl.py:py-site-0",
+    "_termui_impl.py:py-site-69",
+    "_textwrap.py:py-site-0",
+    "_textwrap.py:py-site-41",
+    "_textwrap.py:py-site-55",
+    "_winconsole.py:py-site-0",
+    "_winconsole.py:py-site-11",
+    "_winconsole.py:py-site-22",
+    "_winconsole.py:py-site-33",
+    "_winconsole.py:py-site-44",
+    "decorators.py:py-site-25",
+    "decorators.py:py-site-37",
+    "formatting.py:py-site-25",
+    "formatting.py:py-site-50",
+    "globals.py:py-site-0",
+    "globals.py:py-site-1",
+    "shell_completion.py:py-site-14",
+    "termui.py:py-site-31",
+    "testing.py:py-site-0",
+    "types.py:py-site-0",
+    "types.py:py-site-56",
+    "utils.py:py-site-0"
+  ],
+  "skipped_no_baseline": false,
+  "per_file": {
+    "__init__.py": {
+      "total": 5,
+      "killed": 3,
+      "score": 0.6
+    },
+    "_compat.py": {
+      "total": 5,
+      "killed": 1,
+      "score": 0.2
+    },
+    "_termui_impl.py": {
+      "total": 5,
+      "killed": 3,
+      "score": 0.6
+    },
+    "_textwrap.py": {
+      "total": 5,
+      "killed": 2,
+      "score": 0.4
+    },
+    "_winconsole.py": {
+      "total": 5,
+      "killed": 0,
+      "score": 0.0
+    },
+    "core.py": {
+      "total": 5,
+      "killed": 5,
+      "score": 1.0
+    },
+    "decorators.py": {
+      "total": 5,
+      "killed": 3,
+      "score": 0.6
+    },
+    "exceptions.py": {
+      "total": 5,
+      "killed": 5,
+      "score": 1.0
+    },
+    "formatting.py": {
+      "total": 5,
+      "killed": 3,
+      "score": 0.6
+    },
+    "globals.py": {
+      "total": 5,
+      "killed": 3,
+      "score": 0.6
+    },
+    "parser.py": {
+      "total": 5,
+      "killed": 5,
+      "score": 1.0
+    },
+    "shell_completion.py": {
+      "total": 5,
+      "killed": 4,
+      "score": 0.8
+    },
+    "termui.py": {
+      "total": 5,
+      "killed": 4,
+      "score": 0.8
+    },
+    "testing.py": {
+      "total": 5,
+      "killed": 4,
+      "score": 0.8
+    },
+    "types.py": {
+      "total": 5,
+      "killed": 3,
+      "score": 0.6
+    },
+    "utils.py": {
+      "total": 5,
+      "killed": 4,
+      "score": 0.8
+    }
+  }
+}
