@@ -181,10 +181,17 @@ def reduce_project(
             flush=True,
         )
 
-        spec = "\n\n".join(
-            f.read_text(encoding="utf-8", errors="replace")[:40000]
+        # behavior-spec material for per-unit selection (select_spec): a
+        # repo-scale suite (click: ~50 files) cannot go into one prompt, and
+        # a 40k-char global prefix would feed every prompt tests unrelated to
+        # the unit being rewritten.
+        spec_tests: list[tuple[str, str]] = [
+            (
+                str(f.relative_to(root)),
+                f.read_text(encoding="utf-8", errors="replace"),
+            )
             for f in project.test_files
-        )[:40000]
+        ]
         runner = lambda r, l: run_tests(r, l, timeout=test_timeout)  # noqa: E731
         ordered = sorted(project.source_files, key=lambda f: -f.stat().st_size)
         if max_files:
@@ -198,8 +205,8 @@ def reduce_project(
         # loop still gets the rest.
         dedup_records = [] if strategy == "whole-file" else reduce_duplicate_groups(
             backend, root, project.source_files, project.lang, runner,
-            attempts_per_group=max(1, attempts_per_file - 1), spec=spec,
-            max_groups=dedup_groups,
+            attempts_per_group=max(1, attempts_per_file - 1),
+            max_groups=dedup_groups, spec_tests=spec_tests,
         )
         for rec in dedup_records:
             stats.attempt_records.append(
@@ -224,7 +231,8 @@ def reduce_project(
             # dedup/per-symbol loops entirely.
             records = [] if strategy == "whole-file" else reduce_symbols(
                 backend, root, path, project.lang, runner,
-                attempts_per_symbol=max(1, attempts_per_file - 1), spec=spec,
+                attempts_per_symbol=max(1, attempts_per_file - 1),
+                spec_tests=spec_tests,
             )
             if whole_file_sweep or strategy == "whole-file":
                 # optional final sweep: only a whole-file rewrite can dedup
@@ -234,7 +242,7 @@ def reduce_project(
                 best, best_loc, sweep_records = reduce_file(
                     backend, root, path, project.lang, runner,
                     attempts=attempts_per_file if strategy == "whole-file" else 1,
-                    spec=spec,
+                    spec_tests=spec_tests,
                 )
                 records += sweep_records
                 if best_loc < loc_now:

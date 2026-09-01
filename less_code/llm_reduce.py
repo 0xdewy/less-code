@@ -22,6 +22,52 @@ import contextlib
 
 PROGRESS = None  # set by CLI to a printer for live per-attempt output
 
+#: chars of test-spec per prompt: enough for several focused test files
+SPEC_BUDGET = 12_000
+
+#: test material for spec selection: (identity, source) per test file
+SpecTests = list[tuple[str, str]]
+
+
+def select_spec(tests: SpecTests, tokens, budget: int = SPEC_BUDGET) -> str:
+    """The tests that pin THIS unit — not a global prefix of the suite.
+
+    A repo-scale suite (click: ~50 files, ~25k LOC) cannot fit in a prompt,
+    and truncating it to one 40k-char prefix feeds the model tests that have
+    nothing to do with the symbol being rewritten. Rank instead: test files
+    mentioning more of the unit's tokens (word-boundary match) come first,
+    then conftest.py (fixture context), then the rest in name order until the
+    budget is full. Whole files are kept while they fit so a test is never
+    silently cut mid-assertion when there is room to keep it whole.
+    """
+    patterns = [
+        re.compile(rf"\b{re.escape(t)}\b")
+        for t in sorted({t for t in tokens if t})
+    ]
+
+    def hits(text: str) -> int:
+        return sum(1 for p in patterns if p.search(text))
+
+    ranked = sorted(
+        tests,
+        key=lambda kv: (-hits(kv[1]), 0 if Path(kv[0]).name == "conftest.py" else 1, kv[0]),
+    )
+    parts: list[str] = []
+    used = 0
+    for _name, text in ranked:
+        if used >= budget:
+            break
+        remaining = budget - used
+        if len(text) <= remaining:
+            take = text
+        elif remaining >= 400:
+            take = text[:remaining]
+        else:
+            break
+        parts.append(take)
+        used += len(take) + 2
+    return "\n\n".join(parts)
+
 
 def _check_lang(lang, feedback, spec, message):
     tag = {'python': 'python', 'javascript': 'javascript', 'typescript': 'typescript', 'rust': 'rust'}[lang]
@@ -308,13 +354,19 @@ def reduce_file(
     spec: str = "",
     focus: str = "",
     decompose_rejected: bool = True,
+    spec_tests: SpecTests | None = None,
 ) -> tuple[str, int, list[AttemptRecord]]:
     """Greedy multi-attempt reduction of one file. Returns (best_source, loc, records).
 
     A rejected whole-file rewrite is not thrown away: it is decomposed into
     symbol-aligned hunks and the largest passing subset is accepted (C1).
+
+    With `spec_tests` the behavior spec is selected for this file (tests
+    mentioning any of its top-level symbols or its module name).
     """
     source = path.read_text(encoding="utf-8", errors="replace")
+    if spec_tests is not None:
+        spec = select_spec(spec_tests, [*EXTRACTORS[lang](source), path.stem])
     loc_before = measure(source, lang).code
     api_before = EXTRACTORS[lang](source)
     records: list[AttemptRecord] = []
@@ -640,6 +692,7 @@ def reduce_symbols(
     spec: str = "",
     sweeps: int = 1,
     max_symbols: int | None = None,
+    spec_tests: SpecTests | None = None,
 ) -> list[AttemptRecord]:
     """Rewrite one top-level symbol at a time, biggest first (roadmap C2).
 
@@ -648,6 +701,9 @@ def reduce_symbols(
     milliseconds, and the test-result cache makes repeats free. Spans are
     re-resolved by key after every acceptance because line numbers shift as
     the file shrinks.
+
+    With `spec_tests` the behavior spec is selected per symbol (the tests
+    that mention it), instead of one flat `spec` string for every prompt.
     """
     records: list[AttemptRecord] = []
     done: set[str] = set()
@@ -678,6 +734,10 @@ def reduce_symbols(
             api_before = EXTRACTORS[lang](source)
             full_loc = measure(source, lang).code
             owner = key.rsplit(".", 1)[0] if "." in key and lang == "python" else ""
+            symbol_spec = (
+                select_spec(spec_tests, (key, name, owner, path.stem))
+                if spec_tests is not None else spec
+            )
             indent = len(lines[start]) - len(lines[start].lstrip()) if owner else 0
             fmap = (
                 class_context(source, owner, name) if owner
@@ -690,7 +750,7 @@ def reduce_symbols(
                         SYMBOL_SYSTEM_PROMPT,
                         build_symbol_prompt(
                             path, lang, key, symbol, symbol_loc, fmap, feedback,
-                            spec=spec, owner=owner,
+                            spec=symbol_spec, owner=owner,
                         ),
                         temperature=0.1 if attempt == 1 else 0.5,
                     )
@@ -912,6 +972,7 @@ def reduce_duplicate_groups(
     max_groups: int = 3,
     min_group_loc: int = 8,
     threshold: float = 0.6,
+    spec_tests: SpecTests | None = None,
 ) -> list[AttemptRecord]:
     """Propose one shared `_helper` per near-duplicate group (C2b)."""
     from .dedup import find_duplicate_groups
@@ -930,13 +991,20 @@ def reduce_duplicate_groups(
         group = groups[0]
         attempted.add(frozenset(m.label for m in group.members))
         tag = "dedup:" + "+".join(m.key for m in group.members)[:80]
+        group_spec = (
+            select_spec(
+                spec_tests,
+                [m.key for m in group.members] + [Path(m.path).stem for m in group.members],
+            )
+            if spec_tests is not None else spec
+        )
         loc_before = sum(measure(sources[p], lang).code for p in group.files)
         feedback = ""
         for attempt in range(1, attempts_per_group + 1):
             try:
                 response = backend.complete(
                     DEDUP_SYSTEM_PROMPT,
-                    build_dedup_prompt(group, lang, feedback, spec=spec),
+                    build_dedup_prompt(group, lang, feedback, spec=group_spec),
                     temperature=0.1 if attempt == 1 else 0.5,
                 )
             except Exception as exc:

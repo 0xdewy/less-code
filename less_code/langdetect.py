@@ -29,7 +29,10 @@ SKIP_DIRS = {
     "docs", "examples", "benchmarks",
 }
 
-TEST_HINTS = ("test", "spec")
+#: Directory names that make everything inside a test: pytest's `tests/`,
+#: cargo integration tests, jest's `__tests__`. Deliberately NOT `testing/`:
+#: projects ship modules under that name (numpy.testing, click.testing).
+TEST_DIRS = {"tests", "test", "__tests__"}
 
 
 @dataclass
@@ -45,8 +48,36 @@ class ProjectMap:
 
 
 def is_test_file(path: Path) -> bool:
+    """Convention-based test detection: name patterns per language, or any
+    parent directory named as a test directory.
+
+    The old substring rule (`"test" in name`) misclassified shipped library
+    modules as tests — click's `testing.py` (the CliRunner, public API) was
+    silently excluded from both the reduction targets and the API surface the
+    gate enforces. False negatives (a test file read as source) would be
+    worse still: the reducer may never rewrite its own oracle, so the name
+    patterns err toward classifying as test (`*_test.py`, `-spec.ts`, ...).
+    """
+    parts = path.parts
     name = path.name.lower()
-    return any(h in name for h in TEST_HINTS) or "tests" in path.parts
+    suffix = path.suffix.lower()
+    if any(part in TEST_DIRS for part in parts[:-1]):
+        return True
+    if suffix == ".py":
+        return (
+            name.startswith("test_")
+            or name.endswith("_test.py")
+            or name == "conftest.py"
+        )
+    if suffix in (".js", ".mjs", ".cjs", ".ts", ".mts"):
+        stem = name.rsplit(".", 1)[0]
+        return any(
+            stem.endswith(sep)
+            for sep in (".test", ".spec", "_test", "_spec", "-test", "-spec")
+        ) or stem.startswith(("test-", "spec-"))
+    # rust unit tests live in #[cfg(test)] mods inside source files; only the
+    # cargo `tests/` directory rule (above) marks whole files as tests.
+    return False
 
 
 def detect_language(root: Path) -> str | None:

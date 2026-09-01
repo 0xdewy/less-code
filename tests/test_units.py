@@ -1,11 +1,12 @@
 import textwrap
+from pathlib import Path
 
 import pytest
 
 from less_code.api_check import api_surface, api_violations, js_api, python_api, rust_api
 from less_code.loc import count_source
 from less_code.mutator import generate_mutations
-from less_code.llm_reduce import extract_code
+from less_code.llm_reduce import extract_code, select_spec
 from less_code.langdetect import map_project
 from less_code.testrunners import _probe_import, shadowed_imports
 
@@ -26,6 +27,61 @@ class TestEntryPointTreesAreNotLibraries:
             p.write_text("x = 1\n")
         project = map_project(root)
         assert [p.name for p in project.source_files] == ["__init__.py"]
+
+
+class TestIsTestFile:
+    """Convention-based classification. click's `testing.py` (public API,
+    CliRunner) was classified as a test by the old `"test" in name` substring
+    rule — excluded from reduction targets AND from the gate's API surface."""
+
+    @pytest.mark.parametrize("name,expected", [
+        # python conventions
+        ("test_inventory.py", True),
+        ("inventory_test.py", True),
+        ("conftest.py", True),
+        ("testing.py", False),          # click's CliRunner module: SOURCE
+        ("latest.py", False),           # substring 'test' is not a convention
+        ("_compat.py", False),
+        # js/ts conventions
+        ("reporting.test.js", True),
+        ("reporting.spec.ts", True),
+        ("contest.js", False),          # substring, not a suffix convention
+        ("latest.js", False),
+        ("test-utils.ts", True),        # '-test'/-spec kebab IS mocha style
+        ("utils_test.mjs", True),
+        # rust: unit tests are #[cfg(test)] mods; file names carry no signal
+        ("integration.rs", False),
+    ])
+    def test_name_conventions(self, name, expected):
+        from less_code.langdetect import is_test_file
+        assert is_test_file(Path("src/pkg") / name) is expected
+
+    @pytest.mark.parametrize("rel", [
+        "tests/test_basic.py",       # pytest / cargo integration tests
+        "test/test_x.py",            # mocha's default dir
+        "src/__tests__/a.test.js",   # jest
+        "tests/utils/helper.py",     # everything under a test dir is test
+    ])
+    def test_test_directories(self, rel):
+        from less_code.langdetect import is_test_file
+        assert is_test_file(Path("proj") / rel) is True
+
+    def test_testing_directory_is_not_a_test_directory(self, tmp_path):
+        """numpy.testing / click.testing ship under `testing/` — that dir name
+        says nothing about the file being a test."""
+        from less_code.langdetect import is_test_file
+        assert is_test_file(Path("proj/testing/utils.py")) is False
+
+    def test_click_testing_module_maps_to_source(self, tmp_path):
+        """The realized bug: a shipped public-API module excluded from both the
+        reduction targets and the enforced API surface."""
+        pkg = tmp_path / "src" / "click"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("")
+        (pkg / "testing.py").write_text("class CliRunner:\n    pass\n")
+        project = map_project(tmp_path)
+        assert [p.name for p in project.source_files] == ["__init__.py", "testing.py"]
+        assert project.test_files == []
 
 
 class TestShadowedImports:
@@ -57,6 +113,85 @@ class TestShadowedImports:
         (tmp_path / "mod.py").write_text("X = 1\n")
         assert _probe_import(tmp_path, "mod").endswith("mod.py")
         assert shadowed_imports(tmp_path) == []
+
+
+class TestSelectSpec:
+    """Per-unit test selection: the spec must be the tests that pin THIS
+    unit, not a global 40k-char prefix of a repo-scale suite (the old
+    pipeline fed click's conftest + alphabetically-first tests to every
+    prompt regardless of the symbol being rewritten)."""
+
+    def test_mentioning_tests_rank_first(self):
+        tests = [
+            ("tests/test_other.py", "def test_other():\n    assert True\n"),
+            ("tests/test_core.py", "def test_core():\n    assert Core()\n"),
+        ]
+        spec = select_spec(tests, ["Core"])
+        assert spec.index("test_core") < spec.index("test_other")
+
+    def test_budget_cuts_after_the_relevant_tests(self):
+        relevant = ("tests/test_core.py", "def test_core():\n    assert Core()\n")
+        filler = ("tests/test_filler.py", "# filler\n" * 100)  # ~800 chars
+        spec = select_spec([filler, relevant], ["Core"], budget=200)
+        assert "assert Core()" in spec
+        assert "filler" not in spec
+
+    def test_matching_is_word_boundary_not_substring(self):
+        tests = [
+            ("tests/a.py", "hardcore = 1\n"),
+            ("tests/b.py", "from x import core\n"),
+        ]
+        spec = select_spec(tests, ["core"], budget=1000)
+        assert spec.index("from x import core") < spec.index("hardcore")
+
+    def test_conftest_precedes_non_mentioning_fillers(self):
+        tests = [
+            ("tests/test_x.py", "X = 1\n"),
+            ("tests/conftest.py", "# fixtures\n"),
+            ("tests/test_a.py", "A = 1\n"),
+        ]
+        spec = select_spec(tests, ["Zz"])  # no test mentions Zz
+        assert spec.index("# fixtures") < spec.index("A = 1") < spec.index("X = 1")
+
+    def test_whole_files_are_kept_while_they_fit(self):
+        one = ("tests/a.py", "a" * 400 + "\n")
+        two = ("tests/b.py", "b" * 400 + "\n")
+        spec = select_spec([one, two], ["Zz"], budget=900)
+        assert "a" * 400 in spec and "b" * 400 in spec
+
+
+class TestSymbolSpecSelection:
+    def test_reduce_symbols_prompt_carries_selected_spec(self, tmp_path):
+        from less_code.backends import Backend
+        from less_code.llm_reduce import reduce_symbols
+
+        root = tmp_path / "proj"
+        root.mkdir()
+        (root / "mod.py").write_text(
+            'def sign(n):\n    if n > 0:\n        return "positive"\n    return "other"\n\n\ndef clamp(v):\n    return v\n'
+        )
+        prompts = []
+
+        class Capturing(Backend):
+            def __init__(self):
+                super().__init__("capture")
+
+            def complete(self, system, prompt, temperature=0.2):
+                prompts.append(prompt)
+                return "no fenced block"
+
+        spec_tests = [
+            ("tests/conftest.py", "# fixtures\n"),
+            ("tests/test_mod.py", "from mod import sign\n\ndef test_sign():\n    assert sign(5) == 'positive'\n"),
+        ]
+        reduce_symbols(
+            Capturing(), root, root / "mod.py", "python",
+            lambda r, l: None,  # never reached: no candidate parses
+            attempts_per_symbol=1, max_symbols=1, min_symbol_loc=1,
+            spec_tests=spec_tests,
+        )
+        assert prompts, "no prompt was built"
+        assert "assert sign(5) == 'positive'" in prompts[0]
 
 
 class TestLoc:
