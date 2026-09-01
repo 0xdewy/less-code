@@ -1,0 +1,274 @@
+{
+  "reduce": {
+    "lang": "python",
+    "files_considered": 14,
+    "loc_start": 1533,
+    "loc_after_static": 1527,
+    "loc_final": 1514,
+    "static_only_loc_final": 1527,
+    "static_pct": 0.39,
+    "hybrid_pct": 1.24,
+    "llm_extra_pct": 0.85,
+    "formatted_loc": true,
+    "tests_ok": true,
+    "api_ok": true,
+    "api_baseline": "post-static",
+    "static_removed_symbols": [],
+    "static_notes": [
+      "retry.py: outlined _check_retry_state() from 6 sites (3 code lines saved)",
+      "__init__.py: ruff --fix (safe tier)",
+      "__init__.py: ruff --fix (unsafe tier)",
+      "wait.py: ruff --fix (unsafe tier)"
+    ],
+    "attempts": [
+      {
+        "file": "dedup:Retrying.__call__+TornadoRetrying.__call__",
+        "attempt": 1,
+        "outcome": "not-smaller",
+        "loc_before": 652,
+        "loc_after": 668,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "dedup:BaseRetrying.__init__+BaseRetrying.copy",
+        "attempt": 1,
+        "outcome": "bad-dedup-reply",
+        "loc_before": 611,
+        "loc_after": 611,
+        "detail": "the new helper(s) ['BaseRetrying'] must be private: rename with a leading underscore"
+      },
+      {
+        "file": "dedup:BaseRetrying.wraps+AsyncRetrying.wraps",
+        "attempt": 1,
+        "outcome": "bad-dedup-reply",
+        "loc_before": 802,
+        "loc_after": 802,
+        "detail": "the new helper(s) ['BaseRetrying', 'AsyncRetrying'] must be private: rename with a leading underscore"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/__init__.py:retry#4",
+        "attempt": 1,
+        "outcome": "duplicate-symbol",
+        "loc_before": 611,
+        "loc_after": 611,
+        "detail": "duplicate-symbol: ['retry']"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/__init__.py:BaseRetrying.copy",
+        "attempt": 1,
+        "outcome": "duplicate-symbol",
+        "loc_before": 611,
+        "loc_after": 611,
+        "detail": "duplicate-symbol: ['retry']"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/__init__.py:BaseRetrying.wraps",
+        "attempt": 1,
+        "outcome": "duplicate-symbol",
+        "loc_before": 611,
+        "loc_after": 611,
+        "detail": "duplicate-symbol: ['retry']"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/asyncio/__init__.py:AsyncRetrying.__init__",
+        "attempt": 1,
+        "outcome": "not-smaller",
+        "loc_before": 191,
+        "loc_after": 191,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/asyncio/__init__.py:AsyncRetrying.__call__",
+        "attempt": 1,
+        "outcome": "not-smaller",
+        "loc_before": 191,
+        "loc_after": 193,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/asyncio/__init__.py:AsyncRetrying.wraps",
+        "attempt": 1,
+        "outcome": "not-smaller",
+        "loc_before": 191,
+        "loc_after": 191,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/retry.py:retry_base",
+        "attempt": 1,
+        "outcome": "not-smaller",
+        "loc_before": 191,
+        "loc_after": 191,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/retry.py:retry_if_exception_cause_type",
+        "attempt": 1,
+        "outcome": "docs-lost",
+        "loc_before": 191,
+        "loc_after": 187,
+        "detail": "docs-lost: 3 docstring(s)/doc-comment(s) removed"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/retry.py:retry_if_exception_message",
+        "attempt": 1,
+        "outcome": "tests-failed",
+        "loc_before": 191,
+        "loc_after": 188,
+        "detail": "tests-failed: # An exception whose str() is empty (e.g. a bare ``RuntimeError()``) is"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/wait.py:wait_exponential_jitter",
+        "attempt": 1,
+        "outcome": "not-smaller",
+        "loc_before": 154,
+        "loc_after": 154,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/wait.py:wait_exponential",
+        "attempt": 1,
+        "outcome": "not-smaller",
+        "loc_before": 154,
+        "loc_after": 154,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/wait.py:wait_exception",
+        "attempt": 1,
+        "outcome": "accepted",
+        "loc_before": 154,
+        "loc_after": 151,
+        "detail": "accepted"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/asyncio/retry.py:async_retry_base",
+        "attempt": 1,
+        "outcome": "accepted",
+        "loc_before": 97,
+        "loc_after": 89,
+        "detail": "accepted"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/asyncio/retry.py:retry_any",
+        "attempt": 1,
+        "outcome": "tests-failed",
+        "loc_before": 89,
+        "loc_after": 86,
+        "detail": "tests-failed: E       TypeError: 'async_generator' object is not iterable"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/asyncio/retry.py:retry_all",
+        "attempt": 1,
+        "outcome": "tests-failed",
+        "loc_before": 89,
+        "loc_after": 86,
+        "detail": "tests-failed: E       TypeError: 'async_generator' object is not iterable"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/stop.py:stop_before_delay",
+        "attempt": 1,
+        "outcome": "accepted",
+        "loc_before": 64,
+        "loc_after": 63,
+        "detail": "accepted"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/stop.py:stop_after_delay",
+        "attempt": 1,
+        "outcome": "not-smaller",
+        "loc_before": 63,
+        "loc_after": 65,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/stop.py:stop_base",
+        "attempt": 1,
+        "outcome": "not-smaller",
+        "loc_before": 63,
+        "loc_after": 63,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/tornadoweb.py:TornadoRetrying",
+        "attempt": 1,
+        "outcome": "not-smaller",
+        "loc_before": 41,
+        "loc_after": 41,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/_utils.py:get_callback_name",
+        "attempt": 1,
+        "outcome": "docs-lost",
+        "loc_before": 69,
+        "loc_after": 65,
+        "detail": "docs-lost: 1 docstring(s)/doc-comment(s) removed"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/_utils.py:find_ordinal",
+        "attempt": 1,
+        "outcome": "docs-lost",
+        "loc_before": 69,
+        "loc_after": 67,
+        "detail": "docs-lost: 1 docstring(s)/doc-comment(s) removed"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/_utils.py:wrap_to_async_func",
+        "attempt": 1,
+        "outcome": "not-smaller",
+        "loc_before": 69,
+        "loc_after": 69,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/before_sleep.py:before_sleep_log",
+        "attempt": 1,
+        "outcome": "not-smaller",
+        "loc_before": 34,
+        "loc_after": 42,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/after.py:after_log",
+        "attempt": 1,
+        "outcome": "not-smaller",
+        "loc_before": 20,
+        "loc_after": 20,
+        "detail": "not-smaller"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/before.py:before_log",
+        "attempt": 1,
+        "outcome": "accepted",
+        "loc_before": 16,
+        "loc_after": 15,
+        "detail": "accepted"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/__init__.py:_RetryDecorated",
+        "attempt": 1,
+        "outcome": "duplicate-symbol",
+        "loc_before": 611,
+        "loc_after": 611,
+        "detail": "duplicate-symbol: ['retry']"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/__init__.py:AttemptManager",
+        "attempt": 1,
+        "outcome": "duplicate-symbol",
+        "loc_before": 611,
+        "loc_after": 611,
+        "detail": "duplicate-symbol: ['retry']"
+      },
+      {
+        "file": "/tmp/opencode/ten-work/tenacity/__init__.py:Retrying",
+        "attempt": 1,
+        "outcome": "budget-exhausted",
+        "loc_before": 611,
+        "loc_after": 611,
+        "detail": "LLM budget exhausted (30 calls)"
+      }
+    ]
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "total": 53,
+  "killed": 43,
+  "score": 0.8113,
+  "survivors": [
+    "conf.py:py-site-0",
+    "__init__.py:py-site-52",
+    "_utils.py:py-site-0",
+    "_utils.py:py-site-4",
+    "_utils.py:py-site-24",
+    "_version.py:py-site-0",
+    "_version.py:py-site-1",
+    "_version.py:py-site-2",
+    "retry.py:py-site-5",
+    "wait.py:py-site-26"
+  ],
+  "skipped_no_baseline": false,
+  "per_file": {
+    "conf.py": {
+      "total": 1,
+      "killed": 0,
+      "score": 0.0
+    },
+    "__init__.py": {
+      "total": 6,
+      "killed": 6,
+      "score": 1.0
+    },
+    "_utils.py": {
+      "total": 6,
+      "killed": 3,
+      "score": 0.5
+    },
+    "_version.py": {
+      "total": 3,
+      "killed": 0,
+      "score": 0.0
+    },
+    "after.py": {
+      "total": 1,
+      "killed": 1,
+      "score": 1.0
+    },
+    "retry.py": {
+      "total": 6,
+      "killed": 6,
+      "score": 1.0
+    },
+    "before_sleep.py": {
+      "total": 5,
+      "killed": 5,
+      "score": 1.0
+    },
+    "stop.py": {
+      "total": 6,
+      "killed": 6,
+      "score": 1.0
+    },
+    "tornadoweb.py": {
+      "total": 1,
+      "killed": 1,
+      "score": 1.0
+    },
+    "wait.py": {
+      "total": 6,
+      "killed": 5,
+      "score": 0.8333
+    }
+  }
+}
