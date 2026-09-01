@@ -185,6 +185,59 @@ def test_whole_file_strategy_skips_symbol_loops(tmp_path):
                     for a in j["attempts"] if a["outcome"] == "accepted"), "no symbol/dedup records expected"
 
 
+class TestMineSink:
+    """SFT pairs must be exactly what the gate certified: mining records the
+    (system, prompt, response) of ACCEPTED proposals only — a doc-eating or
+    behavior-breaking acceptance would poison the training set."""
+
+    def test_accepted_proposals_are_mined(self, tmp_path):
+        import json
+
+        import less_code.llm_reduce as lr
+        from less_code.backends import Backend
+
+        class OneGoodRewrite(Backend):
+            def __init__(self):
+                super().__init__("mine")
+                self.n = 0
+
+            def complete(self, system, prompt, temperature=0.2):
+                self.n += 1
+                if "clamp" in prompt[:600] and "Rewrite ONLY" in prompt:
+                    return "```python\ndef clamp(v, lo, hi):\n    return max(lo, min(v, hi))\n```"
+                return f"```python\n{VERBOSE_MODULE}```"  # not smaller / rejected
+
+        root = _project(tmp_path)
+        mine = tmp_path / "pairs.jsonl"
+        lr.MINE_SINK = lambda *a: mine.open("a").write(json.dumps(a) + "\n")
+        try:
+            stats = reduce_project(root, backend=OneGoodRewrite(), formatter=False)
+        finally:
+            lr.MINE_SINK = None
+        assert stats.tests_ok
+        rows = [json.loads(l) for l in mine.read_text().splitlines() if l.strip()]
+        assert rows, "nothing was mined"
+        for row in rows:
+            assert set(row[:2]) == {"kind", "unit"} or len(row) == 5
+        # at least one accepted symbol pair with a fenced response
+        assert any("clamp" in r[1] for r in rows)
+
+    def test_rejected_proposals_are_not_mined(self, tmp_path):
+        import json
+
+        import less_code.llm_reduce as lr
+
+        root = _project(tmp_path)
+        mine = tmp_path / "pairs.jsonl"
+        lr.MINE_SINK = lambda *a: mine.open("a").write(json.dumps(a) + "\n")
+        try:
+            stats = reduce_project(root, backend=BrokenBackend(), formatter=False)
+        finally:
+            lr.MINE_SINK = None
+        assert stats.loc_final == stats.loc_after_static  # nothing accepted
+        assert mine.exists() is False or mine.read_text().strip() == ""
+
+
 class TestDocsPreservationGate:
     """A 7B model 'reduces' a mature library mostly by deleting its published
     documentation (click: whole enum docstrings, `#:` Sphinx comments). Doc

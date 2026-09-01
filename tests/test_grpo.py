@@ -66,6 +66,25 @@ class TestRewardGate:
         assert r.reward == -1.0
         assert r.reason in ("api-changed", "tests-failed", "unit-not-found")
 
+    def test_docstring_stripping_is_negative(self):
+        """RL without this would re-learn doc-eating: deleting docstrings is
+        free in code-LOC (it never counted them) and shortens the output, so
+        the policy would drift there unless it costs the full -1."""
+        s = load_sample("python")
+        unit = s["unit_source"]
+        import ast as _ast
+
+        tree = _ast.parse(unit)
+        fn = next(n for n in _ast.walk(tree) if isinstance(n, _ast.FunctionDef))
+        stripped = [_ast.unparse(n) for n in _ast.walk(tree)
+                    if isinstance(n, _ast.FunctionDef) and not _ast.get_docstring(n)]
+        if fn.name == "_strip_doc":
+            stripped = "x = 1"
+        r = compute_reward(wrapped("python", "\n\n".join(stripped) or "x = 1"), s)
+        # whichever gate fires (docs-lost, api-changed or tests-failed),
+        # a doc-stripped rollout must never be positive
+        assert r.reward == -1.0
+
     def test_minified_penalty(self):
         s = load_sample("python")
         minified = "def f(x):" + ";return " * 1 + "x;" * 200

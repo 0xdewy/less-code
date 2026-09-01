@@ -33,7 +33,7 @@ sys.path.insert(0, str(REPO))
 
 from less_code.api_check import EXTRACTORS, api_violations  # noqa: E402
 from less_code.loc import formatter_available, measure  # noqa: E402
-from less_code.llm_reduce import syntax_check  # noqa: E402
+from less_code.llm_reduce import docs_lost, syntax_check  # noqa: E402
 from less_code.testrunners import run_tests  # noqa: E402
 
 LAMBDA = 0.5
@@ -117,6 +117,12 @@ def compute_reward(
     api_after = EXTRACTORS[lang](code)
     if api_violations({sample["fixture"]: api_before}, {sample["fixture"]: api_after}):
         return RewardBreakdown(-1.0, -1, 0.0, 0.0, "api-changed")
+    # doc-eating must cost the same as a behavior break: code-LOC does not
+    # count docstrings/comments, so without this a policy 'reduces' by
+    # deleting the project's documentation for free (the tool's own gate
+    # rejects it; the reward has to agree or RL re-learns doc-eating)
+    if docs_lost(unit, code, lang):
+        return RewardBreakdown(-1.0, -1, 0.0, 0.0, "docs-lost")
 
     loc_after = measure(code, lang).code
     loc_delta = max(0.0, min(0.9, (loc_before - loc_after) / max(loc_before, 1)))

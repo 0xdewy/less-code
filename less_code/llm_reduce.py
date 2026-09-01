@@ -22,6 +22,13 @@ import contextlib
 
 PROGRESS = None  # set by CLI to a printer for live per-attempt output
 
+#: SFT mining hook — `lc reduce --mine-out FILE` installs a sink here; every
+#: ACCEPTED proposal is recorded as (system, prompt, response) so training
+#: pairs are exactly what the gate certified (docs preserved, signature
+#: pinned, behavior green). ~70% of base-model waste is format/doc
+#: compliance: SFT on these pairs is the cheapest lever on yield.
+MINE_SINK = None
+
 #: chars of test-spec per prompt: enough for several focused test files
 SPEC_BUDGET = 12_000
 
@@ -455,6 +462,8 @@ def reduce_file(
         if outcome == "accepted":
             best, best_loc = candidate, loc_after
             path.write_text(candidate + "\n", encoding="utf-8")
+            if MINE_SINK is not None:
+                MINE_SINK("whole-file", path.name, SYSTEM_PROMPT, prompt, response)
             feedback = ""
             continue
         feedback = _feedback_for(outcome)
@@ -831,13 +840,14 @@ def reduce_symbols(
             )
             feedback = ""
             for attempt in range(1, attempts_per_symbol + 1):
+                symbol_prompt = build_symbol_prompt(
+                    path, lang, key, symbol, symbol_loc, fmap, feedback,
+                    spec=symbol_spec, owner=owner,
+                )
                 try:
                     response = backend.complete(
                         SYMBOL_SYSTEM_PROMPT,
-                        build_symbol_prompt(
-                            path, lang, key, symbol, symbol_loc, fmap, feedback,
-                            spec=symbol_spec, owner=owner,
-                        ),
+                        symbol_prompt,
                         temperature=0.1 if attempt == 1 else 0.5,
                     )
                 except Exception as exc:
@@ -896,6 +906,8 @@ def reduce_symbols(
                 )))
                 if outcome == "accepted":
                     path.write_text(proposal + "\n", encoding="utf-8")
+                    if MINE_SINK is not None:
+                        MINE_SINK("symbol", f"{path.name}:{key}", SYMBOL_SYSTEM_PROMPT, symbol_prompt, response)
                     break
                 feedback = _feedback_for(outcome)
     return records
@@ -1111,10 +1123,11 @@ def reduce_duplicate_groups(
         if backend is None:
             continue  # mechanical-only mode: the model is never asked
         for attempt in range(1, attempts_per_group + 1):
+            dedup_prompt = build_dedup_prompt(group, lang, feedback, spec=group_spec)
             try:
                 response = backend.complete(
                     DEDUP_SYSTEM_PROMPT,
-                    build_dedup_prompt(group, lang, feedback, spec=group_spec),
+                    dedup_prompt,
                     temperature=0.1 if attempt == 1 else 0.5,
                 )
             except Exception as exc:
@@ -1143,6 +1156,8 @@ def reduce_duplicate_groups(
             if outcome == "accepted":
                 for path, text in proposal.items():
                     path.write_text(text, encoding="utf-8")
+                if MINE_SINK is not None:
+                    MINE_SINK("dedup", tag, DEDUP_SYSTEM_PROMPT, dedup_prompt, response)
                 break
             feedback = _feedback_for(outcome)
     return records

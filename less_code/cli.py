@@ -119,6 +119,23 @@ def cmd_reduce(args: argparse.Namespace) -> int:
                                timeout=args.llm_timeout)
         if args.max_llm_calls:
             backend = BudgetBackend(backend, args.max_llm_calls)
+    if args.mine_out:
+        from . import llm_reduce as _lr
+
+        mine_path = Path(args.mine_out)
+        mine_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _sink(kind: str, unit: str, system: str, prompt: str, response: str) -> None:
+            import time
+
+            with mine_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "kind": kind, "unit": unit, "system": system,
+                    "prompt": prompt, "response": response,
+                    "ts": time.time(),
+                }) + "\n")
+
+        _lr.MINE_SINK = _sink
     stats = reduce_project(
         target, lang=args.lang, backend=backend,
         attempts_per_file=args.attempts, max_files=args.max_files,
@@ -248,6 +265,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="per-file audit JSON (from `lc audit --out`): files are "
                         "ranked by size x per-file mutation score so the LLM "
                         "budget flows to files the suite can actually verify")
+    p.add_argument("--mine-out", default=None, metavar="FILE",
+                   help="append every ACCEPTED proposal to FILE as JSONL "
+                        "(kind, unit, system, prompt, response) — SFT pairs "
+                        "mined from what the gate certified")
     p.add_argument("--copy-to", default=None, metavar="DIR",
                    help="copy the project to DIR and reduce the COPY, leaving the "
                         "original untouched. Without it `reduce` rewrites the tree "
