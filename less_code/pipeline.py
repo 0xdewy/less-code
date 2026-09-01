@@ -12,10 +12,10 @@ from pathlib import Path
 
 from .api_check import api_surface, api_violations
 from .langdetect import map_project
-from .llm_reduce import reduce_file
 from .loc import formatter_available, measure
 from .static import static_pass
-from .testrunners import run_tests
+from .testrunners import run_tests, shadowed_imports
+import contextlib
 
 
 @dataclass
@@ -40,7 +40,7 @@ class ReduceStats:
     static_removed_symbols: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict:
-        d = {
+        return {
             "lang": self.lang,
             "files_considered": self.files_considered,
             "loc_start": self.loc_start,
@@ -58,7 +58,6 @@ class ReduceStats:
             "static_notes": self.static_notes,
             "attempts": self.attempt_records,
         }
-        return d
 
 
 def pct(before: int, after: int) -> float:
@@ -95,6 +94,21 @@ def reduce_project(
     stats = ReduceStats(lang=project.lang, files_considered=len(project.source_files))
     all_files = project.source_files + project.test_files
 
+    # the gate must test THIS tree: a package that resolves elsewhere (host
+    # venv shadowing an editable install) would green-light reductions that
+    # never ran. Refuse before anything is measured or touched.
+    if project.lang == "python":
+        shadowed = shadowed_imports(root)
+        if shadowed:
+            stats.tests_ok = False
+            stats.static_notes = [
+                "import-origin check failed: " + "; ".join(shadowed)
+                + " — the gate would test code from outside this tree. Fix the"
+                " host venv (e.g. reinstall the editable for this tree, remove"
+                " the shadowing package) and re-run."
+            ]
+            return stats
+
     baseline = run_tests(root, project.lang, timeout=test_timeout)
     if not baseline.ok:
         stats.tests_ok = False
@@ -121,10 +135,8 @@ def reduce_project(
         raise SystemExit(130)
 
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        with contextlib.suppress(ValueError, OSError):
             old_handlers[sig] = signal.signal(sig, _handler)
-        except (ValueError, OSError):
-            pass
 
     if formatter:
         run_formatter(root, project.lang)

@@ -170,7 +170,7 @@ def _eligible(stmt: ast.stmt) -> bool:
     if not (_is_guard(stmt) or _is_simple_assign(stmt)):
         return False
     for node in ast.walk(stmt):
-        if isinstance(node, _ESCAPES) or isinstance(node, _SCOPE_TRICKS):
+        if isinstance(node, (_ESCAPES, _SCOPE_TRICKS)):
             return False
     return True
 
@@ -219,6 +219,17 @@ class _Concretize(ast.NodeTransformer):
 
     def visit_Name(self, node: ast.Name) -> ast.AST:
         node.id = self.names.get(node.id, node.id)
+        return node
+
+    def visit_JoinedStr(self, node: ast.JoinedStr) -> ast.AST:
+        # a varying f-string text part became a parameter Name, but the
+        # grammar only allows Constant/FormattedValue inside JoinedStr.values
+        self.generic_visit(node)
+        node.values = [
+            v if isinstance(v, (ast.Constant, ast.FormattedValue))
+            else ast.FormattedValue(value=v, conversion=-1)
+            for v in node.values
+        ]
         return node
 
     def visit_Constant(self, node: ast.Constant) -> ast.AST:
@@ -299,7 +310,6 @@ def _collect_sites(path: str, tree: ast.Module) -> dict[str, list[Site]]:
         argnames = set(_arg_names(fn))
         declared = _declared(fn)
         body = fn.body
-        bound_before: set[str] = set()
         runs: list[list[int]] = []
         current: list[int] = []
         for i, stmt in enumerate(body):

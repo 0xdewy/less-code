@@ -21,6 +21,12 @@ SKIP_DIRS = {
     # hidden tests are the bench's safety net: never mapped, so they stay out
     # of the prompt spec, the frozen gate and every LOC measurement.
     "tests_hidden",
+    # entry-point trees, not libraries: their files are invoked by name
+    # (sphinx conf.py, noxfile sessions, demo scripts) or exist to be read,
+    # so "unreferenced by the tests" says nothing about them being dead.
+    # Found the hard way: the dead-code layer stripped noxfile sessions from
+    # packaging and demo subcommands from click's examples/.
+    "docs", "examples", "benchmarks",
 }
 
 TEST_HINTS = ("test", "spec")

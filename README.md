@@ -159,6 +159,30 @@ Likewise `lc reduce --copy-to DIR` reduces a copy and leaves the original
 alone. `reduce` rewrites its target in place otherwise, and warns on stderr
 when that target is a git tree with uncommitted changes.
 
+## Reducing external repositories
+
+The gate runs the target's own suite, so the target must match the runner
+conventions (`pytest` / `node --test` / `cargo test`, `testrunners.py`) and
+its suite must run under the host venv's tool versions — python-dateutil's
+suite, for instance, is a hard error under pytest 8.4. For a src-layout
+project, editable-install **the copy** into the host venv so `import pkg`
+resolves to the tree under reduction:
+
+```bash
+cp -a target/ /tmp/work && uv pip install -e /tmp/work
+PATH=$PWD/.venv/bin:$PATH .venv/bin/lc reduce /tmp/work --static-only --out r.json
+```
+
+Two hardening rules learned reducing click/packaging/tenacity: the pipeline
+**refuses to start** if a target package imports from outside the tree
+(`shadowed_imports` preflight — a host-venv dependency, e.g. pytest's own
+`packaging`, can shadow the editable and make the gate test the wrong code;
+`uv run` re-sync can reinstall that shadow, so prefer the direct venv
+binary), and dev-tool code is out of scope by design: `docs/`, `examples/`,
+`benchmarks/` are never mapped, and entry-point files (`noxfile.py`,
+`setup.py`, ...) are scanned for references but never dead-stripped — their
+functions are invoked by name from CI, not imported.
+
 ## GRPO
 
 ```bash

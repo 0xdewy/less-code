@@ -74,11 +74,7 @@ def _boolish(node: ast.expr) -> bool:
         return all(_boolish(v) for v in node.values)
     if isinstance(node, ast.Constant) and isinstance(node.value, bool):
         return True
-    if isinstance(node, ast.Call) and _is_name(node.func) and node.func.id in (
-        "bool", "isinstance", "issubclass", "hasattr", "callable", "any", "all",
-    ):
-        return True
-    return False
+    return bool(isinstance(node, ast.Call) and _is_name(node.func) and (node.func.id in ('bool', 'isinstance', 'issubclass', 'hasattr', 'callable', 'any', 'all')))
 
 
 def _names(node: ast.AST) -> set[str]:
@@ -227,9 +223,7 @@ def _first_evaluated_name(node: ast.expr) -> str | None:
             return node.id if isinstance(node.ctx, ast.Load) else None
         if isinstance(node, ast.BoolOp):
             node = node.values[0]
-        elif isinstance(node, ast.Compare):
-            node = node.left
-        elif isinstance(node, ast.BinOp):
+        elif isinstance(node, (ast.Compare, ast.BinOp)):
             node = node.left
         elif isinstance(node, ast.UnaryOp):
             node = node.operand

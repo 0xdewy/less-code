@@ -20,7 +20,7 @@ from . import __version__
 from .audit import audit, audit_to_json
 from .langdetect import map_project
 from .loc import count_tree, formatter_available
-from .pipeline import ReduceStats, reduce_project, write_report
+from .pipeline import reduce_project, write_report
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:

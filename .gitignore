@@ -15,3 +15,10 @@ audit.json
 REDUCTION.md
 __pycache__/
 *.pyc
+
+# GRPO training artifacts (dataset.jsonl is tracked; checkpoints are not)
+grpo/out/
+grpo/adapter/
+
+# external reduction targets (working clones, not source)
+click/

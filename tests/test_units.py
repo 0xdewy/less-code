@@ -6,6 +6,57 @@ from less_code.api_check import api_surface, api_violations, js_api, python_api,
 from less_code.loc import count_source
 from less_code.mutator import generate_mutations
 from less_code.llm_reduce import extract_code
+from less_code.langdetect import map_project
+from less_code.testrunners import _probe_import, shadowed_imports
+
+
+class TestEntryPointTreesAreNotLibraries:
+    """docs/, examples/ and benchmarks/ files are invoked by name (sphinx
+    conf.py, nox sessions, demo scripts) — test references say nothing about
+    them, so they are outside the reduction scope entirely."""
+
+    def test_map_project_skips_docs_examples_benchmarks(self, tmp_path):
+        root = tmp_path / "proj"
+        pkg = root / "src" / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("")
+        for rel in ("examples/demo.py", "benchmarks/bench.py", "docs/conf.py"):
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x = 1\n")
+        project = map_project(root)
+        assert [p.name for p in project.source_files] == ["__init__.py"]
+
+
+class TestShadowedImports:
+    def _pkg(self, tmp_path):
+        pkg = tmp_path / "src" / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("")
+        return tmp_path
+
+    def test_flags_a_unit_resolved_outside_the_tree(self, tmp_path):
+        root = self._pkg(tmp_path)
+        probe = lambda _root, name: f"/venv/site-packages/{name}/__init__.py"
+        assert shadowed_imports(root, probe) == [
+            "pkg -> /venv/site-packages/pkg/__init__.py"
+        ]
+
+    def test_src_layout_resolving_inside_the_tree_is_clean(self, tmp_path):
+        root = self._pkg(tmp_path)
+        def probe(_root, name):
+            assert name == "pkg"
+            return str(root / "src" / "pkg" / "__init__.py")
+        assert shadowed_imports(root, probe) == []
+
+    def test_a_failed_or_namespace_import_is_not_flagged(self, tmp_path):
+        root = self._pkg(tmp_path)
+        assert shadowed_imports(root, lambda _r, _n: None) == []
+
+    def test_real_probe_resolves_a_flat_module_from_cwd(self, tmp_path):
+        (tmp_path / "mod.py").write_text("X = 1\n")
+        assert _probe_import(tmp_path, "mod").endswith("mod.py")
+        assert shadowed_imports(tmp_path) == []
 
 
 class TestLoc:
@@ -237,3 +288,56 @@ class TestStaticDeadCode:
             test.write_text("from mod import f\n\ndef test_f():\n    assert f() == 1\n")
             result = _python_remove_dead([src], [src, test])
             assert result.changed_files == {}
+
+    def test_entry_point_files_are_never_dead_stripped(self):
+        """noxfile/setup/tasks functions are invoked BY NAME from CI configs,
+        never imported — 'unreferenced' must not delete them (found on
+        pypa/packaging: lint and release_build sessions were removed)."""
+        from less_code.static import _python_remove_dead
+        import pathlib, tempfile
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            noxfile = root / "noxfile.py"
+            noxfile.write_text(
+                "def lint(session):\n    session.install('ruff')\n\n"
+                "def release_build(session):\n    session.install('build')\n"
+            )
+            mod = root / "mod.py"
+            mod.write_text("def used():\n    return 1\n\ndef dead():\n    return 2\n")
+            test = root / "test_mod.py"
+            test.write_text("from mod import used\n\ndef test():\n    assert used()\n")
+            result = _python_remove_dead([noxfile, mod], [noxfile, mod, test])
+            assert str(noxfile) not in result.changed_files
+            assert "release_build" in noxfile.read_text()
+            assert str(mod) in result.changed_files  # ordinary files still work
+
+    def test_removal_is_text_surgical_not_ast_unparse(self):
+        """unparse rewrote the whole file: every comment died and every string
+        flipped to single quotes (found by dogfooding the tool on its own
+        repo — llm_reduce.py lost all 52 of its comments)."""
+        from less_code.static import _python_remove_dead
+        import pathlib, tempfile
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            src = root / "mod.py"
+            src.write_text(
+                '"""Module doc."""\n'
+                "# keep me: comment on a kept def\n"
+                "def used(x):\n"
+                '    return "double" + helper(x)  # trailing comment\n'
+                "\n"
+                "# header of the dead one, attached above a blank\n"
+                "\n"
+                "def dead_one():\n"
+                "    return 1\n"
+            )
+            test = root / "test_mod.py"
+            test.write_text("from mod import used\n\ndef test():\n    assert used(1)\n")
+            result = _python_remove_dead([src], [src, test])
+            new_source = result.changed_files[str(src)]
+            assert "dead_one" not in new_source
+            assert "# keep me: comment on a kept def" in new_source
+            assert "# trailing comment" in new_source
+            assert 'return "double"' in new_source  # quotes untouched
+            assert "header of the dead one" not in new_source  # attached header goes
+            assert new_source.endswith('    return "double" + helper(x)  # trailing comment\n')

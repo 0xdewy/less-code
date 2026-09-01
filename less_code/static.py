@@ -52,8 +52,18 @@ def _names_referenced_outside(root_files: list[Path], definitions: dict[Path, se
     return referenced
 
 
+#: top-level functions here are invoked BY NAME from CI configs and tooling,
+#: not imported — "unreferenced by the tests" does not make them dead. Found
+#: the hard way: the layer deleted noxfile sessions (lint, release_build)
+#: from pypa/packaging. These files are still scanned for references.
+_ENTRY_POINT_FILES = frozenset({
+    "noxfile.py", "setup.py", "asv.conf.py", "tasks.py", "manage.py",
+})
+
+
 def _python_remove_dead(files: list[Path], all_project_files: list[Path]) -> StaticResult:
     result = StaticResult()
+    files = [p for p in files if p.name not in _ENTRY_POINT_FILES]
     definitions: dict[Path, set[str]] = {}
     sources = {p: p.read_text(encoding="utf-8", errors="replace") for p in files}
     for path, source in sources.items():
@@ -72,25 +82,51 @@ def _python_remove_dead(files: list[Path], all_project_files: list[Path]) -> Sta
     referenced = _names_referenced_outside(all_project_files, definitions)
     for path, defs in definitions.items():
         tree = ast.parse(sources[path])
-        kept = [
+        dead = [
             node
             for node in tree.body
-            if not (
+            if (
                 isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
                 and node.name in defs
                 and not referenced[node.name]
             )
         ]
-        if len(kept) != len(tree.body):
-            new_tree = ast.Module(body=kept, type_ignores=[])
-            new_source = ast.unparse(new_tree)
-            before = measure(sources[path], "python").code
-            after = measure(new_source, "python").code
-            if after < before:
-                result.changed_files[str(path)] = new_source
-                result.loc_removed += before - after
-                dropped = sorted(n for n in defs if not referenced[n])
-                result.notes.append(f"{path.name}: removed {dropped}")
+        if not dead:
+            continue
+        text = sources[path]
+        lines = text.splitlines()
+        kill: set[int] = set()  # 0-based indices
+        for node in dead:
+            start = min([node.lineno] + [d.lineno for d in node.decorator_list]) - 1
+            kill.update(range(start, node.end_lineno))
+            # the blank lines directly above the item go with it, so removal
+            # never leaves a doubled blank line
+            i = start - 1
+            while i >= 0 and not lines[i].strip():
+                kill.add(i)
+                i -= 1
+            # a comment block tightly attached above those blanks is the dead
+            # item's own header and goes too — but only when a blank line (or
+            # the file top) bounds it from above, else it is a trailing
+            # comment of the previous statement and stays
+            j = i
+            while j >= 0 and lines[j].lstrip().startswith("#"):
+                j -= 1
+            if j < i and (j < 0 or not lines[j].strip()):
+                kill.update(range(j + 1, i + 1))
+        kept_lines = [l for n, l in enumerate(lines) if n not in kill]
+        while kept_lines and not kept_lines[-1].strip():
+            kept_lines.pop()
+        new_source = "\n".join(kept_lines)
+        if text.endswith("\n"):
+            new_source += "\n"
+        before = measure(sources[path], "python").code
+        after = measure(new_source, "python").code
+        if after < before:
+            result.changed_files[str(path)] = new_source
+            result.loc_removed += before - after
+            dropped = sorted(n for n in defs if not referenced[n])
+            result.notes.append(f"{path.name}: removed {dropped}")
     return result
 
 
@@ -211,9 +247,7 @@ def _js_statement_end(source: str, from_index: int) -> int:
             depth += 1
         elif ch in ")]}":
             depth -= 1
-        elif depth == 0 and ch == ";":
-            return i + 1
-        elif depth == 0 and ch == "\n":
+        elif depth == 0 and ch == ";" or depth == 0 and ch == "\n":
             return i + 1
         i += 1
     return len(source)

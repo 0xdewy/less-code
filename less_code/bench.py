@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
 
 from .langdetect import SKIP_DIRS, map_project
@@ -115,7 +115,7 @@ def bench_fixture(
     """
     from .loc import formatter_available
 
-    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    stamp = datetime.now(UTC).isoformat(timespec="seconds")
     row = BenchRow(fixture=fixture.name, lang="?", config=config, commit=commit, timestamp=stamp)
     backend = None
     if config != "static-only":
@@ -244,7 +244,7 @@ def run_bench(
     repo = repo or Path.cwd()
     commit = git_commit(repo)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.jsonl"
+    out = out_dir / f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.jsonl"
     rows: list[BenchRow] = []
     for target in discover(fixtures_dir, fixture):
         row = bench_fixture(target, config, commit, **kwargs)

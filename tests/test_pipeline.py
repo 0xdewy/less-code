@@ -120,6 +120,24 @@ def test_pipeline_static_only(tmp_path):
     assert stats.loc_final < stats.loc_start
 
 
+def test_pipeline_refuses_when_imports_resolve_outside_the_tree(tmp_path, monkeypatch):
+    """Host-venv shadowing (pytest depends on `packaging`, which shadowed an
+    editable install of pypa/packaging): the gate would test another copy of
+    the code, so nothing is measured, reduced or touched."""
+    from less_code import pipeline
+
+    root = _project(tmp_path)
+    monkeypatch.setattr(
+        pipeline, "shadowed_imports",
+        lambda _root: ["mod -> /venv/site-packages/mod/__init__.py"],
+    )
+    stats = reduce_project(root, backend=None, formatter=False)
+    assert not stats.tests_ok
+    assert stats.loc_start == 0 and stats.loc_final == 0
+    assert "import-origin check failed" in stats.static_notes[0]
+    assert "dead_never_used" in (root / "mod.py").read_text()  # tree untouched
+
+
 def test_whole_file_strategy_skips_symbol_loops(tmp_path):
     """--strategy whole-file: repeated whole-file rewrites through the gate,
     no dedup/per-symbol records, acceptance still verify-gated."""

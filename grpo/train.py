@@ -23,9 +23,13 @@ DEFAULTS = {
     "lora_r": 32,
     "lora_alpha": 16,
     "num_generations": 4,          # group size G; divides generation batch
-    "per_device_batch": 2,         # 2 prompts x 4 gens = 8 completions/step
+    "per_device_batch": 8,         # completions/step (TRL 1.x semantics) = 2 prompts x 4 gens
     "max_completion_length": 384,  # units are small: keep completions short
     "max_prompt_length": 4096,
+    # TRL 1.x dropped config-level prompt capping, but full-vocab logits over
+    # a 4.4k-token prompt x batch OOMs an 8GB card: cap at dataset build
+    # (head 512 + tail 1536 keeps the instructions AND the code to rewrite)
+    "max_prompt_tokens": 2048,
     "lr": 2e-5,
     "beta": 0.0,                   # KL off (Dr.GRPO/DAPO practice)
     "loss_type": "dr_grpo",        # constant norm: no length bias (task IS shorter output)
@@ -50,7 +54,9 @@ def validate_config(cfg: dict, dataset: Path) -> list[str]:
                     errors.append(f"dataset row {i} missing field {field}")
     if cfg["num_generations"] < 2:
         errors.append("num_generations must be >= 2 (group-relative advantage needs a group)")
-    if cfg["per_device_batch"] * cfg["num_generations"] > 16:
+    if cfg["per_device_batch"] % cfg["num_generations"] != 0:
+        errors.append("per_device_batch must be divisible by num_generations")
+    if cfg["per_device_batch"] > 16:
         errors.append("generation batch too large for 8GB VRAM")
     if cfg["max_completion_length"] > 1024:
         errors.append("max_completion_length > 1024 will OOM the rollout cache on 8GB")
@@ -80,10 +86,17 @@ def main() -> int:
              "(needs `mutation_score` in the dataset; absent means 1.0)",
     )
     ap.add_argument("--steps", type=int, default=10)
+    ap.add_argument(
+        "--per-device-batch", type=int, default=None,
+        help="override completions/step (must divide num_generations); lower it"
+             " when the GPU is shared and VRAM is tight",
+    )
     ap.add_argument("--validate-config", action="store_true")
     args = ap.parse_args()
 
     cfg = {**DEFAULTS, "model": args.model}
+    if args.per_device_batch is not None:
+        cfg["per_device_batch"] = args.per_device_batch
     if args.validate_config:
         errors = validate_config(cfg, args.dataset)
         if errors:
@@ -111,16 +124,32 @@ def main() -> int:
     reward = reward_fn_mutation_weighted if args.reward == "mutation-weighted" else reward_fn
     print(f"reward: {reward.__name__}")
 
+    tok = AutoTokenizer.from_pretrained(cfg["model"])
+
+    def _cap_prompt(prompt: str) -> str:
+        ids = tok(prompt).input_ids
+        if len(ids) <= cfg["max_prompt_tokens"]:
+            return prompt
+        keep_head = 512
+        keep_tail = cfg["max_prompt_tokens"] - keep_head
+        return tok.decode(ids[:keep_head] + ids[-keep_tail:])
+
     rows = [json.loads(l) for l in args.dataset.open()]
+    # conversational format: *-Instruct models degenerate to instant-EOS on
+    # raw-string prompts (no chat template -> mean completion length 1,
+    # reward -1 with zero variance, no gradient); TRL applies the template
+    # for message-list prompts
     ds = Dataset.from_list(
-        [{"prompt": r["prompt"], "sample_meta": r} for r in rows]
+        [{
+            "prompt": [{"role": "user", "content": _cap_prompt(r["prompt"])}],
+            "sample_meta": r,
+        } for r in rows]
     )
     quant = (
         BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                            bnb_4bit_use_double_quant=True)
         if cfg["4bit"] else None
     )
-    tok = AutoTokenizer.from_pretrained(cfg["model"])
     model = AutoModelForCausalLM.from_pretrained(
         cfg["model"], quantization_config=quant, torch_dtype=torch.bfloat16,
         device_map="auto",
@@ -129,7 +158,7 @@ def main() -> int:
         r=cfg["lora_r"], lora_alpha=cfg["lora_alpha"], lora_dropout=0.05,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
     )
-    gcfg = GRPOConfig(
+    gcfg_kwargs = dict(
         output_dir=str(REPO / "grpo" / "out"),
         max_steps=args.steps,
         per_device_train_batch_size=cfg["per_device_batch"],
@@ -146,6 +175,15 @@ def main() -> int:
         save_strategy="no",
         report_to=[],
     )
+    # TRL 1.x removed max_prompt_length (rows are already bounded at dataset
+    # build time); pass only what the installed TRL supports
+    import dataclasses
+
+    supported = {f.name for f in dataclasses.fields(GRPOConfig)}
+    dropped = sorted(k for k in gcfg_kwargs if k not in supported)
+    if dropped:
+        print(f"note: installed TRL dropped config keys: {dropped}")
+    gcfg = GRPOConfig(**{k: v for k, v in gcfg_kwargs.items() if k in supported})
     trainer = GRPOTrainer(
         model=model,
         args=gcfg,

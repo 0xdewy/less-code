@@ -60,6 +60,64 @@ def gate_command(root: Path, lang: str) -> list[str]:
     raise ValueError(f"unsupported language {lang}")
 
 
+def _probe_import(root: Path, name: str) -> str | None:
+    """Where `python -c "import name"` resolves from cwd=root, the same
+    sys.path the gate's `python -m pytest` uses ('' first, then site-packages).
+    None when the import fails or reports no file (namespace package)."""
+    code = f"import {name}\nprint({name}.__file__)"
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", code], cwd=root,
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else None
+
+
+def shadowed_imports(root: Path, probe=None) -> list[str]:
+    """Importable units of `root` that resolve OUTSIDE the tree.
+
+    A hit means the gate would silently test a different copy of the code —
+    e.g. a same-named dependency of the host venv (pytest depends on
+    `packaging`!) shadowing the editable install of the tree under reduction.
+    Found the hard way: a pypa/packaging baseline failed on behavior the
+    clone never had, because the suite had imported PyPI packaging 26.3.
+    """
+    from .langdetect import SKIP_DIRS, is_test_file
+
+    if probe is None:
+        probe = _probe_import
+    names: list[str] = []
+    for base in (root, root / "src"):
+        if not base.is_dir():
+            continue
+        for entry in sorted(base.iterdir()):
+            if entry.name.startswith(".") or entry.name in SKIP_DIRS:
+                continue
+            if entry.is_dir() and (entry / "__init__.py").is_file():
+                names.append(entry.name)
+            elif (
+                entry.is_file() and entry.suffix == ".py"
+                and entry.name != "__init__.py" and not is_test_file(entry)
+                and not entry.name.startswith("conftest")
+            ):
+                names.append(entry.stem)
+    shadowed: list[str] = []
+    for name in names:
+        resolved = probe(root, name)
+        if resolved is None:
+            continue
+        path = Path(resolved)
+        try:
+            path.relative_to(root)
+        except ValueError:
+            shadowed.append(f"{name} -> {resolved}")
+    return shadowed
+
+
 # ---- content-hash cache (process lifetime) ----
 
 _CACHE: dict[str, TestResult] = {}

@@ -11,16 +11,23 @@ import ast
 import shutil
 import subprocess
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from .api_check import EXTRACTORS, api_feedback, api_violations
 from .backends import Backend
 from .hunks import decompose, search, symbol_spans
 from .loc import measure
+import contextlib
 
 PROGRESS = None  # set by CLI to a printer for live per-attempt output
 
+
+def _check_lang(lang, feedback, spec, message):
+    tag = {'python': 'python', 'javascript': 'javascript', 'typescript': 'typescript', 'rust': 'rust'}[lang]
+    fb = f'\nPrevious attempt feedback (fix this):\n{feedback}\n' if feedback else ''
+    tests = f'{message}{spec}\n```\n' if spec else ''
+    return (tag, fb, tests)
 
 def _report(record):
     """Emit one AttemptRecord live (the CLI/pipeline sets `PROGRESS`).
@@ -29,10 +36,8 @@ def _report(record):
     multi-hour GPU run showed nothing until it was over.
     """
     if PROGRESS:
-        try:
+        with contextlib.suppress(Exception):
             PROGRESS(record)
-        except Exception:
-            pass
     return record
 
 
@@ -49,12 +54,7 @@ code; OUTPUT the rewritten code itself."""
 
 
 def build_prompt(path: Path, source: str, lang: str, loc: int, feedback: str, spec: str = "", focus: str = "") -> str:
-    tag = {"python": "python", "javascript": "javascript", "typescript": "typescript", "rust": "rust"}[lang]
-    fb = f"\nPrevious attempt feedback (fix this):\n{feedback}\n" if feedback else ""
-    tests = (
-        f"\nThe test suite this code must pass (behavior specification — error messages and exception types must match EXACTLY):\n```python\n{spec}\n```\n"
-        if spec else ""
-    )
+    tag, fb, tests = _check_lang(lang, feedback, spec, '\nThe test suite this code must pass (behavior specification — error messages and exception types must match EXACTLY):\n```python\n')
     fo = f"\nFOCUS: {focus}\n" if focus else ""
     return (
         f"File: {path.name} ({loc} code lines)\n"
@@ -65,7 +65,6 @@ def build_prompt(path: Path, source: str, lang: str, loc: int, feedback: str, sp
     )
 
 
-import re as _re
 
 
 def first_failure(tail: str) -> str:
@@ -170,12 +169,6 @@ class AttemptRecord:
     detail: str = ""
 
 
-@dataclass
-class LLMResult:
-    accepted: dict[str, str] = field(default_factory=dict)
-    records: list[AttemptRecord] = field(default_factory=list)
-
-
 CODE_STARTERS = ("def ", "class ", "import ", "from ", "pub ", "fn ", "const ", "let ", "var ", "export ", "use ", "#!", "@", '"""', "/*")
 
 
@@ -189,7 +182,7 @@ def extract_code(response: str) -> str | None:
         first_nl = stripped.find("\n")
         if first_nl != -1:
             return stripped[first_nl + 1 :].strip("\n")
-    head = stripped.lstrip()[:12]
+    stripped.lstrip()[:12]
     if any(stripped.startswith(s) for s in CODE_STARTERS):
         return stripped
     return None
@@ -338,7 +331,7 @@ def reduce_file(
                 temperature=0.1 if attempt == 1 else 0.4 + 0.15 * attempt,
             )
         except Exception as exc:  # backend outage ends the pass, not the run
-            records.append(_report(AttemptRecord(str(path), attempt, "backend-error", best_loc, best_loc, str(exc)[:120])))
+            records.append(_report(AttemptRecord(str(path), attempt, _exc_outcome(exc), best_loc, best_loc, str(exc)[:120])))
             break
         candidate = extract_code(response)
         if candidate is None:
@@ -598,13 +591,7 @@ def build_symbol_prompt(
     path: Path, lang: str, key: str, symbol: str, symbol_loc: int,
     fmap: str, feedback: str, spec: str = "", owner: str = "",
 ) -> str:
-    tag = {"python": "python", "javascript": "javascript", "typescript": "typescript", "rust": "rust"}[lang]
-    fb = f"\nPrevious attempt feedback (fix this):\n{feedback}\n" if feedback else ""
-    tests = (
-        "\nThe test suite the whole file must pass (behavior specification — error "
-        f"messages and exception types must match EXACTLY):\n```\n{spec}\n```\n"
-        if spec else ""
-    )
+    tag, fb, tests = _check_lang(lang, feedback, spec, '\nThe test suite the whole file must pass (behavior specification — error messages and exception types must match EXACTLY):\n```\n')
     if owner:
         rest = (
             f"\nThe class `{owner}` it belongs to — other method signatures and the "
@@ -634,6 +621,12 @@ def build_symbol_prompt(
 
 def _is_budget_error(exc: Exception) -> bool:
     return "budget exhausted" in str(exc).lower()
+
+
+def _exc_outcome(exc: Exception) -> str:
+    """A budget stop is the operator's own cap, not a backend fault — report
+    it as such instead of inflating backend-error counts."""
+    return "budget-exhausted" if _is_budget_error(exc) else "backend-error"
 
 
 def reduce_symbols(
@@ -703,7 +696,7 @@ def reduce_symbols(
                     )
                 except Exception as exc:
                     records.append(_report(AttemptRecord(
-                        f"{path}:{key}", attempt, "backend-error", full_loc, full_loc, str(exc)[:120]
+                        f"{path}:{key}", attempt, _exc_outcome(exc), full_loc, full_loc, str(exc)[:120]
                     )))
                     budget_gone = _is_budget_error(exc)
                     break
@@ -803,13 +796,7 @@ RESPONSE FORMAT: your ENTIRE response must be exactly one fenced code block cont
 
 
 def build_dedup_prompt(group, lang: str, feedback: str = "", spec: str = "") -> str:
-    tag = {"python": "python", "javascript": "javascript", "typescript": "typescript", "rust": "rust"}[lang]
-    fb = f"\nPrevious attempt feedback (fix this):\n{feedback}\n" if feedback else ""
-    tests = (
-        "\nThe test suite the project must still pass (behavior specification — error "
-        f"messages and exception types must match EXACTLY):\n```\n{spec}\n```\n"
-        if spec else ""
-    )
+    tag, fb, tests = _check_lang(lang, feedback, spec, '\nThe test suite the project must still pass (behavior specification — error messages and exception types must match EXACTLY):\n```\n')
     from .dedup import token_diff_slots
 
     slots = token_diff_slots(group, lang)
@@ -954,7 +941,7 @@ def reduce_duplicate_groups(
                 )
             except Exception as exc:
                 records.append(_report(AttemptRecord(
-                    tag, attempt, "backend-error", loc_before, loc_before, str(exc)[:120]
+                    tag, attempt, _exc_outcome(exc), loc_before, loc_before, str(exc)[:120]
                 )))
                 if _is_budget_error(exc):
                     return records
@@ -995,40 +982,3 @@ def _top_level_spans(source: str) -> list[tuple[int, int, str, str]]:
             kind = "class" if isinstance(node, ast.ClassDef) else "function"
             spans.append((node.lineno - 1, node.end_lineno - 1, node.name, kind))
     return spans
-
-
-def focused_passes(
-    backend: Backend,
-    root: Path,
-    path: Path,
-    lang: str,
-    run_tests_fn,
-    spec: str = "",
-    top_k: int = 4,
-    attempts_per_focus: int = 2,
-) -> list[AttemptRecord]:
-    """Whole-file rewrite passes, each focused on one big symbol, with
-    failure-feedback retries (the verifier's failure line is fed back)."""
-    records: list[AttemptRecord] = []
-    source = path.read_text(encoding="utf-8", errors="replace")
-    try:
-        spans = _top_level_spans(source)
-    except SyntaxError:
-        return records
-    spans = sorted(spans, key=lambda s: s[1] - s[0], reverse=True)[:top_k]
-    for start, end, name, kind in spans:
-        current = path.read_text(encoding="utf-8", errors="replace")
-        loc_now = measure(current, "python").code
-        if loc_now < 15:
-            break
-        focus = (
-            f"reduce the {kind} `{name}` specifically — it is the biggest remaining "
-            f"block; keep every public attribute/method the tests use, keep error "
-            f"messages EXACTLY as tests expect, and merge its duplicated logic"
-        )
-        best, best_loc, recs = reduce_file(
-            backend, root, path, "python", run_tests_fn,
-            attempts=attempts_per_focus, spec=spec, focus=focus,
-        )
-        records += recs
-    return records

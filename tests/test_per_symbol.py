@@ -224,8 +224,8 @@ def test_budget_exhaustion_stops_the_symbol_loop(tmp_path):
         lambda r, l: run_tests(r, l, use_cache=False), attempts_per_symbol=2,
     )
     assert records[0].outcome == "accepted"
-    assert records[-1].outcome == "backend-error"
-    assert sum(1 for r in records if r.outcome == "backend-error") == 1
+    assert records[-1].outcome == "budget-exhausted"  # the cap, not a fault
+    assert not any(r.outcome == "backend-error" for r in records)
 
 
 # ---- API-violation feedback (gap item 2) -----------------------------------

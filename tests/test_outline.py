@@ -119,6 +119,37 @@ def test_a_differing_message_becomes_a_parameter_and_is_preserved_exactly():
         assert behaves_the_same(norm(src), out, lambda ns, fn=fn: ns[fn](None))
 
 
+def test_a_differing_fstring_text_part_renders_as_an_interpolation():
+    """A varying f-string *literal text* part becomes a parameter; splicing a
+    bare Name into JoinedStr.values is invalid AST and ast.unparse raises
+    (found by running the outliner on less_code's own source)."""
+    src = """
+        def a(feedback, tail):
+            head = f"\\nPREVIOUS:\\n{feedback}\\n" if feedback else ""
+            body = tail.upper()
+            foot = tail.lower()
+            return head + body + foot
+
+        def b(focus, tail):
+            head = f"\\nFOCUS:\\n{focus}\\n" if focus else ""
+            body = tail.upper()
+            foot = tail.lower()
+            return head + body + foot
+
+        def c(fmap, tail):
+            head = f"\\nMAP:\\n{fmap}\\n" if fmap else ""
+            body = tail.upper()
+            foot = tail.lower()
+            return head + body + foot
+        """
+    out, _notes = one(src)
+    assert out is not None
+    assert "f'{message}" in out.replace('"', "'")
+    for arg in ("hi", None):
+        for fn in "abc":
+            assert behaves_the_same(norm(src), out, lambda ns, fn=fn, arg=arg: ns[fn](arg, "Ab"))
+
+
 def test_a_bound_name_used_afterwards_is_returned_and_unpacked():
     src = """
         def a(s):

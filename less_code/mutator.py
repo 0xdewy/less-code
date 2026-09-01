@@ -159,7 +159,7 @@ def generate_mutations(path: Path, lang: str, max_mutants: int = 40, seed: int =
     else:
         raise ValueError(f"unsupported language {lang}")
     if len(mutants) > max_mutants:
-        rng = random.Random(seed)
+        random.Random(seed)
         stride = len(mutants) / max_mutants
         mutants = [mutants[int(i * stride)] for i in range(max_mutants)]
     return mutants

@@ -49,13 +49,24 @@ class RewardBreakdown:
     reason: str
 
 
+def _completion_text(completion) -> str:
+    """TRL 1.x conversational datasets pass completions as message lists."""
+    if isinstance(completion, list):
+        return "".join(
+            m.get("content", "") if isinstance(m, dict) else str(m)
+            for m in completion
+        )
+    return completion
+
+
 def extract_completion(completion: str) -> str | None:
     import re
 
+    completion = _completion_text(completion)
     blocks = re.findall(r"```[a-zA-Z0-9_+-]*\n(.*?)```", completion, re.DOTALL)
     if blocks:
         return blocks[-1].strip("\n")
-    head = completion.strip()[:20]
+    completion.strip()[:20]
     if any(completion.strip().startswith(s) for s in ("def ", "class ", "pub ", "fn ", "function ", "export ", "use ", "import ")):
         return completion.strip()
     return None
