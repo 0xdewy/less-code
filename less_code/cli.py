@@ -103,6 +103,7 @@ def cmd_reduce(args: argparse.Namespace) -> int:
         attempts_per_file=args.attempts, max_files=args.max_files,
         formatter=not args.no_format, test_timeout=args.timeout,
         strategy=args.strategy,
+        skip_files=(set(args.skip_files.split(",")) if args.skip_files else None),
     )
     out = Path(args.out)
     write_report(stats, out)
@@ -217,6 +218,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--strategy", default="mixed", choices=["mixed", "whole-file"],
                    help="mixed = dedup + per-symbol + sweep; whole-file = repeated "
                         "whole-file rewrites with hunk salvage (the recipe that passed js)")
+    p.add_argument("--skip-files", default=None, metavar="NAMES",
+                   help="comma-separated file names the LLM layer must not touch "
+                        "(trust scaling: files whose behavior the suite cannot see, "
+                        "per `lc audit` — static layers still run on them)")
     p.add_argument("--copy-to", default=None, metavar="DIR",
                    help="copy the project to DIR and reduce the COPY, leaving the "
                         "original untouched. Without it `reduce` rewrites the tree "

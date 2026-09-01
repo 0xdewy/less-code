@@ -91,8 +91,9 @@ SYSTEM_PROMPT = """You are an expert code minimizer. Rewrite code to use fewer l
 1. Preserving behavior EXACTLY — the test suite (provided) must still pass, including error paths.
 2. Preserving the public API exactly: same public symbols, same names, same signatures. If you create helper functions, their names MUST start with underscore (_helper).
 3. Keeping the code readable and idiomatic — NO minification tricks (no semicolon-chained lines, no one-letter names, no removing types).
-4. Removing: redundant guards, dead branches, over-abstraction, duplicate logic (merge into _helpers), verbose constructs replaceable by standard-library/idiomatic equivalents.
-5. Consolidating copy-pasted blocks into parameterized _helpers when it genuinely reduces total lines.
+4. Preserving every docstring and doc comment VERBATIM — they are the project's published documentation, not code to minimize.
+5. Removing: redundant guards, dead branches, over-abstraction, duplicate logic (merge into _helpers), verbose constructs replaceable by standard-library/idiomatic equivalents.
+6. Consolidating copy-pasted blocks into parameterized _helpers when it genuinely reduces total lines.
 RESPONSE FORMAT: your ENTIRE response must be exactly one fenced code block containing
 the complete rewritten code — first characters: ``` + the language tag, last
 characters: ```. No prose before or after. Never describe or summarize the
@@ -195,6 +196,14 @@ def _feedback_for(outcome: str) -> str:
     """
     if outcome.startswith("api-changed:"):
         return api_feedback([v.strip() for v in outcome[len("api-changed:"):].split(" | ") if v.strip()])
+    if outcome.startswith("docs-lost:"):
+        return (
+            "Your previous reply DELETED docstrings or doc comments. They are the "
+            "project's published documentation and must be preserved verbatim "
+            "(an enum member's docstring documents that member, a `#:` comment "
+            "feeds the docs site). Rewrite the CODE under and around them; "
+            "keep every docstring and doc comment exactly as it is."
+        )
     if outcome.startswith("syntax-error:"):
         # the compiler's own diagnostics, framed as an instruction
         return (
@@ -260,6 +269,38 @@ def syntax_check(path: Path, lang: str, root: Path) -> str:
 STAGES = ("not-smaller", "syntax-error", "api-changed", "tests-failed")
 
 
+def _docstrings(source: str, lang: str) -> list[str]:
+    """The documentation a rewrite must preserve: python docstrings (module,
+    class, function and enum-member level — click renders them on its docs
+    site) and js/ts `/** */` / rust `///` doc comments. Docstrings are not
+    code-LOC, so the size gate ignores them; without this check a 7B model
+    'reduces' click by deleting the published documentation wholesale."""
+    if lang == "python":
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return []
+        documentable = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        return [
+            doc
+            for node in ast.walk(tree)
+            if isinstance(node, documentable)
+            and (doc := ast.get_docstring(node, clean=False))
+        ]
+    if lang in ("javascript", "typescript"):
+        return re.findall(r"/\*\*(.*?)\*/", source, re.DOTALL)
+    return re.findall(r"(?m)^\s*//[/!].*$", source)
+
+
+def docs_lost(before: str, after: str, lang: str) -> list[str]:
+    """Docstrings/comments present in `before` and gone from `after`."""
+    from collections import Counter
+
+    lost = Counter(_docstrings(before, lang))
+    lost.subtract(Counter(_docstrings(after, lang)))
+    return sorted(doc for doc, count in lost.items() if count > 0)
+
+
 def verify_candidate(
     path: Path,
     lang: str,
@@ -271,14 +312,18 @@ def verify_candidate(
 ) -> tuple[str, int]:
     """Apply-write-test-revert with cheap pre-gates. Returns (outcome, loc_after).
 
-    Order is not-smaller -> parse -> API -> tests (roadmap B3): the size check
-    needs no disk write at all and the parse gate costs milliseconds, so a full
-    suite run is only ever spent on a candidate that could plausibly pass.
+    Order is not-smaller -> docs -> parse -> API -> tests (roadmap B3): the
+    size and doc checks need no disk write at all and the parse gate costs
+    milliseconds, so a full suite run is only ever spent on a candidate that
+    could plausibly pass.
     """
     loc_after = measure(candidate, lang).code
     if loc_after >= loc_before:
         return "not-smaller", loc_after
     original = path.read_text(encoding="utf-8", errors="replace")
+    lost = docs_lost(original, candidate, lang)
+    if lost:
+        return f"docs-lost: {len(lost)} docstring(s)/doc-comment(s) removed", loc_after
     try:
         path.write_text(candidate + "\n", encoding="utf-8")
         syntax = syntax_check(path, lang, root)
@@ -316,6 +361,13 @@ def verify_multifile(
     loc_after = sum(measure(t, lang).code for t in candidates.values())
     if loc_after >= loc_before:
         return "not-smaller", loc_before, loc_after
+    for path, text in candidates.items():
+        lost = docs_lost(originals[path], text, lang)
+        if lost:
+            return (
+                f"docs-lost: {len(lost)} docstring(s)/doc-comment(s) removed in {path.name}",
+                loc_before, loc_after,
+            )
     try:
         for path, text in candidates.items():
             path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
@@ -446,8 +498,9 @@ Rewrite THAT ONE SYMBOL to use fewer lines while:
 1. Preserving behavior EXACTLY — the test suite must still pass, including error paths and exact error messages.
 2. Preserving the symbol's public signature exactly: same name, same parameters, same defaults, same public methods/fields.
 3. Keeping the code readable and idiomatic — NO minification tricks (no semicolon-chained lines, no one-letter names, no removing types).
-4. Removing redundant guards, dead branches, duplicated blocks and verbose constructs replaceable by standard-library/idiomatic equivalents.
-5. Calling the other symbols in the file map when that removes duplicated logic. Do NOT redefine them.
+4. Preserving every docstring and doc comment VERBATIM (the symbol's own, its methods' and enum members') — they are published documentation, not code to minimize.
+5. Removing redundant guards, dead branches, duplicated blocks and verbose constructs replaceable by standard-library/idiomatic equivalents.
+6. Calling the other symbols in the file map when that removes duplicated logic. Do NOT redefine them.
 RESPONSE FORMAT: your ENTIRE response must be exactly one fenced code block containing ONLY the rewritten symbol — nothing else from the file, no other symbol, no prose. First characters: ``` + the language tag, last characters: ```."""
 
 
@@ -852,6 +905,7 @@ Produce ONE shared helper and rewrite every member to call it:
 5. No minification tricks, no one-letter names, no removed types.
 6. Exact error/panic messages and exact public signatures are PINNED BY THE TESTS. Copy every string literal character for character; never reword, never merge two different messages into one.
 7. You are given a computed token diff listing everything that differs between the members. That list is complete. Parameterize exactly those things and nothing else — the rest of the body is already identical and must be copied verbatim.
+8. Every member keeps its docstring/doc comments VERBATIM — they are published documentation, not code to minimize.
 RESPONSE FORMAT: your ENTIRE response must be exactly one fenced code block containing, in this order: the helper, then EVERY member rewritten, in the SAME order they were given, each as a complete top-level definition at column 0. Nothing else — no prose, no other code, no class statements."""
 
 

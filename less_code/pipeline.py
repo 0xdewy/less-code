@@ -89,6 +89,7 @@ def reduce_project(
     whole_file_sweep: bool = True,
     dedup_groups: int = 3,
     strategy: str = "mixed",
+    skip_files: set[str] | None = None,
 ) -> ReduceStats:
     project = map_project(root, lang)
     stats = ReduceStats(lang=project.lang, files_considered=len(project.source_files))
@@ -194,6 +195,11 @@ def reduce_project(
         ]
         runner = lambda r, l: run_tests(r, l, timeout=test_timeout)  # noqa: E731
         ordered = sorted(project.source_files, key=lambda f: -f.stat().st_size)
+        if skip_files:
+            # trust-scaled aggressiveness: files whose behavior the suite
+            # cannot see (e.g. platform-dead code on this OS, measured by
+            # `lc audit`) stay out of the LLM's reach entirely
+            ordered = [f for f in ordered if f.name not in skip_files]
         if max_files:
             ordered = ordered[:max_files]
 

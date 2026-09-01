@@ -85,10 +85,12 @@ GOOD_MERGE = textwrap.dedent('''
 
 
     def sum_credits(rows):
+        """Total of every credit row."""
         return _sum_kind(rows, "credit")
 
 
     def sum_debits(rows):
+        """Total of every debit row."""
         return _sum_kind(rows, "debit")
 ''').lstrip()
 
@@ -206,7 +208,10 @@ def test_verify_multifile_restores_every_touched_file(tmp_path):
     a, b = root / "mod_a.py", root / "mod_b.py"
     before = (a.read_text(), b.read_text())
     outcome, loc_before, loc_after = verify_multifile(
-        {a: "def sum_credits(rows):\n    return 0\n", b: "def sum_debits(rows):\n    return 0\n"},
+        {
+            a: 'def sum_credits(rows):\n    """Total of every credit row."""\n    return 0\n',
+            b: 'def sum_debits(rows):\n    """Total of every debit row."""\n    return 0\n',
+        },
         "python", RUNNER, root,
     )
     assert outcome.startswith("tests-failed")
@@ -227,7 +232,8 @@ def test_verify_multifile_catches_an_api_removal(tmp_path):
     root = _ledger(tmp_path)
     a = root / "mod_a.py"
     outcome, _b, _a = verify_multifile(
-        {a: "def _sum(rows):\n    return 0\n"}, "python", RUNNER, root
+        {a: 'def _sum(rows):\n    """Total of every credit row."""\n    return 0\n'},
+        "python", RUNNER, root,
     )
     assert outcome.startswith("api-changed") and "sum_credits" in outcome
 
@@ -265,7 +271,11 @@ def test_a_merge_that_breaks_a_test_is_reverted_whole(tmp_path):
 
 def test_a_reply_missing_a_member_is_refused_before_any_test_runs(tmp_path):
     root = _ledger(tmp_path)
-    partial = "def _sum_kind(rows, kind):\n    return 0\n\n\ndef sum_credits(rows):\n    return _sum_kind(rows, \"credit\")\n"
+    partial = (
+        'def _sum_kind(rows, kind):\n    return 0\n\n\n'
+        'def sum_credits(rows):\n    """Total of every credit row."""\n'
+        '    return _sum_kind(rows, "credit")\n'
+    )
     backend = ScriptedBackend([partial, GOOD_MERGE])
     records = reduce_duplicate_groups(
         backend, root, [root / "mod_a.py", root / "mod_b.py"], "python", RUNNER,

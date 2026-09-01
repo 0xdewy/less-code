@@ -112,6 +112,27 @@ def test_pipeline_rejects_not_smaller(tmp_path):
     assert stats.loc_final == stats.loc_after_static
 
 
+def test_skip_files_keeps_the_llm_off_low_trust_files(tmp_path):
+    """Trust scaling: `--skip-files` (per `lc audit`, files whose behavior
+    the suite cannot see) removes a file from the LLM layer's targets while
+    the static layers still run on it."""
+    root = _project(tmp_path)
+    (root / "untrusted.py").write_text(
+        'def legacy(x):\n    if x is None:\n        return None\n    return x * 2\n'
+    )
+    (root / "test_mod.py").write_text(
+        TESTS + "\n\nfrom untrusted import legacy\n\n\ndef test_legacy():\n    assert legacy(3) == 6\n"
+    )
+    before = (root / "untrusted.py").read_text()
+    stats = reduce_project(
+        root, backend=FakeBackend(), formatter=False,
+        skip_files={"untrusted.py"},
+    )
+    assert stats.tests_ok and stats.api_ok
+    assert (root / "untrusted.py").read_text() == before  # untouched by L2
+    assert stats.loc_final < stats.loc_start              # mod.py still reduced
+
+
 def test_pipeline_static_only(tmp_path):
     root = _project(tmp_path)
     stats = reduce_project(root, backend=None, formatter=False)
@@ -161,4 +182,80 @@ def test_whole_file_strategy_skips_symbol_loops(tmp_path):
     outcomes = [a["outcome"] for a in j["attempts"]]
     assert "accepted" in outcomes
     assert not any(a["file"].endswith("(dedup)") or ":" in pathlib.Path(a["file"]).name.replace(".py", "")
-                   for a in j["attempts"] if a["outcome"] == "accepted"), "no symbol/dedup records expected"
+                    for a in j["attempts"] if a["outcome"] == "accepted"), "no symbol/dedup records expected"
+
+
+class TestDocsPreservationGate:
+    """A 7B model 'reduces' a mature library mostly by deleting its published
+    documentation (click: whole enum docstrings, `#:` Sphinx comments). Doc
+    loss is invisible to the suite and free in code-LOC, so it needs its own
+    pre-gate — cheaper than the parse gate, before any disk write."""
+
+    DOC_MODULE = textwrap.dedent('''
+        def sign(n):
+            """Return the sign name of n."""
+            if n > 0:
+                result = "positive"
+            elif n < 0:
+                result = "negative"
+            else:
+                result = "zero"
+            return result
+        ''').strip() + "\n"
+
+    DOC_TESTS = "from mod import sign\n\ndef test_sign():\n    assert sign(5) == 'positive'\n    assert sign(0) == 'zero'\n"
+
+    def _verify(self, tmp_path, candidate):
+        from less_code.api_check import python_api
+        from less_code.llm_reduce import verify_candidate
+
+        (tmp_path / "mod.py").write_text(self.DOC_MODULE)
+        (tmp_path / "test_mod.py").write_text(self.DOC_TESTS)
+        ok = type("Result", (), {"ok": True, "output_tail": ""})()
+        return verify_candidate(
+            tmp_path / "mod.py", "python", candidate,
+            python_api(self.DOC_MODULE), 7, lambda r, l: ok, tmp_path,
+        )
+
+    def test_a_docstring_stripping_rewrite_is_rejected(self, tmp_path):
+        stripped = 'def sign(n):\n    return "positive" if n > 0 else "negative" if n < 0 else "zero"\n'
+        outcome, _loc = self._verify(tmp_path, stripped)
+        assert outcome.startswith("docs-lost")
+
+    def test_a_rewrite_that_keeps_the_docstring_passes_the_gate(self, tmp_path):
+        kept = (
+            'def sign(n):\n'
+            '    """Return the sign name of n."""\n'
+            '    return "positive" if n > 0 else "negative" if n < 0 else "zero"\n'
+        )
+        outcome, _loc = self._verify(tmp_path, kept)
+        assert not outcome.startswith("docs-lost")
+
+    def test_doc_comment_loss_is_detected_for_js_and_rust(self):
+        from less_code.llm_reduce import docs_lost
+
+        js_before = "/** Docs. */\nfunction f(x) {\n  return x + 1;\n}\n"
+        js_after = "function f(x) {\n  return x + 1;\n}\n"
+        assert len(docs_lost(js_before, js_after, "javascript")) == 1
+        rs_before = "/// Docs.\npub fn f(x: i32) -> i32 {\n    x + 1\n}\n"
+        rs_after = "pub fn f(x: i32) -> i32 {\n    x + 1\n}\n"
+        assert len(docs_lost(rs_before, rs_after, "rust")) == 1
+
+    def test_multifile_candidate_losing_docs_anywhere_is_rejected(self, tmp_path):
+        from less_code.llm_reduce import verify_multifile
+
+        a = tmp_path / "a.py"
+        b = tmp_path / "b.py"
+        a.write_text(
+            'def one():\n    """Doc one."""\n    if True:\n        return 1\n    return 0\n\n\ndef two():\n    """Doc two."""\n    return 2\n'
+        )
+        b.write_text("x = 1\n")
+        # smaller in code-LOC AND missing one()s docstring: the docs gate must
+        # catch it, not let it through on the size check alone
+        stripped = {
+            a: 'def one():\n    return 1\n\n\ndef two():\n    """Doc two."""\n    return 2\n',
+            b: "x = 1\n",
+        }
+        outcome, _before, _after = verify_multifile(stripped, "python", lambda r, l: None, tmp_path)
+        assert outcome.startswith("docs-lost")
+        assert "a.py" in outcome
