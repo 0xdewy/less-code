@@ -40,6 +40,33 @@ class TestExtract:
         assert extract_completion("def f():\n    pass") == "def f():\n    pass"
 
 
+class TestSftData:
+    """grpo/sft.py: the SFT warm start on mined pairs (F1)."""
+
+    def test_validate_config_flags_thin_pair_files(self, tmp_path):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "sft", REPO / "grpo" / "sft.py")
+        sft = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sft)
+        thin = tmp_path / "pairs.jsonl"
+        thin.write_text(
+            "\n".join(json.dumps({
+                "kind": "symbol", "unit": "m.py:f", "system": "s",
+                "prompt": "p", "response": "r",
+            }) for _ in range(3)) + "\n")
+        errors = sft.validate_config(sft.DEFAULTS, thin)
+        assert any("mine more" in e for e in errors)
+
+        enough = tmp_path / "many.jsonl"
+        enough.write_text(thin.read_text() * 20)
+        assert sft.validate_config(sft.DEFAULTS, enough) == []
+        pairs = sft.load_pairs(enough)
+        assert pairs[0]["messages"][0]["role"] == "system"
+        assert pairs[0]["messages"][2]["content"] == "r"
+
+
 class TestRewardGate:
     def test_identity_rewrite_is_zero_delta_positive_gate(self):
         s = load_sample("python")
