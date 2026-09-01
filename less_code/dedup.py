@@ -301,3 +301,181 @@ def token_diff_slots(group, lang: str, max_slots: int = 8) -> list[tuple[str, ..
             if len(slots) >= max_slots:
                 return slots
     return slots
+
+
+# ---- the mechanical merge ----------------------------------------------------
+
+_HEADER_PLAIN = re.compile(r"^(\s*)def\s+([A-Za-z_]\w*)\s*\((.*)\)\s*:\s*(#.*)?$")
+
+
+def _spanned_tokens(text: str) -> list[tuple[str, int, int]]:
+    """Raw tokens with char spans, comment interiors skipped. A `#` outside a
+    string token starts a comment; nothing to its EOL is code."""
+    import bisect
+
+    out: list[tuple[str, int, int]] = []
+    line_starts = [0]
+    for pos, ch in enumerate(text):
+        if ch == "\n":
+            line_starts.append(pos + 1)
+    skip_line = -1
+    for m in _RAW_TOKEN.finditer(text):
+        line = bisect.bisect_right(line_starts, m.start()) - 1
+        if line == skip_line:
+            continue
+        if m.group() == "#":
+            skip_line = line
+            continue
+        skip_line = -1
+        out.append((m.group(), m.start(), m.end()))
+    return out
+
+
+def _arg_names(params_text: str) -> list[str]:
+    """`a, b=1, *args, **kw` -> ['a', 'b', '*args', '**kw'] in call order."""
+    names: list[str] = []
+    for part in params_text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        part = part.split(":")[0].split("=")[0].strip()
+        if part:
+            names.append(part)
+    return names
+
+
+def mechanical_merge(group) -> tuple[dict[Path, str], str] | None:
+    """Build the shared-helper merge for a pair mechanically, no model.
+
+    The LLM was asked to *design* this merge and 0 of 2 landed on click; the
+    diff between two copy-pasted definitions is a computed fact. Member 1's
+    body becomes the helper VERBATIM (comments survive; only the differing
+    token runs become parameters), every member becomes its signature plus a
+    one-line call. Declines anything it cannot prove slot-shaped: multi-line
+    header, decorators, async, differing docstrings or parameter lists, runs
+    that touch the header, span multiple lines, are huge, or a member name
+    appearing in the other's body (recursion/aliasing).
+
+    Returns {(file path): new text} plus a note, or None when the pair is not
+    slot-mergeable. The caller still gates the result on the frozen suite.
+    """
+    members = group.members
+    if len(members) != 2 or members[0].lang != "python":
+        return None
+    a, b = members
+    if a.indent != b.indent:
+        return None
+    match_a = _HEADER_PLAIN.match(a.text.split("\n", 1)[0])
+    match_b = _HEADER_PLAIN.match(b.text.split("\n", 1)[0])
+    if not match_a or not match_b:
+        return None
+    ind_a, params_a = match_a.group(1), match_a.group(3)
+    ind_b, params_b = match_b.group(1), match_b.group(3)
+    if params_a.replace(" ", "") != params_b.replace(" ", ""):
+        return None
+    try:
+        fn_a = ast.parse(a.text).body[0]
+        fn_b = ast.parse(b.text).body[0]
+    except (SyntaxError, IndexError):
+        return None
+    for fn in (fn_a, fn_b):
+        if not isinstance(fn, ast.FunctionDef) or fn.decorator_list:
+            return None
+    if ast.get_docstring(fn_a, clean=False) != ast.get_docstring(fn_b, clean=False):
+        return None
+
+    spans_a = _spanned_tokens(a.text)
+    spans_b = _spanned_tokens(b.text)
+    # a member's name appearing in the other's body is recursion/aliasing;
+    # token-level (a one-letter name like `a` is a substring of `total`)
+    toks_a = {t for t, _s, _e in spans_a}
+    toks_b = {t for t, _s, _e in spans_b}
+    if b.name in toks_a or a.name in toks_b:
+        return None
+    matcher = difflib.SequenceMatcher(
+        None, [t for t, _s, _e in spans_a], [t for t, _s, _e in spans_b], autojunk=False
+    )
+    header_end = a.text.index("\n")  # single-line header, verified by the regex
+    slots: list[tuple[int, int, str, str]] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        a_start = spans_a[i1][1] if i2 > i1 else spans_a[i1][1]
+        a_end = spans_a[i2 - 1][2] if i2 > i1 else spans_a[i1][1]
+        b_start = spans_b[j1][1] if j2 > j1 else spans_b[j1][1]
+        b_end = spans_b[j2 - 1][2] if j2 > j1 else spans_b[j1][1]
+        a_run = a.text[a_start:a_end]
+        b_run = b.text[b_start:b_end]
+        if not a_run.strip() and not b_run.strip():
+            continue
+        names = {a.name, b.name}
+        if a_run.strip() in names and b_run.strip() in names:
+            continue  # the def names: renaming, not parameterization
+        if a_start <= header_end or b_start <= header_end:
+            return None  # run touches the header (e.g. a default value)
+        if "\n" in a_run or "\n" in b_run or len(a_run) > 60 or len(b_run) > 60:
+            return None
+        slots.append((a_start, a_end, a_run, b_run))
+    if not slots:
+        return None
+    used_names = {t for t, _s, _e in spans_a} | {t for t, _s, _e in spans_b}
+    slot_params = []
+    for i in range(len(slots)):
+        name = f"_slot{i}"
+        while name in used_names:
+            name = "_" + name
+        slot_params.append(name)
+
+    # helper = member a's body verbatim, dedented, runs -> parameters
+    body = a.text[header_end + 1:]
+    for (start, end, _run, _b), param in sorted(
+        zip(slots, slot_params), key=lambda x: x[0][0], reverse=True
+    ):
+        body = body[:start - header_end - 1] + param + body[end - header_end - 1:]
+    body = "\n".join(
+        line[len(ind_a):] if line.strip() else line
+        for line in body.split("\n")
+    )
+    helper_name = f"_{a.name}_shared"
+    while helper_name in used_names:
+        helper_name = "_" + helper_name
+    params_full = ", ".join(
+        [p.strip() for p in params_a.split(",") if p.strip()] + slot_params
+    )
+    helper = f"def {helper_name}({params_full}):\n{body}".rstrip() + "\n"
+
+    doc = ast.get_docstring(fn_a, clean=False)
+    doc_line = f'{ind_a}    """{doc}"""\n' if doc else ""
+
+    def member_rewrite(m: "Unit", args_text: str) -> str:
+        head = f"{ind_a}def {m.name}({params_a.strip()}):"
+        call = f"{ind_a}    return {helper_name}({args_text})"
+        return head + "\n" + (doc_line if doc else "") + call
+
+    arg_names = _arg_names(params_a)
+    args_a = ", ".join(arg_names + [run for _s, _e, run, _b in slots])
+    args_b = ", ".join(arg_names + [run for _s, _e, _a, run in slots])
+
+    out: dict[Path, str] = {}
+    # splice bottom-up: a same-file pair would otherwise see the second
+    # member's stored line span shifted by the first splice
+    for m, args in sorted(((a, args_a), (b, args_b)), key=lambda p: -p[0].start):
+        lines = (
+            m.path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if m.path not in out
+            else out[m.path].splitlines()
+        )
+        lines[m.start:m.end] = member_rewrite(m, args).splitlines()
+        if m is a:
+            lines[m.start:m.start] = helper.splitlines()
+        out[m.path] = "\n".join(lines) + "\n"
+    note = (
+        f"mechanical merge {a.key}+{b.key} -> {helper_name} "
+        f"({len(slots)} slot(s))"
+    )
+    for text in out.values():
+        try:
+            compile(text, "<mech>", "exec")
+        except SyntaxError:
+            return None
+    return out, note

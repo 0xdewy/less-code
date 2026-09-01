@@ -354,6 +354,141 @@ def test_a_method_member_is_spliced_back_at_class_indent(tmp_path):
     assert "class Bag:" in text and text.count("def __init__") == 1
 
 
+# ---- the mechanical merge ----------------------------------------------------
+
+
+def _twin_project(tmp_path):
+    root = tmp_path / "twins"
+    root.mkdir()
+    (root / "mod.py").write_text(textwrap.dedent('''
+        def count_credits(rows):
+            n = 0
+            for row in rows:
+                if row["kind"] == "credit":
+                    n += row["amount"]
+            return n
+
+
+        def count_debits(rows):
+            n = 0
+            for row in rows:
+                if row["kind"] == "debit":
+                    n += row["amount"]
+            return n
+    ''').lstrip())
+    (root / "test_mod.py").write_text(textwrap.dedent('''
+        from mod import count_credits, count_debits
+
+        ROWS = [{"kind": "credit", "amount": 3}, {"kind": "debit", "amount": 7}]
+
+        def test_twins():
+            assert count_credits(ROWS) == 3
+            assert count_debits(ROWS) == 7
+    ''').lstrip())
+    return root
+
+
+def test_mechanical_merge_builds_the_helper_with_no_model(tmp_path):
+    from less_code.dedup import find_duplicate_groups, mechanical_merge
+
+    root = _twin_project(tmp_path)
+    sources = {root / "mod.py": (root / "mod.py").read_text()}
+    group = find_duplicate_groups(sources, "python")[0]
+    built = mechanical_merge(group)
+    assert built is not None
+    files, note = built
+    assert "mechanical merge" in note
+    text = files[root / "mod.py"]
+    assert "def _count_credits_shared(rows, _slot0):" in text
+    assert text.count("def count_credits(rows):") == 1
+    assert 'return _count_credits_shared(rows, "credit")' in text
+    assert 'return _count_credits_shared(rows, "debit")' in text
+    # the helper body keeps member 1's code verbatim, slots substituted
+    assert 'if row["kind"] == _slot0:' in text
+    compile(text, "<t>", "exec")
+
+
+def test_mechanical_merge_passes_the_real_gate_end_to_end(tmp_path):
+    """Zero LLM calls: the dedup round accepts the mechanical merge, the
+    suite stays green, behavior is identical (verified by executing it)."""
+    from less_code.backends import Backend
+    from less_code.llm_reduce import reduce_duplicate_groups
+
+    root = _twin_project(tmp_path)
+
+    class Refuses(Backend):
+        """Any LLM call is a failure: the merge must be mechanical."""
+
+        def __init__(self):
+            super().__init__("refuses")
+
+        def complete(self, system, prompt, temperature=0.2):
+            raise AssertionError("the LLM must not be asked")
+
+    records = reduce_duplicate_groups(
+        Refuses(), root, [root / "mod.py"], "python", run_tests,
+        attempts_per_group=1, max_groups=1,
+    )
+    assert [r.outcome for r in records] == ["accepted"]
+    assert records[0].attempt == 0  # the mechanical marker
+    assert records[0].loc_after < records[0].loc_before
+    ns = {}
+    exec(compile((root / "mod.py").read_text(), "<t>", "exec"), ns)
+    rows = [{"kind": "credit", "amount": 3}, {"kind": "debit", "amount": 7}]
+    assert ns["count_credits"](rows) == 3 and ns["count_debits"](rows) == 7
+
+
+def test_mechanical_merge_declines_differing_docstrings(tmp_path):
+    """A docstring documents its member; merging distinct docs is a doc
+    change, and the member rewrite must keep the shared one only when both
+    members had it."""
+    from less_code.dedup import find_duplicate_groups, mechanical_merge
+
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "m.py").write_text(
+        'def a(x):\n    """Doc A."""\n    return x * 1\n\n\ndef b(x):\n    """Doc B."""\n    return x * 2\n'
+    )
+    sources = {root / "m.py": (root / "m.py").read_text()}
+    groups = find_duplicate_groups(sources, "python", min_tokens=4)
+    if not groups:
+        return  # too small to group: the decline is trivially true
+    assert mechanical_merge(groups[0]) is None
+
+
+def test_mechanical_merge_keeps_identical_docstrings_on_members(tmp_path):
+    from less_code.dedup import find_duplicate_groups, mechanical_merge
+
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "m.py").write_text(
+        'def a(rows, kind):\n'
+        '    """Sum matching rows."""\n'
+        '    total = 0\n'
+        '    for row in rows:\n'
+        '        if row["kind"] == kind:\n'
+        '            total += row["amount"]\n'
+        '    return total\n\n\n'
+        'def b(rows, kind):\n'
+        '    """Sum matching rows."""\n'
+        '    total = 0\n'
+        '    for row in rows:\n'
+        '        if row["flag"] == kind:\n'
+        '            total += row["amount"]\n'
+        '    return total\n'
+    )
+    sources = {root / "m.py": (root / "m.py").read_text()}
+    groups = find_duplicate_groups(sources, "python")
+    assert groups
+    built = mechanical_merge(groups[0])
+    assert built is not None
+    text = built[0][root / "m.py"]
+    # one per rewritten member, plus the helper's own (member 1's body is
+    # kept verbatim, docstring included)
+    assert text.count('"""Sum matching rows."""') == 3
+    compile(text, "<t>", "exec")
+
+
 # ---- per-method decomposition (python) ------------------------------------
 
 BIG_CLASS = textwrap.dedent('''

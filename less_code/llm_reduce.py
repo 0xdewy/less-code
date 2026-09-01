@@ -705,6 +705,30 @@ def build_symbol_prompt(
     fmap: str, feedback: str, spec: str = "", owner: str = "",
 ) -> str:
     tag, fb, tests = _check_lang(lang, feedback, spec, '\nThe test suite the whole file must pass (behavior specification — error messages and exception types must match EXACTLY):\n```\n')
+    example = ""
+    if lang == "python":
+        # few-shot from an ACCEPTED click rewrite (C6 lite): the shape a
+        # correct answer has — signature and docstring intact, one structural
+        # win, nothing else touched. Instructions did not teach this (40% of
+        # click proposals were doc-eating anyway); an example does better.
+        example = (
+            "\nEXAMPLE of a correct rewrite (this exact shape was accepted):\n"
+            "```\n"
+            "before:\n"
+            "    def get_help_extra(self):\n"
+            '        """Extra metrics for the help."""\n'
+            "        if self.show_default is None:\n"
+            "            return None\n"
+            "        else:\n"
+            '            return {"default": self.show_default}\n'
+            "after:\n"
+            "    def get_help_extra(self):\n"
+            '        """Extra metrics for the help."""\n'
+            "        if self.show_default is None:\n"
+            "            return None\n"
+            '        return {"default": self.show_default}\n'
+            "```\n"
+        )
     if owner:
         rest = (
             f"\nThe class `{owner}` it belongs to — other method signatures and the "
@@ -727,7 +751,7 @@ def build_symbol_prompt(
     return (
         f"File: {path.name}\nLanguage: {tag}\n"
         f"{'Method' if owner else 'Symbol'} to rewrite: `{key}` ({symbol_loc} code lines)\n"
-        f"{rest}{fb}{tests}{instruction}\n\n"
+        f"{rest}{fb}{tests}{example}{instruction}\n\n"
         f"```{tag}\n{symbol}\n```"
     )
 
@@ -754,6 +778,7 @@ def reduce_symbols(
     sweeps: int = 1,
     max_symbols: int | None = None,
     spec_tests: SpecTests | None = None,
+    exclude: set[str] | None = None,
 ) -> list[AttemptRecord]:
     """Rewrite one top-level symbol at a time, biggest first (roadmap C2).
 
@@ -777,7 +802,7 @@ def reduce_symbols(
             source = path.read_text(encoding="utf-8", errors="replace")
             index = [
                 s for s in proposal_units(source, lang, force=frozenset(decomposed))
-                if s[3] not in done
+                if s[3] not in done and (not exclude or s[3] not in exclude)
             ]
             if not index:
                 break
@@ -1024,7 +1049,7 @@ def _dedup_candidate(candidate: str, group, lang: str, sources: dict[Path, str])
 
 
 def reduce_duplicate_groups(
-    backend: Backend,
+    backend,
     root: Path,
     files: list[Path],
     lang: str,
@@ -1036,8 +1061,12 @@ def reduce_duplicate_groups(
     threshold: float = 0.6,
     spec_tests: SpecTests | None = None,
 ) -> list[AttemptRecord]:
-    """Propose one shared `_helper` per near-duplicate group (C2b)."""
-    from .dedup import find_duplicate_groups
+    """Propose one shared `_helper` per near-duplicate group (C2b).
+
+    `backend=None` is the mechanical-only mode: the deterministic merge runs
+    (zero LLM cost, suite-gated), the model is never asked — static-only
+    runs still get dedup yield."""
+    from .dedup import find_duplicate_groups, mechanical_merge
 
     records: list[AttemptRecord] = []
     attempted: set[frozenset] = set()
@@ -1061,7 +1090,26 @@ def reduce_duplicate_groups(
             if spec_tests is not None else spec
         )
         loc_before = sum(measure(sources[p], lang).code for p in group.files)
+        # the merge of two copy-pasted definitions is a computed fact, not a
+        # design task: try the mechanical builder FIRST (zero LLM cost, body
+        # kept verbatim); the model is the fallback for what it cannot prove
+        mech = mechanical_merge(group)
+        if mech is not None:
+            proposal_files, mech_note = mech
+            outcome, _before, _after = verify_multifile(
+                proposal_files, lang, run_tests_fn, root
+            )
+            records.append(_report(AttemptRecord(
+                tag, 0, outcome.split(":")[0], loc_before, _after,
+                mech_note + " -> " + outcome[:80],
+            )))
+            if outcome == "accepted":
+                for path, text in proposal_files.items():
+                    path.write_text(text, encoding="utf-8")
+                continue
         feedback = ""
+        if backend is None:
+            continue  # mechanical-only mode: the model is never asked
         for attempt in range(1, attempts_per_group + 1):
             try:
                 response = backend.complete(

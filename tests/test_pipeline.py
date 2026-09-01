@@ -279,3 +279,96 @@ class TestDocsPreservationGate:
         outcome, _before, _after = verify_multifile(stripped, "python", lambda r, l: None, tmp_path)
         assert outcome.startswith("docs-lost")
         assert "a.py" in outcome
+
+
+class TestBudgetScheduling:
+    """click lesson: biggest-file-first spent 100% of a 40-call budget in
+    core.py; 13 of 17 files never saw an LLM call. The budget now round-robins
+    across files, ranked by size x per-file trust."""
+
+    BIG = textwrap.dedent('''
+        def one(x):
+            if x is None:
+                return None
+            if not isinstance(x, int):
+                raise ValueError("int required")
+            return x + 1
+
+        def two(x):
+            if x is None:
+                return None
+            if not isinstance(x, int):
+                raise ValueError("int required")
+            return x + 2
+    ''').strip() + "\n"
+
+    SMALL = textwrap.dedent('''
+        def tre(x):
+            try:
+                return x + 3
+            except TypeError:
+                return None
+
+        def for_(x):
+            try:
+                return x + 4
+            except TypeError:
+                return None
+    ''').strip() + "\n"
+
+    TESTS = (
+        "from big import one, two\nfrom small import tre, for_\n\n"
+        "def test_all():\n"
+        "    assert one(1) == 2 and two(1) == 3\n"
+        "    assert tre(1) == 4 and for_(1) == 5\n"
+    )
+
+    def _project(self, tmp_path):
+        root = tmp_path / "proj"
+        root.mkdir()
+        (root / "big.py").write_text(self.BIG)
+        (root / "small.py").write_text(self.SMALL)
+        (root / "test_all.py").write_text(self.TESTS)
+        return root
+
+    def test_the_budget_spreads_across_files(self, tmp_path):
+        from less_code.backends import BudgetBackend
+
+        class Garbage(Backend):
+            def __init__(self):
+                super().__init__("garbage")
+
+            def complete(self, system, prompt, temperature=0.2):
+                return "no code block"
+
+        root = self._project(tmp_path)
+        backend = BudgetBackend(Garbage(), 6)
+        stats = reduce_project(root, backend=backend, formatter=False)
+        files_attempted = {a["file"].rsplit(":", 1)[0] for a in stats.attempt_records}
+        assert any(f.endswith("big.py") for f in files_attempted)
+        assert any(f.endswith("small.py") for f in files_attempted), (
+            "the smaller file must see LLM calls too, not just the biggest"
+        )
+
+    def test_trust_ranks_a_small_verified_file_first(self, tmp_path):
+        prompts = []
+
+        class Recording(Backend):
+            def __init__(self):
+                super().__init__("rec")
+
+            def complete(self, system, prompt, temperature=0.2):
+                prompts.append(prompt)
+                return "no code block"
+
+        root = self._project(tmp_path)
+        reduce_project(
+            root, backend=Recording(), formatter=False,
+            trust={"big.py": 0.1, "small.py": 0.95}, symbols_per_sweep=1,
+        )
+        assert prompts, "no prompt was built"
+        symbol_prompts = [p for p in prompts if p.startswith("File: small.py")]
+        assert symbol_prompts, "small.py must reach the per-symbol loop"
+        assert "tre" in symbol_prompts[0], (
+            "small.py x 0.95 must outrank big.py x 0.1 despite its size"
+        )

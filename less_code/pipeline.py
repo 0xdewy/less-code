@@ -90,6 +90,8 @@ def reduce_project(
     dedup_groups: int = 3,
     strategy: str = "mixed",
     skip_files: set[str] | None = None,
+    trust: dict[str, float] | None = None,
+    symbols_per_sweep: int = 3,
 ) -> ReduceStats:
     project = map_project(root, lang)
     stats = ReduceStats(lang=project.lang, files_considered=len(project.source_files))
@@ -169,10 +171,45 @@ def reduce_project(
         for name in set(api) - set(api_ref.get(file, {}))
     )
 
-    # ---- L2 LLM ----
+    # ---- L2 ----
+    # behavior-spec material for per-unit selection (select_spec): a
+    # repo-scale suite (click: ~50 files) cannot go into one prompt, and a
+    # 40k-char global prefix would feed every prompt tests unrelated to the
+    # unit being rewritten. Only needed when a model will be asked.
+    spec_tests: list[tuple[str, str]] = []
+    if backend is not None and backend.name != "none":
+        spec_tests = [
+            (
+                str(f.relative_to(root)),
+                f.read_text(encoding="utf-8", errors="replace"),
+            )
+            for f in project.test_files
+        ]
+
+    # C2b FIRST, and deliberately: it is project-wide, it targets the biggest
+    # opportunity both FIXTURE.md files document (cross-symbol copy-paste),
+    # and the greedy per-symbol loop once spent the whole budget before any
+    # cross-symbol pass ran. The mechanical merge is deterministic and
+    # suite-gated, so it runs even with no LLM at all (static-only trees get
+    # dedup yield too); the model is asked only for what it cannot prove.
+    from .llm_reduce import reduce_duplicate_groups
+
+    dedup_runner = lambda r, l: run_tests(r, l, timeout=test_timeout)  # noqa: E731
+    dedup_records = [] if strategy == "whole-file" else reduce_duplicate_groups(
+        backend, root, project.source_files, project.lang, dedup_runner,
+        attempts_per_group=max(1, attempts_per_file - 1), max_groups=dedup_groups,
+        spec_tests=spec_tests or None,
+    )
+    for rec in dedup_records:
+        stats.attempt_records.append(
+            {"file": rec.file, "attempt": rec.attempt, "outcome": rec.outcome,
+             "loc_before": rec.loc_before, "loc_after": rec.loc_after,
+             "detail": rec.detail[:200]}
+        )
+
     if backend is not None and backend.name != "none":
         from . import llm_reduce as _llm
-        from .llm_reduce import reduce_duplicate_groups, reduce_file, reduce_symbols
+        from .llm_reduce import reduce_file, reduce_symbols
 
         # live per-attempt output: a long GPU run must be readable while it
         # runs, not only once each file is finished.
@@ -182,19 +219,20 @@ def reduce_project(
             flush=True,
         )
 
-        # behavior-spec material for per-unit selection (select_spec): a
-        # repo-scale suite (click: ~50 files) cannot go into one prompt, and
-        # a 40k-char global prefix would feed every prompt tests unrelated to
-        # the unit being rewritten.
-        spec_tests: list[tuple[str, str]] = [
-            (
-                str(f.relative_to(root)),
-                f.read_text(encoding="utf-8", errors="replace"),
-            )
-            for f in project.test_files
-        ]
         runner = lambda r, l: run_tests(r, l, timeout=test_timeout)  # noqa: E731
-        ordered = sorted(project.source_files, key=lambda f: -f.stat().st_size)
+        # C7 scheduling, with the click lesson baked in: biggest-file-first
+        # spent 100% of a 40-call budget inside core.py and 13 of 17 files
+        # never saw an LLM call. Rank by expected yield (size x per-file
+        # mutation score when a trust map is given) and ROUND-ROBIN the
+        # budget across files in bounded sweeps instead.
+        def _yield_key(f: Path) -> float:
+            loc = measure(
+                f.read_text(encoding="utf-8", errors="replace"), project.lang
+            ).code
+            t = (trust or {}).get(f.name, 0.7)
+            return loc * t
+
+        ordered = sorted(project.source_files, key=lambda f: -_yield_key(f))
         if skip_files:
             # trust-scaled aggressiveness: files whose behavior the suite
             # cannot see (e.g. platform-dead code on this OS, measured by
@@ -203,63 +241,97 @@ def reduce_project(
         if max_files:
             ordered = ordered[:max_files]
 
-        # C2b FIRST, and deliberately: it is project-wide, it targets the
-        # biggest opportunity both FIXTURE.md files document (cross-symbol
-        # copy-paste), and iteration 08's gap item 7 was that the greedy
-        # per-symbol loop spent the whole budget before any cross-symbol pass
-        # ever ran. Bounded to `max_groups * attempts` calls so the per-symbol
-        # loop still gets the rest.
-        dedup_records = [] if strategy == "whole-file" else reduce_duplicate_groups(
-            backend, root, project.source_files, project.lang, runner,
-            attempts_per_group=max(1, attempts_per_file - 1),
-            max_groups=dedup_groups, spec_tests=spec_tests,
-        )
-        for rec in dedup_records:
-            stats.attempt_records.append(
-                {
-                    "file": rec.file, "attempt": rec.attempt, "outcome": rec.outcome,
-                    "loc_before": rec.loc_before, "loc_after": rec.loc_after,
-                    "detail": rec.detail[:200],
-                }
+        def _budget_gone(records) -> bool:
+            return any(
+                (r["outcome"] if isinstance(r, dict) else r.outcome) == "budget-exhausted"
+                for r in records
             )
 
-        for path in ordered:
-            source_before = path.read_text(encoding="utf-8", errors="replace")
-            loc_before = measure(source_before, project.lang).code
-            if loc_before < 8:
-                continue
-            # C2: per-symbol proposals are the DEFAULT for every language.
-            # Iteration 07 measured zero outright whole-file acceptances at 3B
-            # and 7B; a per-symbol proposal is a short output through the same
-            # gate, so the same budget buys ~20 independent bets instead of 1.
-            # strategy="whole-file": the recipe that passed C4 on js — repeated
-            # whole-file rewrites whose rejects feed hunk salvage. Skips the
-            # dedup/per-symbol loops entirely.
-            records = [] if strategy == "whole-file" else reduce_symbols(
-                backend, root, path, project.lang, runner,
-                attempts_per_symbol=max(1, attempts_per_file - 1),
-                spec_tests=spec_tests,
-            )
-            if whole_file_sweep or strategy == "whole-file":
-                # optional final sweep: only a whole-file rewrite can dedup
-                # ACROSS symbols, and its rejects still feed hunk salvage.
-                current = path.read_text(encoding="utf-8", errors="replace")
-                loc_now = measure(current, project.lang).code
+        if strategy == "whole-file":
+            for path in ordered:
                 best, best_loc, sweep_records = reduce_file(
                     backend, root, path, project.lang, runner,
-                    attempts=attempts_per_file if strategy == "whole-file" else 1,
-                    spec_tests=spec_tests,
+                    attempts=attempts_per_file, spec_tests=spec_tests,
                 )
-                records += sweep_records
-                if best_loc < loc_now:
+                for rec in sweep_records:
+                    stats.attempt_records.append(
+                        {"file": rec.file, "attempt": rec.attempt, "outcome": rec.outcome,
+                         "loc_before": rec.loc_before, "loc_after": rec.loc_after,
+                         "detail": rec.detail[:200]}
+                    )
+                current_loc = measure(
+                    path.read_text(encoding="utf-8", errors="replace"), project.lang
+                ).code
+                if best_loc < current_loc:
                     path.write_text(best + "\n", encoding="utf-8")
-            for rec in records:
-                stats.attempt_records.append(
-                    {
-                        "file": rec.file, "attempt": rec.attempt, "outcome": rec.outcome,
-                        "loc_before": rec.loc_before, "loc_after": rec.loc_after, "detail": rec.detail[:200],
-                    }
-                )
+                if _budget_gone(sweep_records):
+                    break
+        else:
+            # round-robin: a few symbols per file per sweep, so one big file
+            # can no longer monopolize the budget (click: core.py ate all 40
+            # calls; types.py/parser.py never got one). The fixpoint is an
+            # ACCEPTANCE-free sweep: a rejected symbol gets its retry inside
+            # the call (attempts_per_symbol), so re-asking it next sweep with
+            # the same prompt is pure waste.
+            done: set[Path] = set()
+            attempted: dict[Path, set[str]] = {}
+            budget_gone = False
+            while not budget_gone:
+                accepted_any = False
+                for path in ordered:
+                    if path in done:
+                        continue
+                    if measure(
+                        path.read_text(encoding="utf-8", errors="replace"), project.lang
+                    ).code < 8:
+                        done.add(path)
+                        continue
+                    sweep = reduce_symbols(
+                        backend, root, path, project.lang, runner,
+                        attempts_per_symbol=max(1, attempts_per_file - 1),
+                        spec_tests=spec_tests, max_symbols=symbols_per_sweep,
+                        exclude=attempted.get(path),
+                    )
+                    # records carry `path:key`; keep the per-file attempted set
+                    # growing so the next sweep proposes NEW symbols, not re-rolls
+                    keys = attempted.setdefault(path, set())
+                    for rec in sweep:
+                        stats.attempt_records.append(
+                            {"file": rec.file, "attempt": rec.attempt, "outcome": rec.outcome,
+                             "loc_before": rec.loc_before, "loc_after": rec.loc_after,
+                             "detail": rec.detail[:200]}
+                        )
+                        if ":" in rec.file:
+                            keys.add(rec.file.rsplit(":", 1)[1])
+                    if any(r.outcome == "accepted" for r in sweep):
+                        accepted_any = True
+                    if not sweep:
+                        done.add(path)
+                    if _budget_gone(sweep):
+                        budget_gone = True
+                        break
+                if not accepted_any:
+                    break
+            # whole-file sweep LAST: only a whole-file rewrite can dedup
+            # across symbols, and its rejects still feed hunk salvage
+            if whole_file_sweep and not budget_gone:
+                for path in ordered:
+                    current = path.read_text(encoding="utf-8", errors="replace")
+                    loc_now = measure(current, project.lang).code
+                    best, best_loc, sweep_records = reduce_file(
+                        backend, root, path, project.lang, runner,
+                        attempts=1, spec_tests=spec_tests,
+                    )
+                    for rec in sweep_records:
+                        stats.attempt_records.append(
+                            {"file": rec.file, "attempt": rec.attempt, "outcome": rec.outcome,
+                             "loc_before": rec.loc_before, "loc_after": rec.loc_after,
+                             "detail": rec.detail[:200]}
+                        )
+                    if best_loc < loc_now:
+                        path.write_text(best + "\n", encoding="utf-8")
+                    if _budget_gone(sweep_records):
+                        break
         _llm.PROGRESS = None
         final = run_tests(root, project.lang, timeout=test_timeout)
         stats.tests_ok = final.ok

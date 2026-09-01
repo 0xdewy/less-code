@@ -41,6 +41,19 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_trust(path: str | None) -> dict[str, float] | None:
+    """{file: score} from an `lc audit --out` JSON's per_file section."""
+    if not path:
+        return None
+    data = json.loads(Path(path).read_text())
+    per_file = data.get("per_file", data)  # the audit JSON, or a bare map
+    return {
+        name: (counts["killed"] / counts["total"] if counts.get("total") else 0.0)
+        if isinstance(counts, dict) else float(counts)
+        for name, counts in per_file.items()
+    }
+
+
 def cmd_audit(args: argparse.Namespace) -> int:
     project = map_project(Path(args.path), args.lang)
     result = audit(Path(args.path), project.lang, project.source_files,
@@ -49,6 +62,14 @@ def cmd_audit(args: argparse.Namespace) -> int:
     print(json.dumps({"total": result.total, "killed": result.killed,
                       "score": round(result.score, 4),
                       "skipped_no_baseline": result.skipped_no_baseline}, indent=2))
+    if result.per_file:
+        print("per-file trust map (feed to `lc reduce --trust`):")
+        for name, counts in sorted(
+            result.per_file.items(),
+            key=lambda kv: kv[1]["killed"] / max(1, kv[1]["total"]),
+        ):
+            score = counts["killed"] / max(1, counts["total"])
+            print(f"  {name:24s} {score:5.2f}  ({counts['killed']}/{counts['total']})")
     if result.skipped_no_baseline:
         print("baseline tests are not green — fix before reducing", file=sys.stderr)
         return 2
@@ -104,6 +125,7 @@ def cmd_reduce(args: argparse.Namespace) -> int:
         formatter=not args.no_format, test_timeout=args.timeout,
         strategy=args.strategy,
         skip_files=(set(args.skip_files.split(",")) if args.skip_files else None),
+        trust=_load_trust(args.trust),
     )
     out = Path(args.out)
     write_report(stats, out)
@@ -222,6 +244,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="comma-separated file names the LLM layer must not touch "
                         "(trust scaling: files whose behavior the suite cannot see, "
                         "per `lc audit` — static layers still run on them)")
+    p.add_argument("--trust", default=None, metavar="FILE",
+                   help="per-file audit JSON (from `lc audit --out`): files are "
+                        "ranked by size x per-file mutation score so the LLM "
+                        "budget flows to files the suite can actually verify")
     p.add_argument("--copy-to", default=None, metavar="DIR",
                    help="copy the project to DIR and reduce the COPY, leaving the "
                         "original untouched. Without it `reduce` rewrites the tree "

@@ -25,6 +25,7 @@ Public API:
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass
 
 RULES = (
@@ -36,6 +37,8 @@ RULES = (
     "if-ladder-to-dict",
     "threshold-ladder-to-scan",
     "max-loop-to-max",
+    "else-after-terminator",
+    "loop-dict-to-update",
 )
 
 MAX_PASSES = 6
@@ -850,6 +853,165 @@ def _rule_max_loop(body: list[ast.stmt], i: int, scope_lines: dict, class_body: 
     )
 
 
+# ---- else-after-terminator (textual: the else body must survive verbatim) --
+
+_TERM_STMTS = (ast.Return, ast.Raise, ast.Break, ast.Continue)
+_ELSE_HEADER = re.compile(r"^(\s*)else\s*:\s*(#.*)?$")
+
+
+def _collapse_else(source: str) -> tuple[str, list[str]]:
+    """`if c: <terminator> else: BODY` -> `if c: <terminator>` + dedented BODY.
+
+    The `else:` arm is unreachable-except-when-not-c, and code after the `if`
+    runs exactly then too, so the arm can dedent out of the `if`. This is the
+    pattern a 7B model kept 'discovering' on click (ruff's RET505 flags it
+    but has no autofix); 15 sites in click alone.
+
+    Rendered TEXTUALLY, not via ast.unparse: the else body keeps its
+    comments, docstrings and formatting verbatim — only the `else:` line is
+    dropped and the body dedents by one level. Declines anything that is not
+    a clean whole-line `else:` header (elif chains, shared lines, odd
+    continuation indents) and recompiles before accepting.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source, []
+    lines = source.splitlines()
+    cuts: list[tuple[int, int, int]] = []  # (else_line_idx, span_end_idx, unit)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If) or not node.orelse:
+            continue
+        if not (node.body and isinstance(node.body[-1], _TERM_STMTS)):
+            continue
+        first = node.orelse[0]
+        # the `else:` header sits above the first arm statement, possibly
+        # behind blank lines or comments
+        idx = first.lineno - 2
+        while idx >= node.lineno and not _ELSE_HEADER.match(lines[idx]):
+            if lines[idx].strip() and not lines[idx].lstrip().startswith("#"):
+                break  # real code without a header: not a clean else arm
+            idx -= 1
+        match = _ELSE_HEADER.match(lines[idx]) if idx >= node.lineno else None
+        if match is None or len(match.group(1)) != node.col_offset:
+            continue
+        unit = first.col_offset - node.col_offset
+        if unit <= 0:
+            continue
+        span_end = node.end_lineno - 1
+        ok = True
+        for j in range(idx + 1, span_end + 1):
+            stripped = lines[j]
+            if not stripped.strip():
+                continue
+            indent = len(stripped) - len(stripped.lstrip())
+            if indent < unit or indent <= node.col_offset:
+                ok = False  # continuation at an odd column, or code outside the arm
+                break
+        if ok:
+            cuts.append((idx, span_end, unit))
+    if not cuts:
+        return source, []
+    # non-overlapping only: an inner cut inside an outer cut's span would
+    # shift its line numbers; MAX_PASSES picks those up on the next sweep
+    accepted: list[tuple[int, int, int]] = []
+    covered: list[tuple[int, int]] = []
+    for idx, span_end, unit in sorted(cuts):
+        if any(lo <= idx <= hi for lo, hi in covered):
+            continue
+        accepted.append((idx, span_end, unit))
+        covered.append((idx, span_end))
+    for idx, span_end, unit in sorted(accepted, reverse=True):
+        body = [
+            line[unit:] if line.strip() else line
+            for line in lines[idx + 1 : span_end + 1]
+        ]
+        lines[idx : span_end + 1] = body  # drops the `else:` header line
+    new_source = "\n".join(lines)
+    if source.endswith("\n"):
+        new_source += "\n"
+    try:
+        compile(new_source, "<else-collapse>", "exec")
+    except SyntaxError:
+        return source, []
+    return new_source, ["else-after-terminator"] * len(accepted)
+
+
+def _rule_loop_dict_update(block, i, scope_lines, class_body):
+    """`for k, v in D.items(): target[k] = v` -> `target.update(D)`.
+
+    With a `if k not in target` guard the rewrite becomes
+    `target.update({k: v for k, v in D.items() if k not in target})` — the
+    comprehension evaluates the same conditions in the same order. Caveat,
+    recorded rather than hidden: if the comprehension raises midway the
+    intermediate dict is discarded, so `target` keeps NONE of the partial
+    writes the loop would already have made. The frozen suite gates every
+    application.
+    """
+    node = block[i]
+    if not isinstance(node, ast.For) or node.orelse or not node.body:
+        return None
+    target = node.target
+    if not (isinstance(target, ast.Tuple) and len(target.elts) == 2
+            and all(isinstance(e, ast.Name) for e in target.elts)):
+        return None
+    k, v = (e.id for e in target.elts)
+    it = node.iter
+    if not (isinstance(it, ast.Call) and not it.keywords and not it.args
+            and isinstance(it.func, ast.Attribute) and it.func.attr == "items"):
+        return None
+    src = it.func.value
+    stmts = list(node.body)
+    guarded = False
+    if (len(stmts) == 1 and isinstance(stmts[0], ast.If)
+            and len(stmts[0].body) == 1 and not stmts[0].orelse):
+        test = stmts[0].test
+        if not (isinstance(test, ast.Compare) and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.NotIn)
+                and _is_name(test.left, k)
+                and isinstance(test.comparators[0], ast.Name)):
+            return None
+        dest_name = test.comparators[0].id
+        stmts = [stmts[0].body[0]]
+        guarded = True
+    else:
+        dest_name = None
+    if len(stmts) != 1 or not isinstance(stmts[0], ast.Assign):
+        return None
+    assign = stmts[0]
+    at = assign.targets
+    if not (len(at) == 1 and isinstance(at[0], ast.Subscript)
+            and _is_name(at[0].value) and _is_name(at[0].slice, k)):
+        return None
+    dest = at[0].value.id
+    if guarded and dest != dest_name:
+        return None
+    # loop targets leak into the enclosing function: only absorb them when
+    # every mention stays inside the loop's own span
+    if _leaks(scope_lines, {k, v}, node.lineno, node.end_lineno):
+        return None
+    if guarded:
+        test = node.body[0].test
+        comp = ast.DictComp(
+            key=ast.Name(id=k, ctx=ast.Load()),
+            value=ast.Name(id=v, ctx=ast.Load()),
+            generators=[_comprehension(target, src, [test])],
+        )
+        arg: ast.expr = comp
+    else:
+        arg = src
+    update = ast.Call(
+        func=ast.Attribute(
+            value=ast.Name(id=dest, ctx=ast.Load()), attr="update", ctx=ast.Load()
+        ),
+        args=[arg], keywords=[],
+    )
+    return Rewrite(
+        "loop-dict-to-update", node.lineno, node.end_lineno,
+        [ast.Expr(value=update)],
+        node.col_offset, node.end_col_offset,
+    )
+
 _RULE_FNS = {
     "bool-return": _rule_bool_return,
     "append-loop-to-comprehension": _rule_append_loop,
@@ -859,7 +1021,9 @@ _RULE_FNS = {
     "if-ladder-to-dict": _rule_if_ladder_dict,
     "threshold-ladder-to-scan": _rule_threshold_ladder,
     "max-loop-to-max": _rule_max_loop,
+    "loop-dict-to-update": _rule_loop_dict_update,
 }
+
 
 _BLOCK_FIELDS = ("body", "orelse", "finalbody")
 
@@ -891,8 +1055,8 @@ def _collect(
         while i < len(block):
             hit = None
             for name in RULES:
-                if name not in only:
-                    continue
+                if name not in only or name not in _RULE_FNS:
+                    continue  # textual rules (else-after-terminator) run outside _collect
                 hit = _RULE_FNS[name](block, i, scope_lines, class_body)
                 if hit is not None:
                     break
@@ -970,8 +1134,17 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
     applied: list[str] = []
     current = source
     for _ in range(MAX_PASSES):
+        if "else-after-terminator" in selected:
+            # textual pass (comments in the dedented arm survive verbatim);
+            # runs before the AST rules so they see the collapsed shape
+            current, names = _collapse_else(current)
+            if names:
+                applied += names
         current, names = _one_pass(current, selected)
-        if not names:
+        if names:
+            applied += names
+        if not names and not (
+            "else-after-terminator" in selected and _collapse_else(current)[1]
+        ):
             break
-        applied += names
     return current, applied

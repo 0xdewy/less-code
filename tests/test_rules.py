@@ -85,7 +85,9 @@ def norm(text: str) -> str:
 def test_bool_return(before, after):
     out, applied = apply_rules(norm(before))
     assert out == norm(after)
-    assert applied == ["bool-return"]
+    # an explicit `else:` first meets else-after-terminator (which dedents the
+    # arm), then bool-return collapses the shape: same output, two rule names
+    assert applied in (["bool-return"], ["else-after-terminator", "bool-return"])
 
 
 def test_bool_return_leaves_other_constants_alone():
@@ -570,7 +572,179 @@ def test_every_rule_name_is_reachable():
         "if-ladder-to-dict",
         "threshold-ladder-to-scan",
         "max-loop-to-max",
+        "else-after-terminator",
+        "loop-dict-to-update",
     }
+
+
+# ---- else-after-terminator -------------------------------------------------
+
+
+def test_else_after_raise_collapses_and_keeps_comments():
+    """The exact shape a 7B kept 'discovering' on click (ruff RET505 has no
+    autofix): 15 sites in click alone. The arm must keep its comments and
+    docstrings verbatim — the rule dedents text, it never re-renders."""
+    src = norm(
+        """
+        def invoke(ctx):
+            if ctx is None:
+                raise TypeError("ctx required")
+            else:
+                # the context owns cleanup from here on
+                with ctx:
+                    return ctx.run()
+        """
+    )
+    out, applied = apply_rules(src)
+    assert applied == ["else-after-terminator"]
+    assert out == norm(
+        """
+        def invoke(ctx):
+            if ctx is None:
+                raise TypeError("ctx required")
+            # the context owns cleanup from here on
+            with ctx:
+                return ctx.run()
+        """
+    )
+
+
+def test_else_after_return_in_a_loop():
+    src = norm(
+        """
+        def find(rows):
+            for row in rows:
+                if row.bad:
+                    return None
+                else:
+                    value = row.value
+                    return value
+        """
+    )
+    out, applied = apply_rules(src)
+    assert applied == ["else-after-terminator"]
+    assert "else" not in out
+
+
+def test_if_without_terminator_is_untouched():
+    src = norm(
+        """
+        def f(c):
+            if c:
+                log(c)
+            else:
+                return 1
+            return 0
+        """
+    )
+    assert apply_rules(src) == (src, [])
+
+
+def test_elif_chain_keeps_its_elifs_but_drops_the_trailing_else():
+    """The chain's LAST else is a plain else-arm on the innermost if (whose
+    body ends in return), so it dedents legally; the elif line itself is
+    never rewritten. Behavior must be identical, verified by execution."""
+    src = norm(
+        """
+        def f(x):
+            if x < 0:
+                raise ValueError("neg")
+            elif x == 0:
+                return "zero"
+            else:
+                return "pos"
+        """
+    )
+    out, applied = apply_rules(src)
+    assert applied == ["else-after-terminator"]
+    assert "elif x == 0:" in out and "else" not in out
+    ns = {}
+    exec(compile(out, "<t>", "exec"), ns)
+    assert ns["f"](5) == "pos" and ns["f"](0) == "zero"
+    try:
+        ns["f"](-1)
+        raised = False
+    except ValueError:
+        raised = True
+    assert raised
+
+
+def test_nested_collapses_apply_over_passes():
+    src = norm(
+        """
+        def f(x):
+            if x < 0:
+                raise ValueError("neg")
+            else:
+                if x == 0:
+                    raise ValueError("zero")
+                else:
+                    return "pos"
+        """
+    )
+    out, applied = apply_rules(src)
+    assert applied == ["else-after-terminator", "else-after-terminator"]
+    assert "else" not in out
+    compile(out, "<t>", "exec")
+
+
+# ---- loop-dict-to-update ---------------------------------------------------
+
+
+def test_plain_dict_copy_loop_becomes_update():
+    src = norm(
+        """
+        def merge(base, extra):
+            for key, value in extra.items():
+                base[key] = value
+            return base
+        """
+    )
+    out, applied = apply_rules(src)
+    assert applied == ["loop-dict-to-update"]
+    assert "base.update(extra)" in out
+    compile(out, "<t>", "exec")
+
+
+def test_guarded_merge_becomes_a_comprehension_update():
+    src = norm(
+        """
+        def merge(base, extra):
+            for key, value in extra.items():
+                if key not in base:
+                    base[key] = value
+            return base
+        """
+    )
+    out, applied = apply_rules(src)
+    assert applied == ["loop-dict-to-update"]
+    assert "base.update({" in out and "if key not in base})" in out
+    compile(out, "<t>", "exec")
+
+
+def test_dict_loop_with_leaked_target_is_declined():
+    src = norm(
+        """
+        def merge(base, extra):
+            for key, value in extra.items():
+                base[key] = value
+            return key
+        """
+    )
+    assert apply_rules(src) == (src, [])
+
+
+def test_dict_loop_with_extra_body_is_declined():
+    src = norm(
+        """
+        def merge(base, extra, seen):
+            for key, value in extra.items():
+                seen.add(key)
+                base[key] = value
+            return base
+        """
+    )
+    assert apply_rules(src) == (src, [])
 
 
 # ---- the gate catches a misfiring rule ------------------------------------
