@@ -640,10 +640,12 @@ def test_if_without_terminator_is_untouched():
     assert apply_rules(src) == (src, [])
 
 
-def test_elif_chain_keeps_its_elifs_but_drops_the_trailing_else():
-    """The chain's LAST else is a plain else-arm on the innermost if (whose
-    body ends in return), so it dedents legally; the elif line itself is
-    never rewritten. Behavior must be identical, verified by execution."""
+def test_elif_arms_are_declined_soundly():
+    """An elif arm's else cannot dedent: its new position after the whole
+    chain is reachable from earlier branches. click's version_option broke
+    exactly here — the successful `len == 1` branch fell into the dedented
+    'not installed' raise. Even when all sibling branches terminate (as
+    here), the rule declines: proving that requires chain-wide analysis."""
     src = norm(
         """
         def f(x):
@@ -656,17 +658,8 @@ def test_elif_chain_keeps_its_elifs_but_drops_the_trailing_else():
         """
     )
     out, applied = apply_rules(src)
-    assert applied == ["else-after-terminator"]
-    assert "elif x == 0:" in out and "else" not in out
-    ns = {}
-    exec(compile(out, "<t>", "exec"), ns)
-    assert ns["f"](5) == "pos" and ns["f"](0) == "zero"
-    try:
-        ns["f"](-1)
-        raised = False
-    except ValueError:
-        raised = True
-    assert raised
+    assert applied == []
+    assert out == src
 
 
 def test_nested_collapses_apply_over_passes():
@@ -686,6 +679,27 @@ def test_nested_collapses_apply_over_passes():
     assert applied == ["else-after-terminator", "else-after-terminator"]
     assert "else" not in out
     compile(out, "<t>", "exec")
+
+
+def test_else_after_terminator_the_click_misfire_is_impossible():
+    """The exact soundness hole found on click: a successful non-terminating
+    branch of the enclosing chain must not fall into the dedented raise."""
+    src = norm(
+        """
+        def resolve(distributions):
+            if len(distributions) == 1:
+                name = distributions[0]
+                version = "1.0"
+            elif len(distributions) > 1:
+                raise RuntimeError("ambiguous")
+            else:
+                raise RuntimeError("not installed")
+            return name, version
+        """
+    )
+    out, applied = apply_rules(src)
+    assert applied == []
+    assert out == src
 
 
 # ---- loop-dict-to-update ---------------------------------------------------

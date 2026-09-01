@@ -877,11 +877,23 @@ def _collapse_else(source: str) -> tuple[str, list[str]]:
         tree = ast.parse(source)
     except SyntaxError:
         return source, []
+    # parent map: an `if` that is itself an elif arm (directly inside another
+    # If's orelse) must not collapse. Its dedented else would sit after the
+    # WHOLE enclosing chain, reachable from earlier branches that do not
+    # terminate — click's version_option tripped exactly this: the successful
+    # `len == 1` branch fell through into the dedented "not installed" raise.
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
     lines = source.splitlines()
     cuts: list[tuple[int, int, int]] = []  # (else_line_idx, span_end_idx, unit)
     for node in ast.walk(tree):
         if not isinstance(node, ast.If) or not node.orelse:
             continue
+        parent = parents.get(node)
+        if isinstance(parent, ast.If) and node in parent.orelse:
+            continue  # an elif arm: the else cannot be dedented safely
         if not (node.body and isinstance(node.body[-1], _TERM_STMTS)):
             continue
         first = node.orelse[0]
@@ -995,7 +1007,7 @@ def _rule_loop_dict_update(block, i, scope_lines, class_body):
         comp = ast.DictComp(
             key=ast.Name(id=k, ctx=ast.Load()),
             value=ast.Name(id=v, ctx=ast.Load()),
-            generators=[_comprehension(target, src, [test])],
+            generators=[_comprehension(target, it, [test])],  # keep D.items()
         )
         arg: ast.expr = comp
     else:

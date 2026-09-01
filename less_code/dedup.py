@@ -344,20 +344,135 @@ def _arg_names(params_text: str) -> list[str]:
     return names
 
 
+def _fn_header_info(text: str):
+    """(fn_node, def_line_idx, header_end_line_idx, params_text, suffix) for a
+    single plain (non-async) FunctionDef whose text starts at its own `def`
+    line. Multi-line signatures are the norm in typed code (click:
+    `def __init__(\\n self,\\n ...\\n):`), so the header is taken as a verbatim
+    line span, not a regex. Members arrive INDENTED (methods): the tree is
+    parsed from a dedented copy, but every line index refers to the original
+    text (line numbers are indent-invariant)."""
+    import textwrap
+
+    try:
+        fn = ast.parse(textwrap.dedent(text)).body[0]
+    except (SyntaxError, IndexError):
+        return None
+    if not isinstance(fn, ast.FunctionDef):
+        return None
+    lines = text.splitlines()
+    def_idx = fn.lineno - 1
+    if not lines[def_idx].lstrip().startswith("def "):
+        return None  # a decorator or comment owns the first line
+    header_end_idx = fn.body[0].lineno - 1  # first body line, 0-based
+    if header_end_idx <= def_idx:
+        return None  # `def f(): ...` one-liner: no line span to keep verbatim
+    header = "\n".join(lines[def_idx:header_end_idx])
+    try:
+        open_paren = header.index("(")
+        close_paren = header.rindex(")")
+    except ValueError:
+        return None
+    if close_paren < open_paren:
+        return None
+    if not re.match(rf"\s*def\s+{re.escape(fn.name)}\s*\(", header):
+        return None
+    return fn, def_idx, header_end_idx, header[open_paren + 1 : close_paren], header[close_paren:]
+
+
+def _call_args(fn: ast.FunctionDef) -> list[str]:
+    """Argument names in call order: positional, *args, keyword-only, **kwargs."""
+    a = fn.args
+    names = [x.arg for x in (a.posonlyargs + a.args + a.kwonlyargs)]
+    if a.vararg:
+        names.append("*" + a.vararg.arg)
+    if a.kwarg:
+        names.append("**" + a.kwarg.arg)
+    return names
+
+
+def _args_signature(fn: ast.FunctionDef) -> str:
+    """Structural parameter identity (names + defaults), ignoring formatting
+    and annotations."""
+    a = fn.args
+    parts = [x.arg for x in (a.posonlyargs + a.args)]
+    defaults = [ast.unparse(d) for d in a.defaults]
+    if defaults:
+        bound = parts[len(parts) - len(defaults):]
+        parts = parts[: len(parts) - len(defaults)] + [
+            f"{n}={d}" for n, d in zip(bound, defaults)
+        ]
+    if a.vararg:
+        parts.append("*" + a.vararg.arg)
+    elif a.kwonlyargs:
+        parts.append("*")
+    parts += [x.arg for x in a.kwonlyargs]
+    if a.kwarg:
+        parts.append("**" + a.kwarg.arg)
+    return ",".join(parts)
+
+
+def _args_shape(fn: ast.FunctionDef):
+    """Structural parameter identity IGNORING names: counts, defaults order.
+    Two members whose shapes match but whose param NAMES differ are still
+    mechanically mergeable — the differing name is a slot like any other
+    (click: NoSuchOption.__init__(option_name) vs NoSuchCommand.__init__
+    (command_name), sim=1.0)."""
+    a = fn.args
+    return (
+        len(a.posonlyargs), len(a.args), len(a.kwonlyargs),
+        bool(a.vararg), bool(a.kwarg),
+        tuple(ast.unparse(d) for d in a.defaults),
+        tuple(None if d is None else ast.unparse(d) for d in a.kw_defaults),
+    )
+
+
+def _param_names(fn: ast.FunctionDef) -> list[str]:
+    a = fn.args
+    return [x.arg for x in (a.posonlyargs + a.args + a.kwonlyargs)]
+
+
+def _at_attribute(spans, i: int) -> bool:
+    """Is token i an attribute name — directly preceded by `.`?"""
+    if i == 0:
+        return False
+    prev = spans[i - 1]
+    return prev[0] == "." and prev[2] == spans[i][1]
+
+
+def _at_kwarg_name(spans, i: int) -> bool:
+    """Is token i a keyword-argument name: an identifier directly preceded by
+    `(`/`,` and directly followed by `=` (not `==`)?"""
+    tok, start, end = spans[i]
+    if not re.fullmatch(r"[A-Za-z_]\w*", tok):
+        return False
+    if i == 0 or spans[i - 1][0] not in ("(", ","):
+        return False
+    if spans[i - 1][2] != start:
+        return False
+    if i + 1 >= len(spans) or spans[i + 1][0] != "=" or spans[i + 1][1] != end:
+        return False
+    if i + 2 < len(spans) and spans[i + 2][0] == "=":
+        return False  # `==`
+    return True
+
+
 def mechanical_merge(group) -> tuple[dict[Path, str], str] | None:
     """Build the shared-helper merge for a pair mechanically, no model.
 
     The LLM was asked to *design* this merge and 0 of 2 landed on click; the
     diff between two copy-pasted definitions is a computed fact. Member 1's
-    body becomes the helper VERBATIM (comments survive; only the differing
-    token runs become parameters), every member becomes its signature plus a
-    one-line call. Declines anything it cannot prove slot-shaped: multi-line
-    header, decorators, async, differing docstrings or parameter lists, runs
-    that touch the header, span multiple lines, are huge, or a member name
-    appearing in the other's body (recursion/aliasing).
+    body becomes the helper VERBATIM (comments and docstring survive; only
+    the differing token runs become parameters), every member becomes its
+    own signature — multi-line headers kept verbatim — plus a one-line call.
+    Declines anything it cannot prove slot-shaped: async, a decorator owning
+    the first line, differing docstrings or parameter structures, runs that
+    touch the header, span multiple lines, are huge, or a member's name
+    tokenized in the other's body (recursion/aliasing).
 
-    Returns {(file path): new text} plus a note, or None when the pair is not
-    slot-mergeable. The caller still gates the result on the frozen suite.
+    Returns {(file path): new text} plus a note, or None when the pair is
+    not slot-mergeable. The caller still gates the result on the frozen
+    suite.
     """
     members = group.members
     if len(members) != 2 or members[0].lang != "python":
@@ -365,37 +480,62 @@ def mechanical_merge(group) -> tuple[dict[Path, str], str] | None:
     a, b = members
     if a.indent != b.indent:
         return None
-    match_a = _HEADER_PLAIN.match(a.text.split("\n", 1)[0])
-    match_b = _HEADER_PLAIN.match(b.text.split("\n", 1)[0])
-    if not match_a or not match_b:
+    info_a = _fn_header_info(a.text)
+    info_b = _fn_header_info(b.text)
+    if info_a is None or info_b is None:
         return None
-    ind_a, params_a = match_a.group(1), match_a.group(3)
-    ind_b, params_b = match_b.group(1), match_b.group(3)
-    if params_a.replace(" ", "") != params_b.replace(" ", ""):
+    fn_a, def_a, hdr_end_a, params_a, suffix_a = info_a
+    fn_b, def_b, hdr_end_b, params_b, suffix_b = info_b
+    if _args_shape(fn_a) != _args_shape(fn_b):
         return None
-    try:
-        fn_a = ast.parse(a.text).body[0]
-        fn_b = ast.parse(b.text).body[0]
-    except (SyntaxError, IndexError):
-        return None
-    for fn in (fn_a, fn_b):
-        if not isinstance(fn, ast.FunctionDef) or fn.decorator_list:
-            return None
     if ast.get_docstring(fn_a, clean=False) != ast.get_docstring(fn_b, clean=False):
         return None
 
     spans_a = _spanned_tokens(a.text)
     spans_b = _spanned_tokens(b.text)
-    # a member's name appearing in the other's body is recursion/aliasing;
-    # token-level (a one-letter name like `a` is a substring of `total`)
     toks_a = {t for t, _s, _e in spans_a}
     toks_b = {t for t, _s, _e in spans_b}
-    if b.name in toks_a or a.name in toks_b:
+
+    def body_char_start(text: str, header_end_idx: int) -> int:
+        return len("\n".join(text.splitlines()[:header_end_idx])) + 1
+
+    body_start_a = body_char_start(a.text, hdr_end_a)
+    body_start_b = body_char_start(b.text, hdr_end_b)
+
+    # recursion/aliasing: a BARE reference to the other member's name in
+    # this one's body would resolve to the post-merge wrapper and loop.
+    # Attribute access (`super().__init__`, `self.group(...)`) is untouched
+    # by the merge — the helper body is this member's body verbatim, so any
+    # attribute dispatch behaves exactly as before.
+    def _has_bare_name(spans, name: str, body_start: int) -> bool:
+        for idx, (tok, start, end) in enumerate(spans):
+            if tok != name or start < body_start or idx == 0:
+                continue
+            prev_tok, prev_start, prev_end = spans[idx - 1]
+            if prev_tok == "." and prev_end == start:
+                continue  # attribute access: unchanged by the merge
+            if tok == name:
+                return True
+        return False
+
+    if _has_bare_name(spans_a, b.name, body_start_a):
         return None
+    if _has_bare_name(spans_b, a.name, body_start_b):
+        return None
+
+    # differing param NAMES are slots too (in-position): the helper takes a
+    # slot param where member-a's name was, each member passes its own name
+    # at its own call site. Only names, never structure — shape matched above.
+    names_a = _param_names(fn_a)
+    names_b = _param_names(fn_b)
+    name_slots: list[tuple[str, str]] = [
+        (pa, pb) for pa, pb in zip(names_a, names_b) if pa != pb
+    ]
+    header_char_end = body_start_a  # substitutions live at s < body_start_a
+
     matcher = difflib.SequenceMatcher(
         None, [t for t, _s, _e in spans_a], [t for t, _s, _e in spans_b], autojunk=False
     )
-    header_end = a.text.index("\n")  # single-line header, verified by the regex
     slots: list[tuple[int, int, str, str]] = []
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
@@ -411,67 +551,144 @@ def mechanical_merge(group) -> tuple[dict[Path, str], str] | None:
         names = {a.name, b.name}
         if a_run.strip() in names and b_run.strip() in names:
             continue  # the def names: renaming, not parameterization
-        if a_start <= header_end or b_start <= header_end:
-            return None  # run touches the header (e.g. a default value)
+        if a_start < body_start_a or b_start < body_start_b:
+            # differing param names are handled as in-position name slots;
+            # any OTHER header difference (a default value) is not mechanical
+            if not (
+                a_run.strip() in set(names_a) and b_run.strip() in set(names_b)
+            ):
+                return None
+            continue
         if "\n" in a_run or "\n" in b_run or len(a_run) > 60 or len(b_run) > 60:
             return None
+        # a run at a keyword-argument NAME position means the members pass
+        # different parameters of the same callee (`force_readable=` vs
+        # `force_writable=`) — a shared body cannot express that by
+        # substitution, and keeping member-a's keyword would silently change
+        # member-b's behavior. Not slot-mergeable.
+        if _at_kwarg_name(spans_a, i1) or _at_kwarg_name(spans_b, j1):
+            return None
+        # a run at an attribute position (`self.option_name` vs
+        # `self.command_name`) renames a public attribute of the member's
+        # class — per-member API, not a value. Not slot-mergeable either.
+        if _at_attribute(spans_a, i1) or _at_attribute(spans_b, j1):
+            return None
         slots.append((a_start, a_end, a_run, b_run))
-    if not slots:
+    if not slots and not name_slots:
         return None
-    used_names = {t for t, _s, _e in spans_a} | {t for t, _s, _e in spans_b}
-    slot_params = []
-    for i in range(len(slots)):
-        name = f"_slot{i}"
+    # one slot per distinct (a, b) value pair: `force_readable=force_readable`
+    # otherwise costs two parameters for one semantic thing
+    slot_values: list[tuple[str, str]] = []
+    deduped: list[tuple[int, int, int]] = []  # (a_start, a_end, value_index)
+    for a_start, a_end, a_run, b_run in slots:
+        if (a_run, b_run) not in slot_values:
+            slot_values.append((a_run, b_run))
+        deduped.append((a_start, a_end, slot_values.index((a_run, b_run))))
+
+    used_names = toks_a | toks_b
+    used_names.update(pa for pa, _pb in name_slots)
+
+    def fresh(base: str) -> str:
+        name = base
         while name in used_names:
             name = "_" + name
-        slot_params.append(name)
+        used_names.add(name)
+        return name
 
-    # helper = member a's body verbatim, dedented, runs -> parameters
-    body = a.text[header_end + 1:]
-    for (start, end, _run, _b), param in sorted(
-        zip(slots, slot_params), key=lambda x: x[0][0], reverse=True
-    ):
-        body = body[:start - header_end - 1] + param + body[end - header_end - 1:]
+    slot_params = [fresh(f"_slot{i}") for i in range(len(slot_values))]
+    name_slot_params = {pa: fresh(f"_pname{i}") for i, (pa, _pb) in enumerate(name_slots)}
+
+    # helper = member a's body verbatim, dedented to module level. Two kinds
+    # of substitution, never overlapping: body run-slots (char >= body_start)
+    # and param-name slots (header only — a differing param name that also
+    # appears in the body is already a body run there, handled above)
+    substitutions: list[tuple[int, int, str]] = [
+        (start, end, slot_params[vi]) for start, end, vi in deduped
+    ]
+    header_end_char = body_start_a
+    for pa, _pb in name_slots:
+        substitutions.extend(
+            (s, e, name_slot_params[pa])
+            for t, s, e in spans_a
+            if t == pa and s < header_end_char and s >= a.text.index("\n") + 1
+        )
+    body = a.text[body_start_a:]
+    header_text = a.text[:body_start_a]
+    for start, end, replacement in sorted(substitutions, key=lambda x: x[0], reverse=True):
+        if start >= body_start_a:
+            body = body[:start - body_start_a] + replacement + body[end - body_start_a:]
+        else:
+            header_text = header_text[:start] + replacement + header_text[end:]
+    params_a = header_text[header_text.index("(") + 1 : header_text.rindex(")")]
     body = "\n".join(
-        line[len(ind_a):] if line.strip() else line
+        line[a.indent:] if line.strip() else line
         for line in body.split("\n")
     )
     helper_name = f"_{a.name}_shared"
     while helper_name in used_names:
         helper_name = "_" + helper_name
-    params_full = ", ".join(
-        [p.strip() for p in params_a.split(",") if p.strip()] + slot_params
+    # run-slots go FIRST in the helper signature: appending them after the
+    # member's defaulted params is a SyntaxError (non-default after default),
+    # and prepending keeps the original params — defaults included — verbatim
+    params_full = (
+        (", ".join(slot_params) + ", " if slot_params else "")
+        + params_a.strip()
     )
-    helper = f"def {helper_name}({params_full}):\n{body}".rstrip() + "\n"
+    # suffix starts at the closing paren: it already carries `)` + any
+    # `-> annotation` + `:`, so the params are simply prepended to it
+    helper_header = f"def {helper_name}({params_full}{suffix_a}"
+    helper = helper_header + "\n" + body.rstrip() + "\n"
 
     doc = ast.get_docstring(fn_a, clean=False)
-    doc_line = f'{ind_a}    """{doc}"""\n' if doc else ""
 
-    def member_rewrite(m: "Unit", args_text: str) -> str:
-        head = f"{ind_a}def {m.name}({params_a.strip()}):"
-        call = f"{ind_a}    return {helper_name}({args_text})"
-        return head + "\n" + (doc_line if doc else "") + call
+    def member_rewrite(m: "Unit", info, args_text: str) -> str:
+        fn, def_idx, hdr_end, _params, _suffix = info
+        lines = m.text.splitlines()
+        header = lines[def_idx : fn.body[0].lineno - 1]
+        call_pad = " " * (m.indent + 4)
+        parts = ["\n".join(header)]
+        if doc:
+            parts.append(f'{call_pad}"""{doc}"""')
+        parts.append(f"{call_pad}return {helper_name}({args_text})")
+        return "\n".join(parts)
 
-    arg_names = _arg_names(params_a)
-    args_a = ", ".join(arg_names + [run for _s, _e, run, _b in slots])
-    args_b = ", ".join(arg_names + [run for _s, _e, _a, run in slots])
+    # slot values first: the helper's run-slots precede the copied params
+    args_a = ", ".join([a_run for a_run, _b in slot_values] + _call_args(fn_a))
+    args_b = ", ".join([b_run for _a, b_run in slot_values] + _call_args(fn_b))
 
     out: dict[Path, str] = {}
     # splice bottom-up: a same-file pair would otherwise see the second
     # member's stored line span shifted by the first splice
-    for m, args in sorted(((a, args_a), (b, args_b)), key=lambda p: -p[0].start):
+    for m, info, args in sorted(
+        ((a, info_a, args_a), (b, info_b, args_b)), key=lambda p: -p[0].start
+    ):
         lines = (
             m.path.read_text(encoding="utf-8", errors="replace").splitlines()
             if m.path not in out
             else out[m.path].splitlines()
         )
-        lines[m.start:m.end] = member_rewrite(m, args).splitlines()
+        # replace from the member's own def line: decorators above it (inside
+        # the Unit span via _decorated_start) stay untouched
+        replace_from = m.start + info[1]
+        lines[replace_from:m.end] = member_rewrite(m, info, args).splitlines()
         if m is a:
-            lines[m.start:m.start] = helper.splitlines()
+            # the helper is MODULE-LEVEL code: inserting it at a method's own
+            # line would terminate the enclosing class and orphan every
+            # method below it (found: NoSuchOption's class suddenly lost its
+            # siblings -> api-changed). Top-level members insert above
+            # themselves; methods insert above their class statement.
+            insert_at = m.start
+            if m.indent and "." in m.key:
+                class_name = m.key.split(".")[0]
+                for idx, line in enumerate(lines):
+                    if re.match(rf"class\s+{re.escape(class_name)}\b", line):
+                        insert_at = idx
+                        break
+            lines[insert_at:insert_at] = helper.splitlines()
         out[m.path] = "\n".join(lines) + "\n"
     note = (
         f"mechanical merge {a.key}+{b.key} -> {helper_name} "
-        f"({len(slots)} slot(s))"
+        f"({len(slot_values)} run slot(s), {len(name_slots)} name slot(s))"
     )
     for text in out.values():
         try:
@@ -479,3 +696,5 @@ def mechanical_merge(group) -> tuple[dict[Path, str], str] | None:
         except SyntaxError:
             return None
     return out, note
+
+

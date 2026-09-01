@@ -399,10 +399,10 @@ def test_mechanical_merge_builds_the_helper_with_no_model(tmp_path):
     files, note = built
     assert "mechanical merge" in note
     text = files[root / "mod.py"]
-    assert "def _count_credits_shared(rows, _slot0):" in text
+    assert "def _count_credits_shared(_slot0, rows):" in text
     assert text.count("def count_credits(rows):") == 1
-    assert 'return _count_credits_shared(rows, "credit")' in text
-    assert 'return _count_credits_shared(rows, "debit")' in text
+    assert 'return _count_credits_shared("credit", rows)' in text
+    assert 'return _count_credits_shared("debit", rows)' in text
     # the helper body keeps member 1's code verbatim, slots substituted
     assert 'if row["kind"] == _slot0:' in text
     compile(text, "<t>", "exec")
