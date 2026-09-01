@@ -204,9 +204,42 @@ This is how "most effective" becomes a defensible claim.
   tests caught but the visible gate missed.
 - Exit: LOCBench v0 published with the Phase C tool as the first row.
 
-### Phase F — learning (6-10 weeks, GPU)
+### Phase F — learning (revised 2026-09-01 against the click/tenacity measurements)
 
-The novel part, now on real data and a hardened reward.
+No frontier models: the proposer ceiling is closed by TRAINING, and the
+session's failure measurements make the case precise. Base-7B budget on
+mature external repos: ~40% docs-lost, ~30% duplicate-symbol (whole-file
+replies), ~30% not-smaller, 5-15% accepted. **~70% of the waste is
+compliance, not capability** — output shape and doc preservation are
+exactly what supervised training teaches, and every mined pair carries
+them by construction (they passed the gate).
+
+The full loop is now wired:
+
+1. **Mine**: `lc reduce --mine-out pairs.jsonl` appends (system, prompt,
+   response) for every ACCEPTED proposal — symbol, whole-file and dedup
+   granularities. Mining is rejection sampling with the gate as filter:
+   varied temperatures and targets on fixture-grade and real code.
+2. **SFT** (`grpo/sft.py`): Qwen2.5-Coder-3B-Instruct QLoRA, conversations,
+   same 8GB discipline as train.py. Target: docs-lost <5% (from 40%),
+   duplicate-symbol <10% (from 30%), accept rate >=30% (from 5-15%).
+   That alone doubles or triples yield per call at ZERO extra inference
+   cost — same 7B/3B-class model, better obedience.
+3. **GRPO on top** (`grpo/train.py`, TRL 1.x fixed): the reward now includes
+   the docs gate (`docs-lost == -1`, same as a behavior break — without it
+   RL re-learns doc-eating because code-LOC never counted docs). Rollouts
+   on units with known headroom (the mining set says where), curriculum by
+   mutation score, mutation-weighted shaping variant already implemented.
+4. **Eval** (`grpo/eval_proposer.py`): proposer swap inside the same search,
+   same budgets, pristine copies — accepted-LOC per call is the only claim
+   that counts. Bars: trained-3B >= untrained-3B trivially; the real goal
+   is trained-3B vs untrained-7B (halved serving cost at equal yield).
+
+Risks, honestly: sparse rewards at 5-15% accept rate make pure-GRPO groups
+zero-variance (no gradient) — the SFT warm start exists to lift rollouts
+off the floor before F2; 8GB forces 3B-class GRPO (7B QLoRA possible but
+slow); mining volume must reach hundreds of pairs before SFT generalizes
+(`sft.py --validate-config` refuses <50).
 
 - F1. **Expert iteration before GRPO.** Use the Phase C search with the best
   available model to generate accepted (verbose → reduced) pairs on E1 data
