@@ -8,6 +8,7 @@ require identical exception types and identical `str(exc)` — the property the
 """
 
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -401,12 +402,91 @@ MULTI_B = """
 
 
 def test_a_group_spanning_two_files_hosts_the_helper_where_it_is_busiest():
-    changed, notes = outline_guards({"a.py": norm(MULTI_A), "b.py": norm(MULTI_B)})
+    b = "import a\n\n" + norm(MULTI_B)  # the import edge must already exist
+    changed, notes = outline_guards({"a.py": norm(MULTI_A), "b.py": b})
     assert set(changed) == {"a.py", "b.py"}
     assert "def _check_x(x):" in changed["a.py"]
     assert "def _check_x" not in changed["b.py"]
-    assert changed["b.py"].splitlines()[0] == "from a import _check_x"
+    assert "from a import _check_x" in changed["b.py"].splitlines()[:2]
     assert "3 sites" in notes[0]
+
+
+def test_cross_file_outlining_needs_an_existing_import_edge():
+    """A new module-level dependency can violate a contract the suite pins
+    (click's test_light_imports) or create a cycle: without an existing edge
+    the site keeps its inline guard and the group dies at min_occurrences."""
+    changed, _notes = outline_guards({"a.py": norm(MULTI_A), "b.py": norm(MULTI_B)})
+    assert changed == {}
+
+
+def test_a_group_spanning_two_package_modules_imports_relatively(tmp_path):
+    """The click bug: under a src-layout package the flat absolute import
+    (`from _textwrap import _check`) is a hard ModuleNotFoundError. Inside a
+    package the emitted import must be relative."""
+    pkg = tmp_path / "src" / "clickish"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    b = "from .a import a as _a\n\n" + norm(MULTI_B)  # existing package edge
+    changed, _notes = outline_guards({
+        str(pkg / "a.py"): norm(MULTI_A),
+        str(pkg / "b.py"): b,
+    })
+    assert "from .a import _check_x" in changed[str(pkg / "b.py")].splitlines()[:3]
+    # and it must actually import and run, not just look right
+    for p, text in changed.items():
+        Path(p).write_text(text)
+    import subprocess
+    import sys
+
+    code = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(tmp_path / 'src')!r})\n"
+        "from clickish.a import a\n"
+        "from clickish.b import c\n"
+        "assert a(' q ') == 'q'\n"
+        "assert c(' q ') == 'qqq'\n"
+        "try:\n    a(None)\nexcept ValueError as e:\n"
+        "    assert 'x required' == str(e)\n"
+    )
+    r = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert r.returncode == 0, r.stderr
+
+
+def test_a_helper_name_taken_in_the_importer_is_avoided(tmp_path):
+    """The import binds the helper name in the importer's module namespace: a
+    collision there would shadow existing module state."""
+    pkg = tmp_path / "src" / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    b = "from .a import a as _a\n\n" + norm(MULTI_B) + "\n\n_check_x = 1\n"
+    changed, _notes = outline_guards({
+        str(pkg / "a.py"): norm(MULTI_A),
+        str(pkg / "b.py"): b,
+    })
+    lines = changed[str(pkg / "b.py")].splitlines()[:3]
+    (import_line,) = [l for l in lines if l.startswith("from .a import _")]
+    assert import_line.rsplit(" ", 1)[1] != "_check_x"  # a NEW name, not the taken one
+
+
+def test_a_mixed_flat_package_layout_keeps_the_inline_guard(tmp_path):
+    """Importer inside a package, host outside it (or vice versa): no import
+    form can be proven to resolve, so the site keeps its inline guard rather
+    than gambling."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    changed, _notes = outline_guards({
+        str(pkg / "a.py"): norm(MULTI_A),
+        str(loose / "b.py"): norm(MULTI_B),
+    })
+    # a.py alone holds 2 sites (< MIN_OCCURRENCES=3), b.py's site cannot join:
+    # the group dies and nothing is outlined
+    assert changed == {}
 
 
 # ---- the gate --------------------------------------------------------------

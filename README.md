@@ -59,7 +59,12 @@ L1c guard-block outlining (less_code/outline.py, python): project-wide, not
       peephole. Runs of `if <test>: raise` / `name = expr` statements that
       repeat >= 3 times across function bodies — after alpha-renaming and
       constant abstraction — are outlined into one module-level `_`-prefixed
-      helper and each site becomes a single call line. Names the block binds
+      helper and each site becomes a single call line. Cross-module groups
+      only travel along import edges that already exist, and the emitted
+      import is relative inside a package (`from ._textwrap import _check`),
+      flat absolute in a package-free tree — a *new* module-level dependency
+      can break a contract the suite pins (click's `test_light_imports`) or
+      manufacture an import cycle. Names the block binds
       are returned and unpacked; names it reads are passed by value, and only
       `Name`/`Constant` leaves may become arguments so an eagerly-evaluated
       argument can never raise before a guard does. `return`/`break`/`yield`,

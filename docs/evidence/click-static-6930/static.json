@@ -1,0 +1,40 @@
+{
+  "reduce": {
+    "lang": "python",
+    "files_considered": 17,
+    "loc_start": 6973,
+    "loc_after_static": 6930,
+    "loc_final": 6930,
+    "static_only_loc_final": 6930,
+    "static_pct": 0.62,
+    "hybrid_pct": 0.62,
+    "llm_extra_pct": 0.0,
+    "formatted_loc": true,
+    "tests_ok": true,
+    "api_ok": true,
+    "api_baseline": "post-static",
+    "static_removed_symbols": [],
+    "static_notes": [
+      "core.py: rules {'bool-return': 1}",
+      "shell_completion.py: outlined _check() from 3 sites (1 code lines saved)",
+      "_termui_impl.py: ruff --fix (safe tier)",
+      "_winconsole.py: ruff --fix (safe tier)",
+      "core.py: ruff --fix (safe tier)",
+      "exceptions.py: ruff --fix (safe tier)",
+      "parser.py: ruff --fix (safe tier)",
+      "termui.py: ruff --fix (safe tier)",
+      "types.py: ruff --fix (safe tier)",
+      "_compat.py: ruff --fix (unsafe tier)",
+      "_textwrap.py: ruff --fix (unsafe tier)",
+      "_winconsole.py: ruff --fix (unsafe tier)",
+      "core.py: ruff --fix (unsafe tier)",
+      "parser.py: ruff --fix (unsafe tier)",
+      "shell_completion.py: ruff --fix (unsafe tier)",
+      "termui.py: ruff --fix (unsafe tier)",
+      "testing.py: ruff --fix (unsafe tier)",
+      "types.py: ruff --fix (unsafe tier)",
+      "utils.py: ruff --fix (unsafe tier)"
+    ],
+    "attempts": []
+  }
+}

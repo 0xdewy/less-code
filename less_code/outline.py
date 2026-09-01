@@ -491,6 +491,63 @@ def _score(sites: list[Site], helper_lines: int) -> int:
     return saved - helper_lines
 
 
+def _cross_import(importer: Path, host: Path) -> str | None:
+    """Module specifier for importing `host`'s helper from `importer`.
+
+    Inside a package the import must be relative (`from ._textwrap import
+    _check`); a package-free tree keeps the flat absolute form. None means
+    no form can be proven to resolve (mixed package/flat layouts), and the
+    caller keeps the site's inline guard instead of gambling.
+    """
+
+    def is_pkg(d: Path) -> bool:
+        return (d / "__init__.py").is_file()
+
+    i_dir, h_dir = importer.parent, host.parent
+    if i_dir == h_dir:
+        return f".{host.stem}" if is_pkg(i_dir) else host.stem
+    import os
+
+    try:
+        common = Path(os.path.commonpath([str(i_dir), str(h_dir)]))
+        hops = len(i_dir.relative_to(common).parts)
+        tail = list(h_dir.relative_to(common).parts)
+    except ValueError:
+        return None
+    if not is_pkg(i_dir):
+        return None
+    d = i_dir
+    while d != common:
+        d = d.parent
+        if not is_pkg(d):
+            return None
+    # the dot-expression names `common` when hopping; it must be a package
+    if hops > 0 and not is_pkg(common):
+        return None
+    for part in tail:
+        d = d / part
+        if not is_pkg(d):
+            return None
+    return "." * (hops + 1) + ".".join([*tail, host.stem])
+
+
+def _references_module(source: str, stem: str) -> bool:
+    """Does `source` already import a module named `stem`? Outlining only
+    travels along existing import edges: creating a new module-level import
+    can violate an architectural contract the suite tests for (click's
+    `test_light_imports` pins `import click` to a stdlib allowlist — hoisting
+    `from ._textwrap import _check` into core.py broke it) or manufacture an
+    import cycle."""
+    import re
+
+    pattern = re.compile(rf"\b{re.escape(stem)}\b")
+    for line in source.splitlines():
+        stripped = line.strip()
+        if (stripped.startswith("import ") or stripped.startswith("from ")) and pattern.search(stripped):
+            return True
+    return False
+
+
 def outline_guards(
     sources: dict[str, str], min_occurrences: int = MIN_OCCURRENCES,
 ) -> tuple[dict[str, str], list[str]]:
@@ -557,6 +614,28 @@ def outline_guards(
         remaining.pop(key)
 
         host = Counter(s.path for s in live).most_common(1)[0][0]
+        # Cross-module sites need a provably-resolvable import into the host
+        # module (relative inside a package, flat absolute in a package-free
+        # tree) AND an existing import edge — a NEW module-level dependency
+        # can break an architectural contract (click's test_light_imports) or
+        # manufacture an import cycle. Anything else keeps its inline guard.
+        live = [
+            s for s in live
+            if s.path == host or (
+                _cross_import(Path(s.path), Path(host)) is not None
+                and _references_module(sources[s.path], Path(host).stem)
+            )
+        ]
+        if len(live) < min_occurrences:
+            continue
+        made = _const_classes(live)
+        if made is None:
+            continue
+        classes, _ok = made
+        # the helper's name is imported into every member module's namespace:
+        # it must be free not just in the host but in each importer too
+        name_pool = set(taken[host])
+        name_pool.update(*(globals_by_file[s.path] for s in live if s.path != host))
         # locals of the helper get their own namespace: only the helper's own
         # name has to be unique in the host module
         pool = set(globals_by_file[host])
@@ -574,8 +653,9 @@ def outline_guards(
         ]
         returns = sorted({i for s in live for i in s.used_after})
         helper = _pick(
-            [f"_check_{param_names[0]}"] if param_names else [], taken[host], "_check"
+            [f"_check_{param_names[0]}"] if param_names else [], name_pool, "_check"
         )
+        taken[host].add(helper)  # _pick registered into the copy, not the real pool
         text = _render_helper(live, classes, helper, param_names, const_names, bind_names, returns)
         if _score(live, len(text.splitlines())) <= 0:
             continue
@@ -586,7 +666,9 @@ def outline_guards(
             edits[site.path].append((site.lineno, site.end_lineno, " " * site.col + call))
             used.setdefault((site.path, site.func), []).append((site.start, site.end))
             if site.path != host:
-                imports[site.path].add((Path(host).stem, helper))
+                spec = _cross_import(Path(site.path), Path(host))
+                assert spec is not None  # guaranteed by the site filter above
+                imports[site.path].add((spec, helper))
         notes.append(
             f"{Path(host).name}: outlined {helper}() from {len(live)} sites "
             f"({_score(live, len(text.splitlines()))} code lines saved)"
