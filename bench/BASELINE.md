@@ -1,14 +1,14 @@
 # Pinned corpus baseline
 
-Weighted post-formatter code LOC: **13620 → 13409 (1.55%)**
+Weighted post-formatter code LOC: **13620 → 13275 (static) → 13275 (full pipeline)** | static 2.53% | raw 2.53% | audited (static, idempotent) 2.53%
 
-| Project | Language | LOC | Reduction | Tests/API/docs |
-|---|---:|---:|---:|---:|
-| boltons | python | 8939 → 8738 | 2.25% | pass |
-| more-itertools | python | 2652 → 2642 | 0.38% | pass |
-| yocto-queue | javascript | 64 → 64 | 0.0% | pass |
-| p-limit | javascript | 489 → 489 | 0.0% | pass |
-| itoa | rust | 414 → 414 | 0.0% | pass |
-| strsim-rs | rust | 1062 → 1062 | 0.0% | pass |
+| Project | Language | LOC | static % | raw % | audited % | LLM considered / accepted | Tests/API/docs |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| boltons | python | 8939 → 8626 | 3.5% | 3.5% | 3.5% | - | pass |
+| more-itertools | python | 2652 → 2620 | 1.21% | 1.21% | 1.21% | - | pass |
+| yocto-queue | javascript | 64 → 64 | 0.0% | 0.0% | 0.0% | - | pass |
+| p-limit | javascript | 489 → 489 | 0.0% | 0.0% | 0.0% | - | pass |
+| itoa | rust | 414 → 414 | 0.0% | 0.0% | 0.0% | - | pass |
+| strsim-rs | rust | 1062 → 1062 | 0.0% | 0.0% | 0.0% | - | pass |
 
-Every revision is pinned in `corpus.toml`; percentages are weighted by code LOC.
+Every revision is pinned in `corpus.toml`; percentages are weighted by code LOC. `LLM considered / accepted` is `ml_stats`: symbols the backend inspected vs. proposals that survived the gate stack. Empty when no `lc` ML backend is wired.
