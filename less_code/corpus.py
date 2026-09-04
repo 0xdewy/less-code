@@ -104,6 +104,19 @@ def run_corpus(manifest: Path, timeout: int = 900) -> dict:
                 and result["formatted_loc"]
                 and result["loc_start"]
             )
+            loc_start = result["loc_start"]
+            if valid:
+                static_final = result["loc_after_static"]
+                hybrid_final = result["loc_final"]
+                static_pct = pct(loc_start, static_final)
+                hybrid_pct = pct(loc_start, hybrid_final)
+                llm_extra_pct = pct(static_final, hybrid_final)
+            else:
+                static_pct = 0.0
+                hybrid_pct = 0.0
+                llm_extra_pct = 0.0
+                static_final = loc_start
+                hybrid_final = loc_start
             rows.append(
                 {
                     "name": item.name,
@@ -111,11 +124,13 @@ def run_corpus(manifest: Path, timeout: int = 900) -> dict:
                     "commit": item.commit,
                     "lang": item.lang,
                     "valid": valid,
-                    "loc_start": baseline_loc.code,
-                    "loc_final": result["loc_final"] if valid else baseline_loc.code,
-                    "reduction_pct": pct(result["loc_start"], result["loc_final"])
-                    if valid
-                    else 0.0,
+                    "loc_start": loc_start,
+                    "loc_after_static": static_final,
+                    "loc_final": hybrid_final,
+                    "raw_pct": hybrid_pct,
+                    "static_pct": static_pct,
+                    "audited_pct": static_pct,
+                    "llm_extra_pct": llm_extra_pct,
                     "tests_ok": result["tests_ok"],
                     "api_ok": result["api_ok"],
                     "docs_ok": result["docs_ok"],
@@ -123,17 +138,25 @@ def run_corpus(manifest: Path, timeout: int = 900) -> dict:
                     "notes": result["static_notes"],
                 }
             )
-    before = sum(row["loc_start"] for row in rows)
-    after = sum(row["loc_final"] for row in rows)
+    loc_start_total = sum(row["loc_start"] for row in rows)
+    loc_after_static_total = sum(row["loc_after_static"] for row in rows)
+    loc_final_total = sum(row["loc_final"] for row in rows)
     return {
         "metric": "weighted canonical code LOC; invalid attempts score zero reduction",
         "projects": rows,
         "aggregate": {
             "projects": len(rows),
             "valid": sum(row["valid"] for row in rows),
-            "loc_start": before,
-            "loc_final": after,
-            "reduction_pct": pct(before, after),
+            "loc_start": loc_start_total,
+            "loc_after_static": loc_after_static_total,
+            "loc_final": loc_final_total,
+            "raw_pct": pct(loc_start_total, loc_final_total),
+            "static_pct": pct(loc_start_total, loc_after_static_total),
+            "llm_extra_pct": pct(loc_after_static_total, loc_final_total),
+            "audited_pct": pct(
+                loc_start_total, loc_after_static_total
+            ),  # the deterministic reduction is what survives a re-shrink
+            # on the reduced tree; LLM proposals are not re-checked here.
         },
     }
 
@@ -147,18 +170,24 @@ def write_corpus_report(result: dict, json_path: Path, markdown_path: Path) -> N
         "",
         (
             f"Weighted post-formatter code LOC: **{aggregate['loc_start']} → "
-            f"{aggregate['loc_final']} ({aggregate['reduction_pct']}%)**"
+            f"{aggregate['loc_after_static']} (static) → "
+            f"{aggregate['loc_final']} (full pipeline)** "
+            f"| static {aggregate['static_pct']}% "
+            f"| raw {aggregate['raw_pct']}% "
+            f"| audited (static, idempotent) {aggregate['audited_pct']}%"
         ),
         "",
-        "| Project | Language | LOC | Reduction | Tests/API/docs |",
-        "|---|---:|---:|---:|---:|",
+        "| Project | Language | LOC | static % | raw % | audited % | Tests/API/docs |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in result["projects"]:
         gates = "pass" if row["valid"] else "fail (scored as 0%)"
         lines.append(
             f"| {row['name']} | {row['lang']} | "
             f"{row['loc_start']} → {row['loc_final']} | "
-            f"{row.get('reduction_pct', 0.0)}% | {gates} |"
+            f"{row.get('static_pct', 0.0)}% | "
+            f"{row.get('raw_pct', 0.0)}% | "
+            f"{row.get('audited_pct', 0.0)}% | {gates} |"
         )
     lines += [
         "",

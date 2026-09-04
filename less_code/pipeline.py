@@ -131,15 +131,35 @@ def _apply_outline(
     return {path: changed.get(str(path), text) for path, text in sources.items()}, notes
 
 
-def _ml_proposals(sources: dict[Path, str], lang: str, backend):
-    """Collect immutable-snapshot proposals, ordered bottom-up per file."""
+def _ml_proposals(
+    sources: dict[Path, str],
+    lang: str,
+    backend,
+    *,
+    max_symbols_per_file: int = 8,
+    max_symbols_total: int = 64,
+) -> tuple[list[tuple[Path, dict, object]], list[str], int]:
+    """Collect immutable-snapshot proposals, ordered bottom-up per file.
+
+    The host owns symbol selection: only `_`-prefixed python names and
+    non-`pub` rust items / non-`export`ed JS functions are eligible (see
+    `extract_symbols`). The per-file and total caps stop one large file
+    from monopolising the model's budget; the full gate stack still runs
+    on every proposal, so capping only affects how many symbols are
+    *considered*, not how many pass.
+    """
     from .ml_shrink import ProposedEdit, extract_symbols
 
     proposals = []
     notes = []
     considered = 0
     for path, text in sources.items():
-        for symbol in extract_symbols(text, lang):
+        symbols = extract_symbols(
+            text, lang, max_per_file=max_symbols_per_file
+        )
+        for symbol in symbols:
+            if considered >= max_symbols_total:
+                break
             considered += 1
             try:
                 edit = backend.propose(lang, symbol)
@@ -148,6 +168,8 @@ def _ml_proposals(sources: dict[Path, str], lang: str, backend):
                 continue
             if isinstance(edit, ProposedEdit):
                 proposals.append((path, symbol, edit))
+        if considered >= max_symbols_total:
+            break
     proposals.sort(key=lambda item: (str(item[0]), -item[1]["start_byte"]))
     return proposals, notes, considered
 
@@ -256,6 +278,19 @@ def shrink_project(
         """Apply `proposed_sources`, run the suite, revert on red OR no-shrink.
 
         Reverts ONLY this layer's changes — earlier successful layers stay.
+
+        Gates run cheap-first, expensive-last so a misfiring proposal costs
+        only the cheapest check that catches it:
+
+          1. LOC delta     - in-memory measure(), O(changed bytes)
+          2. project style - subprocess (ruff/prettier/rustfmt), ~100 ms
+          3. docs          - in-memory tokenize/AST, O(changed bytes)
+          4. API surface   - in-memory regex/AST, O(changed bytes)
+          5. tests         - subprocess, seconds; only the survivors get here
+
+        Reorder at your peril: putting tests before docs / API / style
+        wastes the frozen-suite runtime on proposals the cheap gates would
+        have rejected in microseconds.
         """
         # compute the actual edit set (what changed vs current on disk)
         current = _snapshot(project.source_files)

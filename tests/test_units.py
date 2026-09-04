@@ -432,3 +432,64 @@ class TestStaticDeadCode:
             assert new_source.endswith(
                 '    return "double" + helper(x)  # trailing comment\n'
             )
+
+
+def test_ml_extract_symbols_private_only_python():
+    from less_code.ml_shrink import extract_symbols
+
+    source = (
+        "def public_a(x):\n    return x\n"
+        "\n"
+        "def _private_b(x):\n    return x\n"
+        "\n"
+        "class PublicC:\n    def method(self):\n        return 1\n"
+        "\n"
+        "class _PrivateD:\n    def method(self):\n        return 1\n"
+    )
+    symbols = extract_symbols(source, "python")
+    names = [s["name"] for s in symbols]
+    assert names == ["_private_b", "_PrivateD.method"]
+
+
+def test_ml_extract_symbols_private_only_javascript():
+    from less_code.ml_shrink import extract_symbols
+
+    source = (
+        "export function publicFn() { return 1; }\n"
+        "function _privateFn() { return 1; }\n"
+    )
+    symbols = extract_symbols(source, "javascript")
+    names = [s["name"] for s in symbols]
+    assert names == ["_privateFn"]
+
+
+def test_ml_extract_symbols_private_only_rust():
+    from less_code.ml_shrink import extract_symbols
+
+    source = "pub fn public_fn() -> i32 { 1 }\nfn _private_fn() -> i32 { 1 }\n"
+    symbols = extract_symbols(source, "rust")
+    names = [s["name"] for s in symbols]
+    assert names == ["_private_fn"]
+
+
+def test_ml_extract_symbols_include_public_for_diagnostics():
+    from less_code.ml_shrink import extract_symbols
+
+    source = (
+        "def public_fn(x):\n    return x\n"
+        "\n"
+        "def _private_fn(x):\n    return x\n"
+    )
+    public = extract_symbols(source, "python", private_only=False)
+    names = [s["name"] for s in public]
+    assert names == ["public_fn", "_private_fn"]
+
+
+def test_ml_extract_symbols_max_per_file_caps():
+    from less_code.ml_shrink import extract_symbols
+
+    source = "\n".join(f"def _f{i}(x):\n    return x\n" for i in range(50))
+    capped = extract_symbols(source, "python", max_per_file=5)
+    assert len(capped) == 5
+    assert [s["name"] for s in capped] == [f"_f{i}" for i in range(5)]
+

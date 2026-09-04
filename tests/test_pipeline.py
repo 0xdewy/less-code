@@ -273,7 +273,10 @@ def _ml_project(tmp_path, source, tests):
     return root
 
 
-def test_ml_api_change_is_reverted_immediately(tmp_path, monkeypatch):
+def test_ml_public_symbols_are_not_proposed_on(tmp_path, monkeypatch):
+    """The private-only filter on extract_symbols means an LLM that
+    proposes on public names is silently ignored: nothing the model emits
+    matches a candidate symbol, so proposed=0 and nothing is accepted."""
     source = "def public(value):\n    result = value + 0\n    return result\n"
     root = _ml_project(
         tmp_path,
@@ -292,13 +295,13 @@ def test_ml_api_change_is_reverted_immediately(tmp_path, monkeypatch):
 
     assert stats.tests_ok and stats.api_ok
     assert (root / "library.py").read_text() == source
+    assert stats.ml_stats["proposed"] == 0
     assert stats.ml_stats["accepted"] == 0
-    assert stats.ml_stats["rejected_api"] == 1
 
 
 def test_ml_documentation_loss_is_reverted(tmp_path, monkeypatch):
     source = (
-        "def public(value):\n"
+        "def _helper(value):\n"
         '    """Return the supplied value."""\n'
         "    result = value + 0\n"
         "    return result\n"
@@ -306,7 +309,7 @@ def test_ml_documentation_loss_is_reverted(tmp_path, monkeypatch):
     root = _ml_project(
         tmp_path,
         source,
-        "from library import public\n\ndef test_public():\n    assert public(3) == 3\n",
+        "from library import _helper\n\ndef test_helper():\n    assert _helper(3) == 3\n",
     )
     monkeypatch.setattr(
         "less_code.pipeline.static_pass", lambda *_a, **_k: StaticResult()
@@ -314,7 +317,7 @@ def test_ml_documentation_loss_is_reverted(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "less_code.pipeline._apply_rules", lambda sources: (sources, [])
     )
-    model = _Model({"public": "def public(value):\n    return value\n"})
+    model = _Model({"_helper": "def _helper(value):\n    return value\n"})
 
     stats = shrink_project(root, ml_backend=model)
 
@@ -324,20 +327,20 @@ def test_ml_documentation_loss_is_reverted(tmp_path, monkeypatch):
 
 def test_ml_keeps_good_edit_when_another_fails_tests(tmp_path, monkeypatch):
     source = textwrap.dedent("""
-        def first(value):
+        def _first(value):
             result = value + 0
             return result
 
-        def second(value):
+        def _second(value):
             result = value + 0
             return result
     """).lstrip()
     tests = textwrap.dedent("""
-        from library import first, second
+        from library import _first, _second
 
         def test_values():
-            assert first(3) == 3
-            assert second(4) == 4
+            assert _first(3) == 3
+            assert _second(4) == 4
     """).lstrip()
     root = _ml_project(tmp_path, source, tests)
     monkeypatch.setattr(
@@ -348,8 +351,8 @@ def test_ml_keeps_good_edit_when_another_fails_tests(tmp_path, monkeypatch):
     )
     model = _Model(
         {
-            "first": "def first(value):\n    return value\n",
-            "second": "def second(value):\n    return 0\n",
+            "_first": "def _first(value):\n    return value\n",
+            "_second": "def _second(value):\n    return 0\n",
         }
     )
 
@@ -357,17 +360,18 @@ def test_ml_keeps_good_edit_when_another_fails_tests(tmp_path, monkeypatch):
     result = (root / "library.py").read_text()
 
     assert stats.tests_ok and stats.api_ok
-    assert "def first(value):\n    return value" in result
-    assert "result = value + 0" in result.split("def second", 1)[1]
+    assert "def _first(value):\n    return value" in result
+    assert "result = value + 0" in result.split("def _second", 1)[1]
     assert stats.ml_stats["accepted"] == 1
     assert stats.ml_stats["rejected_tests"] == 1
 
 
 def test_ml_host_owns_symbol_spans_and_detects_parser_errors():
     symbol = extract_symbols(
-        "class C:\n    def f(self, value):\n        return value\n", "python"
+        "class C:\n    def _f(self, value):\n        return value\n",
+        "python",
     )[0]
-    assert symbol["name"] == "C.f"
+    assert symbol["name"] == "C._f"
     wrong = ProposedEdit("other@1:2", "def f(self):\n    return 1\n")
     try:
         apply_edit(symbol["text"], symbol, wrong)
@@ -386,20 +390,20 @@ def test_ml_host_owns_symbol_spans_and_detects_parser_errors():
 
 
 def test_ml_byte_spans_preserve_neighbors_unicode_and_method_indentation():
-    javascript = 'const label = "é"; export function f(x) { return x; } const y = 1;\n'
+    javascript = 'const label = "é"; function _f(x) { return x; } const y = 1;\n'
     js_symbol = extract_symbols(javascript, "javascript")[0]
     changed = apply_edit(
         javascript,
         js_symbol,
-        ProposedEdit(js_symbol["id"], "function f(x) { return x ?? 0; }"),
+        ProposedEdit(js_symbol["id"], "function _f(x) { return x ?? 0; }"),
     )
     assert changed == (
-        'const label = "é"; export function f(x) { return x ?? 0; } const y = 1;\n'
+        'const label = "é"; function _f(x) { return x ?? 0; } const y = 1;\n'
     )
 
     python = (
         "class C:\n"
-        "    def f(self, value):\n"
+        "    def _f(self, value):\n"
         "        result = value + 0\n"
         "        return result\n"
     )
@@ -407,10 +411,10 @@ def test_ml_byte_spans_preserve_neighbors_unicode_and_method_indentation():
     changed = apply_edit(
         python,
         py_symbol,
-        ProposedEdit(py_symbol["id"], "def f(self, value):\n    return value"),
+        ProposedEdit(py_symbol["id"], "def _f(self, value):\n    return value"),
     )
     assert syntax_ok(changed, "python")
-    assert "    def f(self, value):\n        return value" in changed
+    assert "    def _f(self, value):\n        return value" in changed
 
 
 def test_ml_rejects_nonshrinking_edit_before_running_candidate_tests(
@@ -418,11 +422,11 @@ def test_ml_rejects_nonshrinking_edit_before_running_candidate_tests(
 ):
     from less_code import pipeline
 
-    source = "def public(value):\n    return value\n"
+    source = "def _helper(value):\n    return value\n"
     root = _ml_project(
         tmp_path,
         source,
-        "from library import public\n\ndef test_public():\n    assert public(3) == 3\n",
+        "from library import _helper\n\ndef test_helper():\n    assert _helper(3) == 3\n",
     )
     monkeypatch.setattr(pipeline, "static_pass", lambda *_a, **_k: StaticResult())
     real_run_tests = pipeline.run_tests
@@ -434,7 +438,7 @@ def test_ml_rejects_nonshrinking_edit_before_running_candidate_tests(
 
     monkeypatch.setattr(pipeline, "run_tests", counted)
     model = _Model(
-        {"public": "def public(value):\n    extra = value\n    return extra\n"}
+        {"_helper": "def _helper(value):\n    extra = value\n    return extra\n"}
     )
 
     stats = shrink_project(root, ml_backend=model)

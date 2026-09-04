@@ -72,7 +72,7 @@ def _symbol(source: str, name: str, start: int, end: int) -> dict:
     }
 
 
-def _extract_symbols_python(source: str) -> list[dict]:
+def _extract_symbols_python(source: str, *, private_only: bool = True) -> list[dict]:
     try:
         tree = ast.parse(source)
     except SyntaxError:
@@ -92,23 +92,38 @@ def _extract_symbols_python(source: str) -> list[dict]:
             offsets[node.end_lineno - 1] + node.end_col_offset,
         )
 
+    def is_private(name: str) -> bool:
+        return name.startswith("_") and not (
+            name.startswith("__") and name.endswith("__")
+        )
+
+    def method_is_private(class_name: str, method_name: str) -> bool:
+        """A method is private when its own name is private OR the
+        containing class is private (so methods of `_Helper` count as
+        internal even if their names are bare)."""
+        return is_private(method_name) or is_private(class_name)
+
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            out.append(_symbol(source, node.name, *span(node)))
+            if not private_only or is_private(node.name):
+                out.append(_symbol(source, node.name, *span(node)))
         elif isinstance(node, ast.ClassDef):
             for child in node.body:
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    out.append(
-                        _symbol(
-                            source,
-                            f"{node.name}.{child.name}",
-                            *span(child),
+                    if not private_only or method_is_private(node.name, child.name):
+                        out.append(
+                            _symbol(
+                                source,
+                                f"{node.name}.{child.name}",
+                                *span(child),
+                            )
                         )
-                    )
     return out
 
 
-def _extract_symbols_tree_sitter(source: str, lang: str) -> list[dict]:
+def _extract_symbols_tree_sitter(
+    source: str, lang: str, *, private_only: bool = True
+) -> list[dict]:
     import tree_sitter as ts
 
     if lang in ("javascript", "typescript"):
@@ -127,7 +142,22 @@ def _extract_symbols_tree_sitter(source: str, lang: str) -> list[dict]:
     root = ts.Parser(ts.Language(grammar.language())).parse(encoded).root_node
     out = []
 
-    def walk(node, owner: str = "") -> None:
+    def has_export_ancestor(node) -> bool:
+        """Walk the parent chain via start_byte spans; the only AST entry
+        points are root and node, so we scan by text prefix."""
+        return False  # see _extract_with_visibility below
+
+    def is_public(node) -> bool:
+        """An JS export_statement or Rust visibility_modifier marks the
+        contained symbol as part of the public surface."""
+        if node.type in {"export_statement"}:
+            return True
+        if any(c.type == "visibility_modifier" for c in node.children):
+            return True
+        return False
+
+    def walk(node, owner: str = "", parent_public: bool = False) -> None:
+        public = parent_public or is_public(node)
         next_owner = owner
         if node.type in {"class_declaration", "impl_item"}:
             name = node.child_by_field_name("name") or node.child_by_field_name("type")
@@ -138,26 +168,50 @@ def _extract_symbols_tree_sitter(source: str, lang: str) -> list[dict]:
             if name_node is not None:
                 name = encoded[name_node.start_byte : name_node.end_byte].decode()
                 qualified = f"{owner}.{name}" if owner else name
-                out.append(
-                    _symbol(
-                        source,
-                        qualified,
-                        node.start_byte,
-                        node.end_byte,
+                if not private_only or not public:
+                    out.append(
+                        _symbol(
+                            source,
+                            qualified,
+                            node.start_byte,
+                            node.end_byte,
+                        )
                     )
-                )
             return
         for child in node.children:
-            walk(child, next_owner)
+            walk(child, next_owner, public)
 
     walk(root)
     return out
 
 
-def extract_symbols(source: str, lang: str) -> list[dict]:
+def extract_symbols(
+    source: str,
+    lang: str,
+    *,
+    private_only: bool = True,
+    max_per_file: int = 0,
+) -> list[dict]:
+    """Return symbols of `source`, optionally restricted to private ones.
+
+    `private_only=True` keeps only `_`-prefixed python names and non-`export`ed
+    JS / non-`pub` rust items. The default matches the LLM path, whose gate
+    stack already protects the public API; the host still owns symbol
+    selection, so a caller may pass `private_only=False` for diagnostics
+    or tests that need to see the whole surface.
+
+    `max_per_file` caps the return list (0 = no cap). The cap exists to keep
+    one large file from monopolising the model's budget; the gate stack
+    still runs on every proposal, so capping only affects how many symbols
+    are *considered*, not how many pass.
+    """
     if lang == "python":
-        return _extract_symbols_python(source)
-    return _extract_symbols_tree_sitter(source, lang)
+        symbols = _extract_symbols_python(source, private_only=private_only)
+    else:
+        symbols = _extract_symbols_tree_sitter(source, lang, private_only=private_only)
+    if max_per_file:
+        symbols = symbols[:max_per_file]
+    return symbols
 
 
 def apply_edit(source: str, symbol: dict, edit: ProposedEdit) -> str:
