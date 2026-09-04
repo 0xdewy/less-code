@@ -16,8 +16,18 @@ EXT_LANG = {
 }
 
 SKIP_DIRS = {
-    "node_modules", ".git", "target", "__pycache__", ".venv", "venv",
-    "dist", "build", ".tox", ".mypy_cache", ".pytest_cache", "coverage",
+    "node_modules",
+    ".git",
+    "target",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    "coverage",
     # hidden tests are the bench's safety net: never mapped, so they stay out
     # of the prompt spec, the frozen gate and every LOC measurement.
     "tests_hidden",
@@ -26,7 +36,9 @@ SKIP_DIRS = {
     # so "unreferenced by the tests" says nothing about them being dead.
     # Found the hard way: the dead-code layer stripped noxfile sessions from
     # packaging and demo subcommands from click's examples/.
-    "docs", "examples", "benchmarks",
+    "docs",
+    "examples",
+    "benchmarks",
 }
 
 #: Directory names that make everything inside a test: pytest's `tests/`,
@@ -71,10 +83,14 @@ def is_test_file(path: Path) -> bool:
         )
     if suffix in (".js", ".mjs", ".cjs", ".ts", ".mts"):
         stem = name.rsplit(".", 1)[0]
-        return any(
-            stem.endswith(sep)
-            for sep in (".test", ".spec", "_test", "_spec", "-test", "-spec")
-        ) or stem.startswith(("test-", "spec-"))
+        return (
+            stem in {"test", "tests", "spec"}
+            or any(
+                stem.endswith(sep)
+                for sep in (".test", ".spec", "_test", "_spec", "-test", "-spec")
+            )
+            or stem.startswith(("test-", "spec-"))
+        )
     # rust unit tests live in #[cfg(test)] mods inside source files; only the
     # cargo `tests/` directory rule (above) marks whole files as tests.
     return False
@@ -83,7 +99,11 @@ def is_test_file(path: Path) -> bool:
 def detect_language(root: Path) -> str | None:
     counts: dict[str, int] = {}
     for path in root.rglob("*"):
-        if path.is_file() and not any(p in SKIP_DIRS for p in path.parts) and path.suffix in EXT_LANG:
+        if (
+            path.is_file()
+            and not any(p in SKIP_DIRS for p in path.parts)
+            and path.suffix in EXT_LANG
+        ):
             lang = EXT_LANG[path.suffix]
             counts[lang] = counts.get(lang, 0) + 1
     if not counts:
@@ -91,8 +111,14 @@ def detect_language(root: Path) -> str | None:
     priority = {"rust": 0.5, "python": 0.5, "javascript": 0.5, "typescript": 0.5}
     if (root / "Cargo.toml").exists():
         return "rust"
-    if (root / "package.json").exists() and (counts.get("javascript") or counts.get("typescript")):
-        return "typescript" if counts.get("typescript", 0) > counts.get("javascript", 0) else "javascript"
+    if (root / "package.json").exists() and (
+        counts.get("javascript") or counts.get("typescript")
+    ):
+        return (
+            "typescript"
+            if counts.get("typescript", 0) > counts.get("javascript", 0)
+            else "javascript"
+        )
     if (root / "pyproject.toml").exists() or (root / "setup.py").exists():
         return "python"
     return max(counts, key=lambda k: counts[k] * priority.get(k, 1.0))

@@ -10,7 +10,7 @@ demo target for the code-reduction tool.
 | Language | rust | `uv run lc analyze fixtures/rs` |
 | Source code-LOC | 387 (src/lib.rs + src/stats.rs) | `uv run lc analyze fixtures/rs` |
 | Tests | 39 fns, 96 assertions, all green | `cargo test --quiet` |
-| Mutation audit | **1.0** (50/50 killed) | `uv run lc audit fixtures/rs --max-mutants 25 --out /tmp/opencode/audit-rs.json` |
+| Historical mutation audit (retired command) | **1.0** (50/50 killed) | previous measurement |
 
 Deterministic, std-only, zero dependencies (no dev-dependencies).
 

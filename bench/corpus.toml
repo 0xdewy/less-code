@@ -1,0 +1,43 @@
+[[project]]
+name = "boltons"
+repo = "https://github.com/mahmoud/boltons.git"
+commit = "967864f89791509f9eb36b22b4579d36b72a6df2"
+lang = "python"
+test = [] # use the reducer's current Python interpreter
+
+[[project]]
+name = "more-itertools"
+repo = "https://github.com/more-itertools/more-itertools.git"
+commit = "bc8be1013ac90fe3c1df8aae646b02605d578818"
+lang = "python"
+test = [] # use the reducer's current Python interpreter
+
+[[project]]
+name = "yocto-queue"
+repo = "https://github.com/sindresorhus/yocto-queue.git"
+commit = "b07eac099753833b29d06c614149904445739776"
+lang = "javascript"
+prepare = ["npm", "install", "--ignore-scripts"]
+test = ["npm", "test", "--silent"]
+
+[[project]]
+name = "p-limit"
+repo = "https://github.com/sindresorhus/p-limit.git"
+commit = "783068bb9e967fd7bea8642e1bf5a3627fe38bdf"
+lang = "javascript"
+prepare = ["npm", "install", "--ignore-scripts"]
+test = ["npm", "test", "--silent"]
+
+[[project]]
+name = "itoa"
+repo = "https://github.com/dtolnay/itoa.git"
+commit = "1577ed901354d0d7448ac162328f9dbf5183124c"
+lang = "rust"
+test = ["cargo", "test", "--quiet"]
+
+[[project]]
+name = "strsim-rs"
+repo = "https://github.com/rapidfuzz/strsim-rs.git"
+commit = "dacc84c0dc61eff0ee0ff66962bcf2e17018ad26"
+lang = "rust"
+test = ["cargo", "test", "--quiet"]

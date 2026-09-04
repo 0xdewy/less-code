@@ -1,10 +1,8 @@
-"""lc — the less-code CLI.
+"""`lc` — the less-code CLI.
 
-  lc analyze <path>          # language, files, code-LOC baseline
-  lc audit <path>            # mutation score of the test suite (trust oracle)
-  lc reduce <path>           # static + verify-gated LLM reduction
-  lc report <path>           # render markdown summary from reduce JSON
-  lc bench [dir]             # reduce every fixture, score it, append a row
+lc analyze <path>   map project + code-LOC baseline
+lc shrink  <path>   shrink the codebase using existing static tools + rules
+                    every layer gated by the frozen test suite
 """
 
 from __future__ import annotations
@@ -17,212 +15,153 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .audit import audit, audit_to_json
 from .langdetect import map_project
 from .loc import count_tree, formatter_available
-from .pipeline import reduce_project, write_report
+from .pipeline import shrink_project, write_report
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
     project = map_project(Path(args.path), args.lang)
     loc = count_tree(project.source_files, project.lang, format_first=True)
-    print(json.dumps({
-        "root": str(project.root),
-        "lang": project.lang,
-        "source_files": [str(p) for p in project.source_files],
-        "test_files": [str(p) for p in project.test_files],
-        "loc": {
-            "code": loc.code, "comment": loc.comment, "blank": loc.blank,
-            "tokens": loc.tokens, "ast_nodes": loc.ast_nodes,
-            # canonical-format counting (B1); raw counts when the tool is absent
-            "formatted": loc.formatted and formatter_available(project.lang),
-        },
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "root": str(project.root),
+                "lang": project.lang,
+                "source_files": [str(p) for p in project.source_files],
+                "test_files": [str(p) for p in project.test_files],
+                "loc": {
+                    "code": loc.code,
+                    "comment": loc.comment,
+                    "blank": loc.blank,
+                    "tokens": loc.tokens,
+                    "ast_nodes": loc.ast_nodes,
+                    "formatted": loc.formatted and formatter_available(project.lang),
+                },
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
-def _load_trust(path: str | None) -> dict[str, float] | None:
-    """{file: score} from an `lc audit --out` JSON's per_file section."""
-    if not path:
-        return None
-    data = json.loads(Path(path).read_text())
-    per_file = data.get("per_file", data)  # the audit JSON, or a bare map
-    return {
-        name: (counts["killed"] / counts["total"] if counts.get("total") else 0.0)
-        if isinstance(counts, dict) else float(counts)
-        for name, counts in per_file.items()
-    }
-
-
-def cmd_audit(args: argparse.Namespace) -> int:
-    project = map_project(Path(args.path), args.lang)
-    result = audit(Path(args.path), project.lang, project.source_files,
-                   max_mutants=args.max_mutants)
-    audit_to_json(result, Path(args.out))
-    print(json.dumps({"total": result.total, "killed": result.killed,
-                      "score": round(result.score, 4),
-                      "skipped_no_baseline": result.skipped_no_baseline}, indent=2))
-    if result.per_file:
-        print("per-file trust map (feed to `lc reduce --trust`):")
-        for name, counts in sorted(
-            result.per_file.items(),
-            key=lambda kv: kv[1]["killed"] / max(1, kv[1]["total"]),
-        ):
-            score = counts["killed"] / max(1, counts["total"])
-            print(f"  {name:24s} {score:5.2f}  ({counts['killed']}/{counts['total']})")
-    if result.skipped_no_baseline:
-        print("baseline tests are not green — fix before reducing", file=sys.stderr)
-        return 2
-    return 0 if result.score >= args.min_score else 1
-
-
-def _resolve_reduce_target(path: Path, copy_to: str | None) -> Path:
-    """Decide which tree `lc reduce` is allowed to rewrite.
-
-    `reduce` edits its target in place — that is how the pristine py fixture was
-    once overwritten (review defect D1/D10). `--copy-to DIR` copies the project
-    first and reduces the COPY, leaving the original untouched; reducing in
-    place inside a git repo with uncommitted changes for the target now warns on
-    stderr, because a revert is then not a `git checkout` away.
-    """
+def _resolve_target(path: Path, copy_to: str | None) -> Path:
+    """`shrink` writes to its target; `--copy-to DIR` makes it work on a copy."""
     if copy_to:
         dest = Path(copy_to)
         if dest.exists() and any(dest.iterdir()):
             raise SystemExit(f"--copy-to {dest} exists and is not empty")
         shutil.copytree(path, dest, dirs_exist_ok=True)
-        print(f"reducing a copy at {dest} (original {path} untouched)", file=sys.stderr)
+        print(
+            f"shrinking a copy at {dest} (original {path} untouched)", file=sys.stderr
+        )
         return dest
     try:
         proc = subprocess.run(
             ["git", "status", "--porcelain", "--", str(path)],
             cwd=path if path.is_dir() else path.parent,
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return path
     if proc.returncode == 0 and proc.stdout.strip():
         print(
-            f"WARNING: reducing {path} IN PLACE and it has uncommitted changes — "
-            "the original cannot be restored with `git checkout`. Use --copy-to DIR "
-            "to reduce a copy instead.",
+            f"WARNING: shrinking {path} IN PLACE and it has uncommitted changes — "
+            "use --copy-to DIR to shrink a copy instead.",
             file=sys.stderr,
         )
     return path
 
 
-def cmd_reduce(args: argparse.Namespace) -> int:
-    target = _resolve_reduce_target(Path(args.path), args.copy_to)
-    backend = None
-    if not args.static_only:
-        from .backends import BudgetBackend, make_backend
-        backend = make_backend(args.backend, args.model, num_ctx=args.num_ctx,
-                               timeout=args.llm_timeout)
-        if args.max_llm_calls:
-            backend = BudgetBackend(backend, args.max_llm_calls)
-    if args.mine_out:
-        from . import llm_reduce as _lr
+def cmd_shrink(args: argparse.Namespace) -> int:
+    target = _resolve_target(Path(args.path), args.copy_to)
+    # build the ML backend if --ml-cli was given
+    ml_backend = None
+    if getattr(args, "ml_cli", None):
+        from .ml_shrink import CliBackend
 
-        mine_path = Path(args.mine_out)
-        mine_path.parent.mkdir(parents=True, exist_ok=True)
-
-        def _sink(kind: str, unit: str, system: str, prompt: str, response: str) -> None:
-            import time
-
-            with mine_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps({
-                    "kind": kind, "unit": unit, "system": system,
-                    "prompt": prompt, "response": response,
-                    "ts": time.time(),
-                }) + "\n")
-
-        _lr.MINE_SINK = _sink
-    stats = reduce_project(
-        target, lang=args.lang, backend=backend,
-        attempts_per_file=args.attempts, max_files=args.max_files,
-        formatter=not args.no_format, test_timeout=args.timeout,
-        strategy=args.strategy,
-        skip_files=(set(args.skip_files.split(",")) if args.skip_files else None),
-        trust=_load_trust(args.trust),
-        run_static=not args.no_static,
+        ml_backend = CliBackend(args.ml_cli, timeout=getattr(args, "ml_timeout", 60.0))
+    stats = shrink_project(
+        target,
+        lang=args.lang,
+        test_timeout=args.timeout,
+        ml_backend=ml_backend,
     )
-    out = Path(args.out)
-    write_report(stats, out)
+    write_report(stats, Path(args.out))
     payload = stats.to_json()
-    print(json.dumps({k: payload[k] for k in
-                      ("loc_start", "loc_after_static", "loc_final",
-                       "static_pct", "hybrid_pct", "tests_ok", "api_ok")}, indent=2))
-    print(f"report: {out}")
-    ok = stats.tests_ok and stats.api_ok and stats.loc_final < stats.loc_start
+    print(
+        json.dumps(
+            {
+                k: payload[k]
+                for k in (
+                    "loc_start",
+                    "loc_after_static",
+                    "loc_final",
+                    "tests_ok",
+                    "api_ok",
+                    "docs_ok",
+                )
+            },
+            indent=2,
+        )
+    )
+    print(f"report: {args.out}")
+    ok = stats.tests_ok and stats.api_ok and stats.docs_ok
     return 0 if ok else 1
 
 
-def cmd_bench(args: argparse.Namespace) -> int:
-    from .bench import markdown_table, run_bench
-
-    rows, out = run_bench(
-        Path(args.path),
-        Path(args.out_dir),
-        config="static-only" if args.static_only
-        else f"hybrid:{args.model or args.backend}:{args.strategy}",
-        repo=Path(__file__).resolve().parent.parent,
-        fixture=args.fixture,
-        backend_spec=args.backend,
-        model=args.model,
-        attempts=args.attempts,
-        max_llm_calls=args.max_llm_calls,
-        timeout=args.timeout,
-        num_ctx=args.num_ctx,
-        llm_timeout=args.llm_timeout,
-        strategy=args.strategy,
-        keep_tree=Path(args.keep_tree) if args.keep_tree else None,
-    )
-    table = markdown_table(rows)
-    print(table)
-    print(f"\nrows: {out}")
-    if args.markdown:
-        Path(args.markdown).write_text(table + "\n", encoding="utf-8")
-    # bench measures; it only fails on a broken run (red tests, changed API,
-    # or a hidden-test regression the visible gate let through)
-    ok = all(
-        r.tests_ok and r.api_ok and r.hidden_ok is not False for r in rows
-    )
-    return 0 if rows and ok else 1
-
-
 def cmd_report(args: argparse.Namespace) -> int:
+    """Render the JSON report as a small markdown summary (no separate bench)."""
     data = json.loads(Path(args.json).read_text())
     r = data["reduce"]
     lines = [
         "# less-code report",
         "",
         f"- language: `{r['lang']}`",
-        f"- LOC: {r['loc_start']} → {r['loc_final']} "
-        f"(static {r['loc_after_static']})",
-        f"- reduction: static **{r['static_pct']}%** + LLM **{r['llm_extra_pct']}%**"
-        f" = hybrid **{r['hybrid_pct']}%**",
-        f"- tests green: {r['tests_ok']}  |  API preserved: {r['api_ok']} "
-        f"(baseline: {r.get('api_baseline', 'post-static')})",
+        (
+            f"- LOC: {r['loc_start']} -> {r['loc_after_static']} (post-static) -> "
+            f"{r['loc_final']} (final)"
+        ),
+        f"- reduction: **{r['hybrid_pct']}%**",
+        (
+            f"- tests green: {r['tests_ok']}  |  API preserved: {r['api_ok']} "
+            f"(baseline: {r.get('api_baseline', 'original')})"
+        ),
+        f"- documentation preserved: {r.get('docs_ok', False)}",
         f"- LOC counted after canonical formatting: {r.get('formatted_loc', False)}",
-        f"- attempts: {len(r['attempts'])} "
-        f"(accepted: {sum(1 for a in r['attempts'] if a['outcome'] == 'accepted')})",
     ]
-    if r.get("static_removed_symbols"):
-        lines.append(
-            "- public symbols removed by the static layer as provably dead: "
-            + ", ".join(f"`{n}`" for n in r["static_removed_symbols"])
-        )
-    if "audit" in data:
-        a = data["audit"]
-        lines.append(f"- mutation score: {a['score'] * 100:.1f}% "
-                     f"({a['killed']}/{a['total']} mutants killed)")
+    if r.get("layer_records"):
+        lines.append("\n## Per-layer yield\n")
+        for layer in r["layer_records"]:
+            note = f" ({layer.get('notes', [''])[0]})" if layer.get("notes") else ""
+            committed = "kept" if layer.get("committed", True) else "reverted"
+            lines.append(
+                f"- **{layer['layer']}** {layer['loc_before']} -> {layer['loc_after']} "
+                f"[{committed}]{note}"
+            )
     Path(args.out).write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
     return 0
 
 
+def cmd_corpus(args: argparse.Namespace) -> int:
+    from .corpus import run_corpus, write_corpus_report
+
+    result = run_corpus(Path(args.manifest), args.timeout)
+    write_corpus_report(result, Path(args.out), Path(args.markdown))
+    print(json.dumps(result["aggregate"], indent=2))
+    return 0 if result["aggregate"]["valid"] == result["aggregate"]["projects"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="lc", description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        prog="lc",
+        description="shrink a Python / JavaScript / Rust codebase",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--version", action="version", version=f"lc {__version__}")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -231,83 +170,42 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--lang")
     p.set_defaults(func=cmd_analyze)
 
-    p = sub.add_parser("audit", help="mutation-score the test suite")
+    p = sub.add_parser("shrink", help="shrink the codebase")
     p.add_argument("path")
     p.add_argument("--lang")
-    p.add_argument("--max-mutants", type=int, default=40)
-    p.add_argument("--min-score", type=float, default=0.0)
-    p.add_argument("--out", default="audit.json")
-    p.set_defaults(func=cmd_audit)
-
-    p = sub.add_parser("reduce", help="static + verify-gated LLM reduction")
-    p.add_argument("path")
-    p.add_argument("--lang")
-    p.add_argument("--backend", default="ollama", choices=["none", "ollama", "openai"])
-    p.add_argument("--model", default=None)
-    p.add_argument("--static-only", action="store_true")
-    p.add_argument("--attempts", type=int, default=3)
-    p.add_argument("--max-files", type=int, default=None)
-    p.add_argument("--no-format", action="store_true")
-    p.add_argument("--no-static", action="store_true",
-                   help="skip the L1 static pass (mining on pristine code, or "
-                        "isolating L2 yield)")
     p.add_argument("--timeout", type=int, default=600)
-    p.add_argument("--max-llm-calls", type=int, default=8,
-                   help="hard cap on LLM calls (GPU budget on shared machines)")
-    p.add_argument("--num-ctx", type=int, default=16384, help="context window for local backend")
-    p.add_argument("--llm-timeout", type=int, default=600,
-                   help="seconds to wait for one LLM response before recording "
-                        "backend-error (a slow GPU needs more than the 600s default)")
-    p.add_argument("--strategy", default="mixed", choices=["mixed", "whole-file"],
-                   help="mixed = dedup + per-symbol + sweep; whole-file = repeated "
-                        "whole-file rewrites with hunk salvage (the recipe that passed js)")
-    p.add_argument("--skip-files", default=None, metavar="NAMES",
-                   help="comma-separated file names the LLM layer must not touch "
-                        "(trust scaling: files whose behavior the suite cannot see, "
-                        "per `lc audit` — static layers still run on them)")
-    p.add_argument("--trust", default=None, metavar="FILE",
-                   help="per-file audit JSON (from `lc audit --out`): files are "
-                        "ranked by size x per-file mutation score so the LLM "
-                        "budget flows to files the suite can actually verify")
-    p.add_argument("--mine-out", default=None, metavar="FILE",
-                   help="append every ACCEPTED proposal to FILE as JSONL "
-                        "(kind, unit, system, prompt, response) — SFT pairs "
-                        "mined from what the gate certified")
-    p.add_argument("--copy-to", default=None, metavar="DIR",
-                   help="copy the project to DIR and reduce the COPY, leaving the "
-                        "original untouched. Without it `reduce` rewrites the tree "
-                        "it is pointed at, and warns when that tree has uncommitted "
-                        "changes")
-    p.add_argument("--out", default="reduce-report.json")
-    p.set_defaults(func=cmd_reduce)
+    p.add_argument(
+        "--copy-to",
+        default=None,
+        metavar="DIR",
+        help="copy the project to DIR and shrink the COPY",
+    )
+    p.add_argument("--out", default="shrink-report.json")
+    p.add_argument(
+        "--ml-cli",
+        default=None,
+        metavar="CMD",
+        help=("ML backend command; receives a prompt and returns one JSON object"),
+    )
+    p.add_argument(
+        "--ml-timeout",
+        type=float,
+        default=60.0,
+        help="per-call timeout for the ML backend (seconds)",
+    )
+    p.set_defaults(func=cmd_shrink)
 
-    p = sub.add_parser("bench", help="reduce every fixture, score it, append a bench row")
-    p.add_argument("path", nargs="?", default="fixtures")
-    p.add_argument("--backend", default="ollama", choices=["none", "ollama", "openai"])
-    p.add_argument("--model", default=None)
-    p.add_argument("--static-only", action="store_true")
-    p.add_argument("--attempts", type=int, default=2)
-    p.add_argument("--max-llm-calls", type=int, default=6)
-    p.add_argument("--num-ctx", type=int, default=16384)
-    p.add_argument("--timeout", type=int, default=600)
-    p.add_argument("--llm-timeout", type=int, default=600,
-                   help="seconds to wait for one LLM response before recording "
-                        "backend-error (a slow GPU needs more than the 600s default)")
-    p.add_argument("--strategy", default="mixed", choices=["mixed", "whole-file"])
-    p.add_argument("--fixture", default=None,
-                   help="bench only this fixture directory (e.g. `js`)")
-    p.add_argument("--out-dir", default="bench/results")
-    p.add_argument("--keep-tree", default=None, metavar="DIR",
-                   help="copy each reduced scratch tree to DIR/<fixture> instead of "
-                        "deleting it, so a row can be checked against the code that "
-                        "produced it")
-    p.add_argument("--markdown", default=None, help="also write the table here")
-    p.set_defaults(func=cmd_bench)
-
-    p = sub.add_parser("report", help="markdown summary from reduce JSON")
-    p.add_argument("--json", default="reduce-report.json")
-    p.add_argument("--out", default="REDUCTION.md")
+    p = sub.add_parser("report", help="markdown summary from shrink JSON")
+    p.add_argument("--json", default="shrink-report.json")
+    p.add_argument("--out", default="SHRINK.md")
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("corpus", help="run the pinned multi-project benchmark")
+    p.add_argument("--manifest", default="bench/corpus.toml")
+    p.add_argument("--out", default="bench/baseline.json")
+    p.add_argument("--markdown", default="bench/BASELINE.md")
+    p.add_argument("--timeout", type=int, default=900)
+    p.set_defaults(func=cmd_corpus)
 
     args = parser.parse_args(argv)
     return args.func(args)

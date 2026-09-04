@@ -1,9 +1,13 @@
 [project]
 name = "less-code"
 version = "0.1.0"
-description = "Hybrid static + LLM + RL LOC reduction with verify-gated safety"
+description = "Verify-gated static and optional LLM code reduction"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "tree-sitter>=0.26.0",
+    "tree-sitter-javascript>=0.25.0",
+    "tree-sitter-rust>=0.24.2",
+]
 
 [project.scripts]
 lc = "less_code.cli:main"

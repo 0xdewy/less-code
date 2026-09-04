@@ -12,9 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from less_code.langdetect import map_project
 from less_code.outline import outline_guards
-from less_code.static import static_pass
 
 
 def norm(text: str) -> str:
@@ -148,7 +146,9 @@ def test_a_differing_fstring_text_part_renders_as_an_interpolation():
     assert "f'{message}" in out.replace('"', "'")
     for arg in ("hi", None):
         for fn in "abc":
-            assert behaves_the_same(norm(src), out, lambda ns, fn=fn, arg=arg: ns[fn](arg, "Ab"))
+            assert behaves_the_same(
+                norm(src), out, lambda ns, fn=fn, arg=arg: ns[fn](arg, "Ab")
+            )
 
 
 def test_a_bound_name_used_afterwards_is_returned_and_unpacked():
@@ -183,7 +183,9 @@ def test_a_bound_name_used_afterwards_is_returned_and_unpacked():
     assert "return text" in out
     for arg in (" abc ", "ab", 5):
         for fn in "abc":
-            assert behaves_the_same(norm(src), out, lambda ns, fn=fn, arg=arg: ns[fn](arg))
+            assert behaves_the_same(
+                norm(src), out, lambda ns, fn=fn, arg=arg: ns[fn](arg)
+            )
 
 
 def test_the_argument_is_evaluated_before_the_guards_so_only_names_are_lifted():
@@ -326,8 +328,14 @@ def test_more_than_two_varying_constant_classes_is_declined():
     out, _notes = one(src)
     assert out is None
     # …and it is the cap, not the shape: pin one literal and it goes through
-    assert one(src.replace("x > 4", "x > 2").replace("x > 6", "x > 2")
-               .replace("x > 8", "x > 2"))[0] is not None
+    assert (
+        one(
+            src.replace("x > 4", "x > 2")
+            .replace("x > 6", "x > 2")
+            .replace("x > 8", "x > 2")
+        )[0]
+        is not None
+    )
 
 
 def test_a_group_that_cannot_pay_for_its_helper_is_declined():
@@ -427,10 +435,12 @@ def test_a_group_spanning_two_package_modules_imports_relatively(tmp_path):
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("")
     b = "from .a import a as _a\n\n" + norm(MULTI_B)  # existing package edge
-    changed, _notes = outline_guards({
-        str(pkg / "a.py"): norm(MULTI_A),
-        str(pkg / "b.py"): b,
-    })
+    changed, _notes = outline_guards(
+        {
+            str(pkg / "a.py"): norm(MULTI_A),
+            str(pkg / "b.py"): b,
+        }
+    )
     assert "from .a import _check_x" in changed[str(pkg / "b.py")].splitlines()[:3]
     # and it must actually import and run, not just look right
     for p, text in changed.items():
@@ -450,7 +460,9 @@ def test_a_group_spanning_two_package_modules_imports_relatively(tmp_path):
     )
     r = subprocess.run(
         [sys.executable, "-c", code],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert r.returncode == 0, r.stderr
 
@@ -462,10 +474,12 @@ def test_a_helper_name_taken_in_the_importer_is_avoided(tmp_path):
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("")
     b = "from .a import a as _a\n\n" + norm(MULTI_B) + "\n\n_check_x = 1\n"
-    changed, _notes = outline_guards({
-        str(pkg / "a.py"): norm(MULTI_A),
-        str(pkg / "b.py"): b,
-    })
+    changed, _notes = outline_guards(
+        {
+            str(pkg / "a.py"): norm(MULTI_A),
+            str(pkg / "b.py"): b,
+        }
+    )
     lines = changed[str(pkg / "b.py")].splitlines()[:3]
     (import_line,) = [l for l in lines if l.startswith("from .a import _")]
     assert import_line.rsplit(" ", 1)[1] != "_check_x"  # a NEW name, not the taken one
@@ -480,10 +494,12 @@ def test_a_mixed_flat_package_layout_keeps_the_inline_guard(tmp_path):
     (pkg / "__init__.py").write_text("")
     loose = tmp_path / "loose"
     loose.mkdir()
-    changed, _notes = outline_guards({
-        str(pkg / "a.py"): norm(MULTI_A),
-        str(loose / "b.py"): norm(MULTI_B),
-    })
+    changed, _notes = outline_guards(
+        {
+            str(pkg / "a.py"): norm(MULTI_A),
+            str(loose / "b.py"): norm(MULTI_B),
+        }
+    )
     # a.py alone holds 2 sites (< MIN_OCCURRENCES=3), b.py's site cannot join:
     # the group dies and nothing is outlined
     assert changed == {}
@@ -547,34 +563,31 @@ def _project(tmp_path):
 
 
 def test_the_static_pass_outlines_under_the_gate(tmp_path):
-    from less_code.testrunners import run_tests
+    from less_code.pipeline import shrink_project
 
     root = _project(tmp_path)
-    project = map_project(root)
-    result = static_pass(root, "python", project.source_files,
-                         project.source_files + project.test_files, runner=run_tests)
-    assert any("outlined" in n for n in result.notes)
-    assert "_check_x" in result.changed_files[str(root / "mod.py")]
+    result = shrink_project(root)
+    assert any("outlined" in note for note in result.static_notes)
+    assert "_check_x" in (root / "mod.py").read_text()
 
 
 def test_a_scripted_misfire_is_reverted_by_the_gate(tmp_path, monkeypatch):
     """The layer is only ever as trusted as the suite. Script it to reword an
     error message and the narrowing pass must drop it and say so."""
-    import less_code.outline as outline
-    from less_code.testrunners import run_tests
+    from less_code import outline
+    from less_code.pipeline import shrink_project
 
     def broken(sources, min_occurrences=3):
-        out = {p: t.replace("'x required'", "'x is required'") for p, t in sources.items()}
+        out = {
+            p: t.replace("'x required'", "'x is required'") for p, t in sources.items()
+        }
         return {p: t for p, t in out.items() if t != sources[p]}, ["scripted misfire"]
 
     monkeypatch.setattr(outline, "outline_guards", broken)
     root = _project(tmp_path)
-    project = map_project(root)
-    result = static_pass(root, "python", project.source_files,
-                         project.source_files + project.test_files, runner=run_tests)
-    assert any("guard-outlining reverted by the gate" in n for n in result.notes)
-    for text in result.changed_files.values():
-        assert "x is required" not in text
+    result = shrink_project(root)
+    assert any("outline: reverted by the gate" in note for note in result.static_notes)
+    assert "x is required" not in (root / "mod.py").read_text()
 
 
 @pytest.mark.parametrize("value", [None, "", " ok ", 3])

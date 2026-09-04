@@ -10,7 +10,7 @@ only, fully deterministic.
 | Metric | Value |
 |---|---|
 | code-LOC (`uv run lc analyze fixtures/js`) | **571** (lang=javascript) |
-| audit score (`lc audit --max-mutants 40`) | **0.85** (34/40 killed) |
+| historical mutation audit (retired command) | **0.85** (34/40 killed) |
 | tests (`node --test`) | **36 tests green**, 134 assertions (41 throw-paths) |
 
 Remaining audit survivors: 4 mutations inside comment text (inert), 1 in the
@@ -59,5 +59,5 @@ dead-export zone (tests must not touch it), 1 equivalent mutant
 ```
 cd fixtures/js && node --test                     # 36 pass
 uv run lc analyze fixtures/js                     # javascript, code=571
-uv run lc audit fixtures/js --max-mutants 40      # 0.85
+# Historical mutation score before the audit command was retired: 0.85
 ```

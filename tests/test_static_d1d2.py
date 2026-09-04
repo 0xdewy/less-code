@@ -1,25 +1,24 @@
-"""D1/D2 — the ruff tiers, unreachable-code removal (python) and the JS dead
-internal/knip pass. Every layer is test-gated through the real pipeline."""
+"""D1/D2 — ruff, unreachable Python, and dead internal JavaScript."""
 
-import json
 import shutil
 import textwrap
 
 import pytest
 
 from less_code.langdetect import map_project
-from less_code.pipeline import reduce_project
+from less_code.pipeline import shrink_project
 from less_code.static import (
     _js_internal_spans,
     _js_remove_dead_internal,
-    _knip_unused_exports,
     _python_drop_unreachable,
     _ruff_fix,
     _unreachable_line_spans,
     static_pass,
 )
 
-ruff_only = pytest.mark.skipif(shutil.which("ruff") is None, reason="ruff not installed")
+ruff_only = pytest.mark.skipif(
+    shutil.which("ruff") is None, reason="ruff not installed"
+)
 
 
 def norm(text: str) -> str:
@@ -30,21 +29,21 @@ def norm(text: str) -> str:
 
 
 @ruff_only
-def test_ruff_safe_tier_leaves_an_unused_local_alone():
-    """Removing a binding is an *unsafe* fix in ruff's own taxonomy, so the
-    automatic tier must not do it."""
+def test_ruff_tier_leaves_imports_and_unused_locals_alone():
+    """Imports can be feature probes or have side effects; locals can too."""
     src = "import os, sys\n\n\ndef f(x):\n    y = 1\n    return x\n"
     fixed = _ruff_fix(src, "m.py")
-    assert "import os" not in fixed  # F401 is a safe fix
+    assert "import os, sys" in fixed
     assert "y = 1" in fixed
 
 
 @ruff_only
-def test_ruff_unsafe_tier_removes_the_unused_local():
-    src = "def f(x):\n    y = 1\n    return x\n"
-    assert "y = 1" not in _ruff_fix(src, "m.py", unsafe=True)
+def test_ruff_tier_preserves_optional_import_probe():
+    src = "try:\n    import readline\nexcept ImportError:\n    available = False\n"
+    assert _ruff_fix(src, "m.py") == src
 
 
+@ruff_only
 @ruff_only
 def test_ruff_select_includes_the_loc_reducing_families():
     """`else` after `return` (RET505) is pure LOC and is why the default
@@ -58,7 +57,7 @@ def test_ruff_select_includes_the_loc_reducing_families():
                 return 2
         """
     )
-    assert "else" not in _ruff_fix(src, "m.py", unsafe=True)
+    assert "else" not in _ruff_fix(src, "m.py")
 
 
 def test_ruff_fix_returns_the_input_unchanged_when_ruff_is_missing(monkeypatch):
@@ -136,7 +135,7 @@ def test_js_internal_spans_skips_exported_symbols():
         """
     )
     names = {n for n, _s, _e in _js_internal_spans(src)}
-    assert names == {"helper", "LOCAL"}
+    assert names == {"helper"}
 
 
 def test_js_dead_internal_is_removed_but_a_referenced_one_is_kept(tmp_path):
@@ -158,7 +157,8 @@ def test_js_dead_internal_is_removed_but_a_referenced_one_is_kept(tmp_path):
     path.write_text(src)
     result = _js_remove_dead_internal({path: src}, {path: src})
     out = result.changed_files[str(path)]
-    assert "orphan" not in out and "UNUSED" not in out
+    assert "orphan" not in out
+    assert "UNUSED" in out  # its initializer could have import-time side effects
     assert "function used" in out and "export function api" in out
 
 
@@ -172,39 +172,11 @@ def test_js_internal_referenced_from_a_test_file_survives(tmp_path):
     assert not result.changed_files
 
 
-def test_knip_is_optional_and_never_reports_files(tmp_path, monkeypatch):
-    """knip also reports unused *files*; acting on that would delete each
-    fixture's `tests_hidden/` suite, so only `exports` is consumed."""
-    (tmp_path / "package.json").write_text('{"name":"x","type":"module"}')
-    payload = json.dumps({
-        "issues": [
-            {"file": "tests_hidden/hidden.mjs", "files": [{"name": "tests_hidden/hidden.mjs"}], "exports": []},
-            {"file": "m.js", "exports": [{"name": "gone"}]},
-        ]
-    })
-
-    class _Proc:
-        stdout, returncode = payload, 1
-
-    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/npx")
-    monkeypatch.setattr("subprocess.run", lambda *a, **k: _Proc())
-    found, note = _knip_unused_exports(tmp_path)
-    assert found == {"m.js": {"gone"}}
-    assert "tests_hidden" not in str(found)
-    assert "1 unused exports" in note
-
-
-def test_knip_absence_is_reported_not_fatal(tmp_path, monkeypatch):
-    monkeypatch.setattr(shutil, "which", lambda _name: None)
-    found, note = _knip_unused_exports(tmp_path)
-    assert found == {} and "skipped" in note
-
-
 # ---- end to end through the pipeline ---------------------------------------
 
 
 UNREACHABLE_MODULE = norm(
-    '''
+    """
     def area(w, h):
         if w <= 0:
             raise ValueError("bad width")
@@ -219,11 +191,11 @@ UNREACHABLE_MODULE = norm(
             return "yes"
         else:
             return "no"
-    '''
+    """
 )
 
 UNREACHABLE_TESTS = norm(
-    '''
+    """
     import pytest
     from mod import area, label
 
@@ -237,7 +209,7 @@ UNREACHABLE_TESTS = norm(
     def test_label():
         assert label(True) == "yes"
         assert label(False) == "no"
-    '''
+    """
 )
 
 
@@ -247,7 +219,7 @@ def test_pipeline_static_removes_unreachable_and_applies_ruff(tmp_path):
     root.mkdir()
     (root / "mod.py").write_text(UNREACHABLE_MODULE)
     (root / "test_mod.py").write_text(UNREACHABLE_TESTS)
-    stats = reduce_project(root, backend=None, formatter=False)
+    stats = shrink_project(root)
     source = (root / "mod.py").read_text()
     assert stats.tests_ok and stats.api_ok
     assert 'print("dead")' not in source and 'print("cleanup")' not in source
@@ -261,7 +233,8 @@ def test_static_pass_is_still_pure_without_a_runner(tmp_path):
     (root / "mod.py").write_text(UNREACHABLE_MODULE)
     (root / "test_mod.py").write_text(UNREACHABLE_TESTS)
     project = map_project(root)
-    result = static_pass(root, "python", project.source_files,
-                         project.source_files + project.test_files)
+    result = static_pass(
+        root, "python", project.source_files, project.source_files + project.test_files
+    )
     assert result.changed_files
     assert 'print("dead")' in (root / "mod.py").read_text()

@@ -1,43 +1,54 @@
-"""Orchestrates L1 static + L2 verify-gated LLM reduction. Accepts only
-states where the full suite stays green; every candidate is measured against
-code-LOC. Attribution: static-only vs LLM delta for the hybrid claim."""
+"""Orchestrator for `lc shrink`.
+
+Layered pipeline, each layer verify-gated independently:
+
+  L0  canonical formatter (not counted as reduction)
+  L1  external static tools: ruff / snapshot-isolated clippy
+  L1b language rule libraries: semantic-preserving rewrites
+  L1c guard-block outlining: project-wide repeated guards
+
+Each layer's edit set is applied, the frozen suite is run, and the edits
+are kept iff the suite stays green AND code-LOC shrinks. A layer that
+misfires is reverted (snapshot/restore), reported in `notes`, and never
+takes another layer down with it.
+"""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
+import signal
 import subprocess
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .api_check import api_surface, api_violations
+from .documentation import documentation_layout
 from .langdetect import map_project
-from .loc import formatter_available, measure
-from .static import StaticResult, static_pass
+from .loc import measure
+from .static import static_pass
 from .testrunners import run_tests, shadowed_imports
-import contextlib
 
 
 @dataclass
-class ReduceStats:
+class ShrinkStats:
     lang: str
     files_considered: int = 0
     loc_start: int = 0
     loc_after_static: int = 0
     loc_final: int = 0
     static_notes: list[str] = field(default_factory=list)
-    attempt_records: list[dict] = field(default_factory=list)
+    layer_records: list[dict] = field(default_factory=list)
     tests_ok: bool = False
     api_ok: bool = False
+    docs_ok: bool = False
+    formatted_loc: bool = False
     reduction_pct: float = 0.0
-    #: Which surface `api_ok` is measured against. The static layer removes
-    #: provably-dead public items by design, so the baseline the LLM layer is
-    #: held to is the POST-static surface, not the original one.
-    api_baseline: str = "post-static"
-    #: Public symbols the static layer deleted (dead code). These are gone
-    #: from the delivered tree relative to the ORIGINAL sources, so
-    #: `api_ok: true` must never be read as "identical to the input API".
+    api_baseline: str = "original"
     static_removed_symbols: list[str] = field(default_factory=list)
+    ml_stats: dict[str, int] = field(default_factory=dict)
 
     def to_json(self) -> dict:
         return {
@@ -46,17 +57,18 @@ class ReduceStats:
             "loc_start": self.loc_start,
             "loc_after_static": self.loc_after_static,
             "loc_final": self.loc_final,
-            "static_only_loc_final": self.loc_after_static,
             "static_pct": pct(self.loc_start, self.loc_after_static),
             "hybrid_pct": pct(self.loc_start, self.loc_final),
             "llm_extra_pct": pct(self.loc_after_static, self.loc_final),
-            "formatted_loc": formatter_available(self.lang),
+            "formatted_loc": self.formatted_loc,
             "tests_ok": self.tests_ok,
             "api_ok": self.api_ok,
+            "docs_ok": self.docs_ok,
             "api_baseline": self.api_baseline,
             "static_removed_symbols": self.static_removed_symbols,
             "static_notes": self.static_notes,
-            "attempts": self.attempt_records,
+            "layer_records": self.layer_records,
+            "ml_stats": self.ml_stats,
         }
 
 
@@ -64,303 +76,436 @@ def pct(before: int, after: int) -> float:
     return round(100.0 * (before - after) / before, 2) if before else 0.0
 
 
-def tree_loc(files: list[Path], lang: str) -> int:
-    return sum(measure(f.read_text(encoding="utf-8", errors="replace"), lang).code for f in files)
+def _tree_loc(files: list[Path], lang: str) -> int:
+    total = 0
+    for f in files:
+        total += measure(f.read_text(encoding="utf-8", errors="replace"), lang).code
+    return total
 
 
-def run_formatter(root: Path, lang: str) -> None:
-    """L0 normalize (not counted as reduction). Best effort, optional tools."""
-    if lang == "python" and shutil.which("ruff"):
-        subprocess.run(["ruff", "format", "."], cwd=root, capture_output=True, timeout=300)
-    elif lang in ("javascript", "typescript") and shutil.which("dprint"):
-        subprocess.run(["dprint", "fmt"], cwd=root, capture_output=True, timeout=300)
-    elif lang == "rust" and shutil.which("rustfmt"):
-        subprocess.run(["cargo", "fmt"], cwd=root, capture_output=True, timeout=300)
+def _snapshot(files: list[Path]) -> dict[Path, str]:
+    return {p: p.read_text(encoding="utf-8", errors="replace") for p in files}
 
 
-def reduce_project(
+def _restore(snapshot: dict[Path, str]) -> None:
+    for path, text in snapshot.items():
+        path.write_text(text, encoding="utf-8")
+
+
+def _write_changes(changes: dict[str, str]) -> None:
+    for path_str, new_text in changes.items():
+        Path(path_str).write_text(new_text, encoding="utf-8")
+
+
+def _install_signal_restore(snapshot: dict[Path, str]) -> None:
+    def _handler(signum, frame):  # pragma: no cover
+        _restore(snapshot)
+        raise SystemExit(130)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(ValueError, OSError):
+            signal.signal(sig, _handler)
+
+
+def _apply_rules(
+    sources: dict[Path, str], only: set[str] | None = None
+) -> tuple[dict[Path, str], list[str]]:
+    from .rules import apply_rules
+
+    out, notes = dict(sources), []
+    for path, text in sources.items():
+        new_text, applied = apply_rules(text, only)
+        if applied and new_text != text:
+            out[path] = new_text
+            counts = {name: applied.count(name) for name in set(applied)}
+            notes.append(f"{path.name}: rules {counts}")
+    return out, notes
+
+
+def _apply_outline(
+    sources: dict[Path, str],
+) -> tuple[dict[Path, str], list[str]]:
+    from .outline import outline_guards
+
+    changed, notes = outline_guards({str(path): text for path, text in sources.items()})
+    return {path: changed.get(str(path), text) for path, text in sources.items()}, notes
+
+
+def _ml_proposals(sources: dict[Path, str], lang: str, backend):
+    """Collect immutable-snapshot proposals, ordered bottom-up per file."""
+    from .ml_shrink import ProposedEdit, extract_symbols
+
+    proposals = []
+    notes = []
+    considered = 0
+    for path, text in sources.items():
+        for symbol in extract_symbols(text, lang):
+            considered += 1
+            try:
+                edit = backend.propose(lang, symbol)
+            except Exception as exc:  # noqa: BLE001 - third-party backend boundary
+                notes.append(f"{path.name}:{symbol['name']}: model error: {exc}")
+                continue
+            if isinstance(edit, ProposedEdit):
+                proposals.append((path, symbol, edit))
+    proposals.sort(key=lambda item: (str(item[0]), -item[1]["start_byte"]))
+    return proposals, notes, considered
+
+
+def shrink_project(
     root: Path,
     lang: str | None = None,
-    backend=None,
-    attempts_per_file: int = 3,
-    max_files: int | None = None,
-    formatter: bool = True,
     test_timeout: int = 600,
-    whole_file_sweep: bool = True,
-    dedup_groups: int = 3,
-    strategy: str = "mixed",
-    skip_files: set[str] | None = None,
-    trust: dict[str, float] | None = None,
-    symbols_per_sweep: int = 3,
-    run_static: bool = True,
-) -> ReduceStats:
+    ml_backend: object | None = None,
+    test_command: list[str] | None = None,
+) -> ShrinkStats:
     project = map_project(root, lang)
-    stats = ReduceStats(lang=project.lang, files_considered=len(project.source_files))
-    all_files = project.source_files + project.test_files
-
-    # the gate must test THIS tree: a package that resolves elsewhere (host
-    # venv shadowing an editable install) would green-light reductions that
-    # never ran. Refuse before anything is measured or touched.
+    stats = ShrinkStats(
+        lang=project.lang,
+        files_considered=len(project.source_files),
+    )
     if project.lang == "python":
         shadowed = shadowed_imports(root)
         if shadowed:
             stats.tests_ok = False
             stats.static_notes = [
-                "import-origin check failed: " + "; ".join(shadowed)
+                "import-origin check failed: "
+                + "; ".join(shadowed)
                 + " — the gate would test code from outside this tree. Fix the"
-                " host venv (e.g. reinstall the editable for this tree, remove"
-                " the shadowing package) and re-run."
+                " host venv and re-run."
             ]
             return stats
 
-    baseline = run_tests(root, project.lang, timeout=test_timeout)
+    baseline = run_tests(root, project.lang, timeout=test_timeout, command=test_command)
     if not baseline.ok:
         stats.tests_ok = False
         stats.static_notes = [f"baseline tests failed: {baseline.output_tail[-300:]}"]
         return stats
     stats.tests_ok = True
 
-    # crash safety: never leave the tree mutated if we are killed mid-verify
-    snapshots = {p: p.read_text(encoding="utf-8", errors="replace") for p in project.source_files}
+    # Formatting is a measurement normalization, not a source rewrite. Every
+    # `_tree_loc` call canonicalizes in memory; writing a foreign project's
+    # formatter output can make its own style gate fail before reduction.
+    pristine = _snapshot(project.source_files)
+    docs_baseline = {
+        path: documentation_layout(text, project.lang)
+        for path, text in pristine.items()
+    }
+    api_original = api_surface(project.source_files, project.lang)
+    _install_signal_restore(pristine)
 
-    def _restore(*_args) -> None:
-        for p, text in snapshots.items():
-            p.write_text(text, encoding="utf-8")
-
-    import signal
-
-    old_handlers: dict[int, object] = {}
-
-    def _handler(signum, frame):  # pragma: no cover
-        _restore()
-        old = old_handlers.get(signum)
-        if callable(old):
-            old(signum, frame)
-        raise SystemExit(130)
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        with contextlib.suppress(ValueError, OSError):
-            old_handlers[sig] = signal.signal(sig, _handler)
-
-    if formatter:
-        run_formatter(root, project.lang)
-
-    stats.loc_start = tree_loc(project.source_files, project.lang)
-
-    # ---- L1 static ----
-    if not run_static:
-        # mining mode: the LLM layer sees PRISTINE code, where the verbose
-        # patterns still exist — pairs mined on a post-static floor are all
-        # rejections (measured: 25 calls on the reduced py fixture, 0 accepted)
-        stats.static_notes = ["static pass skipped (--no-static)"]
-        static = StaticResult()
-    else:
-        static = static_pass(
-            root, project.lang, project.source_files, all_files,
-            runner=lambda r, l: run_tests(r, l, timeout=test_timeout, use_cache=False),
+    stats.loc_start = _tree_loc(project.source_files, project.lang)
+    stats.formatted_loc = bool(project.source_files) and all(
+        measure(text, project.lang).formatted for text in pristine.values()
+    )
+    if not stats.formatted_loc:
+        stats.loc_after_static = stats.loc_start
+        stats.loc_final = stats.loc_start
+        stats.api_ok = True
+        stats.docs_ok = True
+        stats.static_notes.append(
+            "canonical formatter unavailable or rejected a source file; "
+            "refusing to measure a reduction"
         )
-        stats.static_notes = static.notes
-    api_pre_static = api_surface(project.source_files, project.lang)
-    originals = {p: p.read_text(encoding="utf-8", errors="replace") for p in project.source_files}
-    for path_str, new_source in static.changed_files.items():
-        Path(path_str).write_text(new_source, encoding="utf-8")
-    check = run_tests(root, project.lang, timeout=test_timeout)
-    if not check.ok:
-        for p, original in originals.items():
-            p.write_text(original, encoding="utf-8")
-        stats.static_notes.append("static pass broke tests; reverted all static edits")
-    stats.loc_after_static = tree_loc(project.source_files, project.lang)
-    # static-layer removals are intentional (dead code); the LLM layer must
-    # preserve the post-static surface exactly.
-    api_ref = api_surface(project.source_files, project.lang)
+        return stats
+
+    runner = lambda root_, lang_: run_tests(
+        root_, lang_, timeout=test_timeout, command=test_command
+    )
+
+    def docs_preserved(sources: dict[Path, str]) -> bool:
+        current = {
+            path: documentation_layout(text, project.lang)
+            for path, text in sources.items()
+        }
+        return current == docs_baseline
+
+    def project_style_ok(paths: list[Path]) -> bool:
+        """Run configured format/lint checks on the files a layer changed."""
+        if project.lang != "python" or shutil.which("ruff") is None:
+            return True
+        config = root / "pyproject.toml"
+        if not config.is_file():
+            return True
+        text = config.read_text(encoding="utf-8", errors="replace")
+        if "[tool.ruff" not in text:
+            return True
+        relative = [str(path.relative_to(root)) for path in paths]
+        commands = [["ruff", "check", *relative]]
+        if "[tool.ruff.format]" in text:
+            commands.append(["ruff", "format", "--check", *relative])
+        return all(
+            subprocess.run(
+                command,
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            ).returncode
+            == 0
+            for command in commands
+        )
+
+    def _gate_layer(
+        name: str,
+        proposed_sources: dict[Path, str],
+        notes: list[str],
+        api_baseline=None,
+    ) -> tuple[int, list[str], bool, str]:
+        """Apply `proposed_sources`, run the suite, revert on red OR no-shrink.
+
+        Reverts ONLY this layer's changes — earlier successful layers stay.
+        """
+        # compute the actual edit set (what changed vs current on disk)
+        current = _snapshot(project.source_files)
+        changes = {
+            str(p): t for p, t in proposed_sources.items() if t != current.get(p)
+        }
+        if not changes:
+            return (
+                _tree_loc(project.source_files, project.lang),
+                list(notes),
+                True,
+                "unchanged",
+            )
+        pre_loc = _tree_loc(project.source_files, project.lang)
+        _write_changes(changes)
+        loc_after = _tree_loc(project.source_files, project.lang)
+        reason = ""
+        if loc_after >= pre_loc:
+            reason = "no canonical LOC reduction"
+        elif not project_style_ok([Path(path) for path in changes]):
+            reason = "project lint/format failed"
+        elif not docs_preserved(_snapshot(project.source_files)):
+            reason = "documentation changed"
+        elif api_baseline:
+            violations = api_violations(
+                api_baseline, api_surface(project.source_files, project.lang)
+            )
+            if violations:
+                reason = f"API changed: {violations[0]}"
+        if not reason:
+            check = runner(root, project.lang)
+            if not check.ok:
+                reason = f"tests failed: {check.output_tail[-200:]}"
+        if reason:
+            _restore(current)
+            layer_notes = list(notes) + [f"{name}: reverted by the gate ({reason})"]
+            return pre_loc, layer_notes, False, reason
+        return loc_after, list(notes), True, "accepted"
+
+    def _salvage_file_batches(
+        name: str,
+        batches: list[list[tuple[Path, str]]],
+        api_baseline=None,
+    ) -> tuple[list[str], int]:
+        """Bisect independent file edits, retaining every green subset."""
+        salvage_notes: list[str] = []
+        accepted = 0
+
+        def visit(batch: list[tuple[Path, str]]) -> None:
+            nonlocal accepted
+            if not batch:
+                return
+            _, _, kept, reason = _gate_layer(name, dict(batch), [], api_baseline)
+            if kept:
+                accepted += len(batch)
+                salvage_notes.append(f"{name}: kept subset of {len(batch)} file(s)")
+            elif len(batch) == 1:
+                salvage_notes.append(f"{name}: rejected {batch[0][0].name} ({reason})")
+            else:
+                middle = len(batch) // 2
+                visit(batch[:middle])
+                visit(batch[middle:])
+
+        for batch in batches:
+            visit(batch)
+        return salvage_notes, accepted
+
+    # ---- L1 external static ----
+    pre_loc = _tree_loc(project.source_files, project.lang)
+    static = static_pass(
+        root,
+        project.lang,
+        project.source_files,
+        project.source_files + project.test_files,
+        runner=runner,
+    )
+    changes = {Path(path): text for path, text in static.changed_files.items()}
+    if changes:
+        loc_after_static, gate_notes, committed, _ = _gate_layer(
+            "external-static", changes, [], api_original
+        )
+        static.notes += gate_notes
+
+        if not committed:
+            items = sorted(changes.items())
+            middle = len(items) // 2
+            salvage_notes, _ = _salvage_file_batches(
+                "external-static subset",
+                [items[:middle], items[middle:]],
+                api_original,
+            )
+            static.notes += salvage_notes
+            loc_after_static = _tree_loc(project.source_files, project.lang)
+    else:
+        loc_after_static = pre_loc
+    stats.static_notes += static.notes
+    stats.loc_after_static = loc_after_static
+    stats.layer_records.append(
+        {
+            "layer": "external-static",
+            "loc_before": pre_loc,
+            "loc_after": loc_after_static,
+            "committed": loc_after_static < pre_loc,
+            "notes": list(static.notes),
+        }
+    )
+
+    # Every layer holds to the API as it existed before reduction.
+    api_pre_layers = api_original
+    api_after_static = api_surface(project.source_files, project.lang)
     stats.static_removed_symbols = sorted(
         name
-        for file, api in api_pre_static.items()
-        for name in set(api) - set(api_ref.get(file, {}))
+        for file, api in api_original.items()
+        for name in set(api) - set(api_after_static.get(file, {}))
     )
 
-    # ---- L2 ----
-    # behavior-spec material for per-unit selection (select_spec): a
-    # repo-scale suite (click: ~50 files) cannot go into one prompt, and a
-    # 40k-char global prefix would feed every prompt tests unrelated to the
-    # unit being rewritten. Only needed when a model will be asked.
-    spec_tests: list[tuple[str, str]] = []
-    if backend is not None and backend.name != "none":
-        spec_tests = [
-            (
-                str(f.relative_to(root)),
-                f.read_text(encoding="utf-8", errors="replace"),
+    if project.lang == "python":
+        for name, transform in (("rules", _apply_rules), ("outline", _apply_outline)):
+            pre_loc = _tree_loc(project.source_files, project.lang)
+            proposed, notes = transform(_snapshot(project.source_files))
+            loc_after, notes, committed, _ = _gate_layer(
+                name, proposed, notes, api_pre_layers
             )
-            for f in project.test_files
-        ]
+            if name == "rules" and not committed:
+                from .rules import RULES
 
-    # C2b FIRST, and deliberately: it is project-wide, it targets the biggest
-    # opportunity both FIXTURE.md files document (cross-symbol copy-paste),
-    # and the greedy per-symbol loop once spent the whole budget before any
-    # cross-symbol pass ran. The mechanical merge is deterministic and
-    # suite-gated, so it runs even with no LLM at all (static-only trees get
-    # dedup yield too); the model is asked only for what it cannot prove.
-    from .llm_reduce import reduce_duplicate_groups
-
-    dedup_runner = lambda r, l: run_tests(r, l, timeout=test_timeout)  # noqa: E731
-    dedup_records = [] if strategy == "whole-file" else reduce_duplicate_groups(
-        backend, root, project.source_files, project.lang, dedup_runner,
-        attempts_per_group=max(1, attempts_per_file - 1), max_groups=dedup_groups,
-        spec_tests=spec_tests or None,
-    )
-    for rec in dedup_records:
-        stats.attempt_records.append(
-            {"file": rec.file, "attempt": rec.attempt, "outcome": rec.outcome,
-             "loc_before": rec.loc_before, "loc_after": rec.loc_after,
-             "detail": rec.detail[:200]}
-        )
-
-    if backend is not None and backend.name != "none":
-        from . import llm_reduce as _llm
-        from .llm_reduce import reduce_file, reduce_symbols
-
-        # live per-attempt output: a long GPU run must be readable while it
-        # runs, not only once each file is finished.
-        _llm.PROGRESS = lambda rec: print(
-            f"  [L2] {rec.file.split('/')[-1]} attempt={rec.attempt} "
-            f"{rec.outcome} {rec.loc_before}->{rec.loc_after}",
-            flush=True,
-        )
-
-        runner = lambda r, l: run_tests(r, l, timeout=test_timeout)  # noqa: E731
-        # C7 scheduling, with the click lesson baked in: biggest-file-first
-        # spent 100% of a 40-call budget inside core.py and 13 of 17 files
-        # never saw an LLM call. Rank by expected yield (size x per-file
-        # mutation score when a trust map is given) and ROUND-ROBIN the
-        # budget across files in bounded sweeps instead.
-        def _yield_key(f: Path) -> float:
-            loc = measure(
-                f.read_text(encoding="utf-8", errors="replace"), project.lang
-            ).code
-            t = (trust or {}).get(f.name, 0.7)
-            return loc * t
-
-        ordered = sorted(project.source_files, key=lambda f: -_yield_key(f))
-        if skip_files:
-            # trust-scaled aggressiveness: files whose behavior the suite
-            # cannot see (e.g. platform-dead code on this OS, measured by
-            # `lc audit`) stay out of the LLM's reach entirely
-            ordered = [f for f in ordered if f.name not in skip_files]
-        if max_files:
-            ordered = ordered[:max_files]
-
-        def _budget_gone(records) -> bool:
-            return any(
-                (r["outcome"] if isinstance(r, dict) else r.outcome) == "budget-exhausted"
-                for r in records
+                notes.append("combined rules failed; narrowing rule by rule")
+                for rule in RULES:
+                    trial, trial_notes = _apply_rules(
+                        _snapshot(project.source_files), {rule}
+                    )
+                    loc_after, narrowed_notes, rule_committed, _ = _gate_layer(
+                        f"rules:{rule}", trial, trial_notes, api_pre_layers
+                    )
+                    notes += narrowed_notes
+                    if not rule_committed:
+                        current = _snapshot(project.source_files)
+                        edits = sorted(
+                            (path, text)
+                            for path, text in trial.items()
+                            if text != current[path]
+                        )
+                        middle = len(edits) // 2
+                        salvage_notes, _ = _salvage_file_batches(
+                            f"rules:{rule} subset",
+                            [edits[:middle], edits[middle:]],
+                            api_pre_layers,
+                        )
+                        notes += salvage_notes
+                        loc_after = _tree_loc(project.source_files, project.lang)
+            elif name == "outline" and not committed:
+                notes.append("combined outline failed; narrowing file by file")
+                for path, text in _snapshot(project.source_files).items():
+                    trial, trial_notes = _apply_outline({path: text})
+                    loc_after, narrowed_notes, _, _ = _gate_layer(
+                        f"outline:{path.name}", trial, trial_notes, api_pre_layers
+                    )
+                    notes += narrowed_notes
+            stats.static_notes += notes
+            stats.layer_records.append(
+                {
+                    "layer": name,
+                    "loc_before": pre_loc,
+                    "loc_after": loc_after,
+                    "committed": loc_after < pre_loc,
+                    "notes": list(notes),
+                }
             )
 
-        if strategy == "whole-file":
-            for path in ordered:
-                best, best_loc, sweep_records = reduce_file(
-                    backend, root, path, project.lang, runner,
-                    attempts=attempts_per_file, spec_tests=spec_tests,
+    if ml_backend is not None:
+        pre_loc = _tree_loc(project.source_files, project.lang)
+        proposals, notes, considered = _ml_proposals(
+            _snapshot(project.source_files), project.lang, ml_backend
+        )
+        counters = Counter(
+            symbols_considered=considered,
+            proposed=len(proposals),
+            accepted=0,
+            accepted_loc=0,
+        )
+        from .ml_shrink import apply_edit, syntax_ok
+
+        for path, symbol, edit in proposals:
+            current = path.read_text(encoding="utf-8", errors="replace")
+            try:
+                candidate = apply_edit(current, symbol, edit)
+            except ValueError as exc:
+                counters["rejected_schema"] += 1
+                notes.append(f"{path.name}:{symbol['name']}: {exc}")
+                continue
+            if not syntax_ok(candidate, project.lang):
+                counters["rejected_syntax"] += 1
+                notes.append(f"{path.name}:{symbol['name']}: invalid syntax")
+                continue
+            before = _tree_loc(project.source_files, project.lang)
+            loc_after, candidate_notes, committed, reason = _gate_layer(
+                f"ml:{path.name}:{symbol['name']}",
+                {path: candidate},
+                [],
+                api_pre_layers,
+            )
+            notes += candidate_notes
+            if committed:
+                counters["accepted"] += 1
+                counters["accepted_loc"] += before - loc_after
+            else:
+                category = next(
+                    key
+                    for prefix, key in (
+                        ("no canonical", "loc"),
+                        ("project lint", "style"),
+                        ("documentation", "docs"),
+                        ("API", "api"),
+                        ("tests", "tests"),
+                    )
+                    if reason.startswith(prefix)
                 )
-                for rec in sweep_records:
-                    stats.attempt_records.append(
-                        {"file": rec.file, "attempt": rec.attempt, "outcome": rec.outcome,
-                         "loc_before": rec.loc_before, "loc_after": rec.loc_after,
-                         "detail": rec.detail[:200]}
-                    )
-                current_loc = measure(
-                    path.read_text(encoding="utf-8", errors="replace"), project.lang
-                ).code
-                if best_loc < current_loc:
-                    path.write_text(best + "\n", encoding="utf-8")
-                if _budget_gone(sweep_records):
-                    break
-        else:
-            # round-robin: a few symbols per file per sweep, so one big file
-            # can no longer monopolize the budget (click: core.py ate all 40
-            # calls; types.py/parser.py never got one). The fixpoint is an
-            # ACCEPTANCE-free sweep: a rejected symbol gets its retry inside
-            # the call (attempts_per_symbol), so re-asking it next sweep with
-            # the same prompt is pure waste.
-            done: set[Path] = set()
-            attempted: dict[Path, set[str]] = {}
-            budget_gone = False
-            while not budget_gone:
-                accepted_any = False
-                for path in ordered:
-                    if path in done:
-                        continue
-                    if measure(
-                        path.read_text(encoding="utf-8", errors="replace"), project.lang
-                    ).code < 8:
-                        done.add(path)
-                        continue
-                    sweep = reduce_symbols(
-                        backend, root, path, project.lang, runner,
-                        attempts_per_symbol=max(1, attempts_per_file - 1),
-                        spec_tests=spec_tests, max_symbols=symbols_per_sweep,
-                        exclude=attempted.get(path),
-                    )
-                    # records carry `path:key`; keep the per-file attempted set
-                    # growing so the next sweep proposes NEW symbols, not re-rolls
-                    keys = attempted.setdefault(path, set())
-                    for rec in sweep:
-                        stats.attempt_records.append(
-                            {"file": rec.file, "attempt": rec.attempt, "outcome": rec.outcome,
-                             "loc_before": rec.loc_before, "loc_after": rec.loc_after,
-                             "detail": rec.detail[:200]}
-                        )
-                        if ":" in rec.file:
-                            keys.add(rec.file.rsplit(":", 1)[1])
-                    if any(r.outcome == "accepted" for r in sweep):
-                        accepted_any = True
-                    if not sweep:
-                        done.add(path)
-                    if _budget_gone(sweep):
-                        budget_gone = True
-                        break
-                if not accepted_any:
-                    break
-            # whole-file sweep LAST: only a whole-file rewrite can dedup
-            # across symbols, and its rejects still feed hunk salvage
-            if whole_file_sweep and not budget_gone:
-                for path in ordered:
-                    current = path.read_text(encoding="utf-8", errors="replace")
-                    loc_now = measure(current, project.lang).code
-                    best, best_loc, sweep_records = reduce_file(
-                        backend, root, path, project.lang, runner,
-                        attempts=1, spec_tests=spec_tests,
-                    )
-                    for rec in sweep_records:
-                        stats.attempt_records.append(
-                            {"file": rec.file, "attempt": rec.attempt, "outcome": rec.outcome,
-                             "loc_before": rec.loc_before, "loc_after": rec.loc_after,
-                             "detail": rec.detail[:200]}
-                        )
-                    if best_loc < loc_now:
-                        path.write_text(best + "\n", encoding="utf-8")
-                    if _budget_gone(sweep_records):
-                        break
-        _llm.PROGRESS = None
-        final = run_tests(root, project.lang, timeout=test_timeout)
-        stats.tests_ok = final.ok
+                counters[f"rejected_{category}"] += 1
+        stats.ml_stats = dict(counters)
+        final_ml_loc = _tree_loc(project.source_files, project.lang)
+        stats.static_notes += notes
+        stats.layer_records.append(
+            {
+                "layer": "ml",
+                "loc_before": pre_loc,
+                "loc_after": final_ml_loc,
+                "committed": final_ml_loc < pre_loc,
+                "notes": list(notes),
+            }
+        )
 
-    stats.loc_final = tree_loc(project.source_files, project.lang)
+    stats.loc_final = _tree_loc(project.source_files, project.lang)
+
+    # ---- API check ----
     api_after = api_surface(project.source_files, project.lang)
-    violations = api_violations(api_ref, api_after)
+    violations = api_violations(api_pre_layers, api_after)
     stats.api_ok = not violations
     if violations:
         stats.static_notes.append(f"API violations: {violations[:3]}")
+
+    final_check = run_tests(
+        root, project.lang, timeout=test_timeout, command=test_command
+    )
+    stats.tests_ok = final_check.ok
+    stats.docs_ok = docs_preserved(_snapshot(project.source_files))
     return stats
 
 
-def write_report(stats: ReduceStats, out: Path, audit_result=None) -> Path:
+def write_report(stats: ShrinkStats, out: Path) -> Path:
     payload = {"reduce": stats.to_json()}
-    if audit_result is not None:
-        payload["audit"] = {
-            "total": audit_result.total,
-            "killed": audit_result.killed,
-            "score": round(audit_result.score, 4),
-        }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return out

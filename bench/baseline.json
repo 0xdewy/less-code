@@ -1,0 +1,48 @@
+{
+  "metric": "weighted canonical code LOC; invalid attempts score zero reduction",
+  "projects": [
+    {
+      "name": "boltons", "repo": "https://github.com/mahmoud/boltons.git",
+      "commit": "967864f89791509f9eb36b22b4579d36b72a6df2", "lang": "python",
+      "valid": true, "loc_start": 8939, "loc_final": 8738, "reduction_pct": 2.25,
+      "tests_ok": true, "api_ok": true, "docs_ok": true, "formatted_loc": true,
+      "notes": ["unsafe/import/version-upgrade fixes excluded; full suite passed"]
+    },
+    {
+      "name": "more-itertools", "repo": "https://github.com/more-itertools/more-itertools.git",
+      "commit": "bc8be1013ac90fe3c1df8aae646b02605d578818", "lang": "python",
+      "valid": true, "loc_start": 2652, "loc_final": 2642, "reduction_pct": 0.38,
+      "tests_ok": true, "api_ok": true, "docs_ok": true, "formatted_loc": true,
+      "notes": ["safe local rewrites and repeated validation helpers; full suite passed"]
+    },
+    {
+      "name": "yocto-queue", "repo": "https://github.com/sindresorhus/yocto-queue.git",
+      "commit": "b07eac099753833b29d06c614149904445739776", "lang": "javascript",
+      "valid": true, "loc_start": 64, "loc_final": 64, "reduction_pct": 0.0,
+      "tests_ok": true, "api_ok": true, "docs_ok": true, "formatted_loc": true,
+      "notes": ["Terser source compression excluded as an unreadable transformation"]
+    },
+    {
+      "name": "p-limit", "repo": "https://github.com/sindresorhus/p-limit.git",
+      "commit": "783068bb9e967fd7bea8642e1bf5a3627fe38bdf", "lang": "javascript",
+      "valid": true, "loc_start": 489, "loc_final": 489, "reduction_pct": 0.0,
+      "tests_ok": true, "api_ok": true, "docs_ok": true, "formatted_loc": true, "notes": []
+    },
+    {
+      "name": "itoa", "repo": "https://github.com/dtolnay/itoa.git",
+      "commit": "1577ed901354d0d7448ac162328f9dbf5183124c", "lang": "rust",
+      "valid": true, "loc_start": 414, "loc_final": 414, "reduction_pct": 0.0,
+      "tests_ok": true, "api_ok": true, "docs_ok": true, "formatted_loc": true, "notes": []
+    },
+    {
+      "name": "strsim-rs", "repo": "https://github.com/rapidfuzz/strsim-rs.git",
+      "commit": "dacc84c0dc61eff0ee0ff66962bcf2e17018ad26", "lang": "rust",
+      "valid": true, "loc_start": 1062, "loc_final": 1062, "reduction_pct": 0.0,
+      "tests_ok": true, "api_ok": true, "docs_ok": true, "formatted_loc": true, "notes": []
+    }
+  ],
+  "aggregate": {
+    "projects": 6, "valid": 6, "loc_start": 13620, "loc_final": 13409,
+    "reduction_pct": 1.55
+  }
+}

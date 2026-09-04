@@ -40,6 +40,10 @@ LIB = textwrap.dedent(
         words.join(" ")
     }
 
+    pub fn obsolete() -> u32 {
+        0
+    }
+
     /// A struct nobody constructs.
     pub struct Orphan {
         pub value: u32,
@@ -104,7 +108,15 @@ def run_pass(crate: Path):
 
 def test_finds_top_level_pub_items():
     names = [n for n, _, _ in _rust_top_level_pub_items(LIB)]
-    assert names == ["shout", "reverse_words", "Orphan", "helper", "bump", "fixed"]
+    assert names == [
+        "shout",
+        "reverse_words",
+        "obsolete",
+        "Orphan",
+        "helper",
+        "bump",
+        "fixed",
+    ]
     # `pub value: u32` is a field, not a top-level item: it must not be listed
     assert "value" not in names
 
@@ -135,9 +147,10 @@ def test_attached_start_lands_on_a_line_boundary():
 def test_removes_only_unreferenced_items(crate: Path):
     result = run_pass(crate)
     new = result.changed_files[str(crate / "src" / "lib.rs")]
-    assert "reverse_words" not in new
-    assert "struct Orphan" not in new
-    assert "Deprecated: nothing calls this any more" not in new
+    assert "pub fn obsolete" not in new
+    assert "reverse_words" in new
+    assert "struct Orphan" in new
+    assert "Deprecated: nothing calls this any more" in new
     for kept in ("pub fn shout", "pub fn helper", "pub fn bump", "pub fn fixed"):
         assert kept in new
     assert result.loc_removed > 0
@@ -145,8 +158,10 @@ def test_removes_only_unreferenced_items(crate: Path):
 
 def test_reference_from_a_test_file_keeps_the_item(crate: Path):
     (crate / "tests" / "it.rs").write_text(
-        TESTS.replace("use synthcrate::{bump, fixed, shout};",
-                      "use synthcrate::{bump, fixed, reverse_words, shout};")
+        TESTS.replace(
+            "use synthcrate::{bump, fixed, shout};",
+            "use synthcrate::{bump, fixed, reverse_words, shout};",
+        )
         + '\n#[test]\nfn rw() { assert_eq!(reverse_words("a b"), "b a"); }\n'
     )
     new = run_pass(crate).changed_files[str(crate / "src" / "lib.rs")]
@@ -166,7 +181,11 @@ def test_nothing_removed_when_everything_is_referenced(tmp_path: Path):
 @cargo
 def test_crate_still_compiles_and_tests_pass_after_removal(crate: Path):
     before = subprocess.run(
-        ["cargo", "test", "--quiet"], cwd=crate, capture_output=True, text=True, timeout=600
+        ["cargo", "test", "--quiet"],
+        cwd=crate,
+        capture_output=True,
+        text=True,
+        timeout=600,
     )
     assert before.returncode == 0, before.stdout + before.stderr
 
@@ -174,10 +193,14 @@ def test_crate_still_compiles_and_tests_pass_after_removal(crate: Path):
         Path(path).write_text(text)
 
     after = subprocess.run(
-        ["cargo", "test", "--quiet"], cwd=crate, capture_output=True, text=True, timeout=600
+        ["cargo", "test", "--quiet"],
+        cwd=crate,
+        capture_output=True,
+        text=True,
+        timeout=600,
     )
     assert after.returncode == 0, after.stdout + after.stderr
-    assert "reverse_words" not in (crate / "src" / "lib.rs").read_text()
+    assert "pub fn obsolete" not in (crate / "src" / "lib.rs").read_text()
 
 
 # ---- iteration 09: the clippy pedantic/complexity tier ---------------------
@@ -248,9 +271,7 @@ def test_a_red_suite_drops_the_pedantic_tier_whole(tmp_path):
 
     root = _crate(tmp_path, PEDANTIC_LIB)
     lib = root / "src" / "lib.rs"
-    result = _rust_clippy_pedantic(
-        root, [lib], runner=lambda _r, _l: _Red()
-    )
+    result = _rust_clippy_pedantic(root, [lib], runner=lambda _r, _l: _Red())
     assert result.changed_files == {}
     assert any("reverted by the gate" in n for n in result.notes) or not any(
         "kept" in n for n in result.notes

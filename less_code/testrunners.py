@@ -12,6 +12,7 @@ Two extras on top of the raw runners:
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 import sys
 import time
@@ -34,15 +35,19 @@ def _run(cmd: list[str], cwd: Path, timeout: int) -> TestResult:
     start = time.monotonic()
     try:
         proc = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout
+            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
         )
         tail = (proc.stdout + proc.stderr)[-4000:]
-        return TestResult(proc.returncode == 0, proc.returncode, time.monotonic() - start, tail)
+        return TestResult(
+            proc.returncode == 0, proc.returncode, time.monotonic() - start, tail
+        )
     except subprocess.TimeoutExpired as exc:
         tail = ((exc.stdout or b"") + (exc.stderr or b""))[-4000:]
         if isinstance(tail, bytes):
             tail = tail.decode("utf-8", errors="replace")
-        return TestResult(False, -1, time.monotonic() - start, f"TIMEOUT after {timeout}s\n{tail}")
+        return TestResult(
+            False, -1, time.monotonic() - start, f"TIMEOUT after {timeout}s\n{tail}"
+        )
 
 
 def gate_command(root: Path, lang: str) -> list[str]:
@@ -54,9 +59,20 @@ def gate_command(root: Path, lang: str) -> list[str]:
             cmd.append(f"--ignore={hidden}")
         return cmd
     if lang in ("javascript", "typescript"):
+        package = root / "package.json"
+        if package.is_file():
+            try:
+                scripts = json.loads(package.read_text()).get("scripts", {})
+            except (OSError, json.JSONDecodeError):
+                scripts = {}
+            if "test" in scripts:
+                return ["npm", "test", "--silent"]
         return ["node", "--test"]
     if lang == "rust":
-        return ["cargo", "test", "--quiet"]
+        cmd = ["cargo", "test", "--quiet"]
+        if (root / "Cargo.lock").is_file():
+            cmd.append("--locked")
+        return cmd
     raise ValueError(f"unsupported language {lang}")
 
 
@@ -67,8 +83,12 @@ def _probe_import(root: Path, name: str) -> str | None:
     code = f"import {name}\nprint({name}.__file__)"
     try:
         proc = subprocess.run(
-            [sys.executable, "-c", code], cwd=root,
-            capture_output=True, text=True, timeout=30,
+            [sys.executable, "-c", code],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -100,8 +120,10 @@ def shadowed_imports(root: Path, probe=None) -> list[str]:
             if entry.is_dir() and (entry / "__init__.py").is_file():
                 names.append(entry.name)
             elif (
-                entry.is_file() and entry.suffix == ".py"
-                and entry.name != "__init__.py" and not is_test_file(entry)
+                entry.is_file()
+                and entry.suffix == ".py"
+                and entry.name != "__init__.py"
+                and not is_test_file(entry)
                 and not entry.name.startswith("conftest")
             ):
                 names.append(entry.stem)
@@ -143,34 +165,29 @@ def tree_hash(root: Path, lang: str) -> str:
     return digest.hexdigest()
 
 
-def cache_clear() -> None:
-    _CACHE.clear()
-    STATS["hits"] = STATS["misses"] = 0
-
-
 def run_tests(
     root: Path,
     lang: str,
     timeout: int = 600,
     quiet: bool = False,
     use_cache: bool = True,
+    command: list[str] | None = None,
 ) -> TestResult:
     """Run the frozen suite. `use_cache=False` bypasses the content-hash cache."""
-    cmd = gate_command(root, lang)
+    cmd = command or gate_command(root, lang)
     if not use_cache:
         return _run(cmd, root, timeout)
-    key = f"{lang}:{root}:{tree_hash(root, lang)}"
+    key = f"{lang}:{root}:{json.dumps(cmd)}:{tree_hash(root, lang)}"
     hit = _CACHE.get(key)
     if hit is not None:
         STATS["hits"] += 1
-        return TestResult(hit.ok, hit.exit_code, hit.duration_s, hit.output_tail, cached=True)
+        return TestResult(
+            hit.ok, hit.exit_code, hit.duration_s, hit.output_tail, cached=True
+        )
     STATS["misses"] += 1
     result = _run(cmd, root, timeout)
     _CACHE[key] = result
     return result
-
-
-# ---- hidden tests (bench only) ----
 
 
 def run_hidden_tests(root: Path, lang: str, timeout: int = 600) -> TestResult | None:
@@ -184,9 +201,20 @@ def run_hidden_tests(root: Path, lang: str, timeout: int = 600) -> TestResult | 
     if not hidden.is_dir():
         return None
     if lang == "python":
-        cmd = [sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider", str(hidden)]
+        cmd = [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "--no-header",
+            "-p",
+            "no:cacheprovider",
+            str(hidden),
+        ]
     elif lang in ("javascript", "typescript"):
-        files = sorted(str(p) for p in hidden.rglob("*") if p.suffix in (".js", ".mjs", ".cjs"))
+        files = sorted(
+            str(p) for p in hidden.rglob("*") if p.suffix in (".js", ".mjs", ".cjs")
+        )
         if not files:
             return None
         cmd = ["node", "--test", *files]

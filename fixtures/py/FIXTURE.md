@@ -11,7 +11,7 @@ stdlib-only, deterministic, %-formatting era style.
 |---|---|---|
 | tests | `uv run python -m pytest fixtures/py -q` | 97 passed (192 assert statements) |
 | LOC | `uv run lc analyze fixtures/py` | lang=python, **525 code-LOC** (95 comment, 85 blank) |
-| audit | `uv run lc audit fixtures/py --max-mutants 40 --out /tmp/opencode/audit-py.json` | **score 0.925** (37/40 killed) |
+| historical mutation audit (retired command) | previous measurement | **score 0.925** (37/40 killed) |
 
 The only surviving mutants (py-site-242/248/255) sit inside the dead
 legacy section — unkillable by design because the tests must not touch
@@ -40,7 +40,7 @@ Baseline as it stands, all re-measured on the restored file:
 | tests | `uv run python -m pytest fixtures/py -q` | 97 passed |
 | hidden | `uv run python -m pytest fixtures/py/tests_hidden -q` | 32 passed |
 | LOC | `uv run lc analyze fixtures/py` | **537 canonical code-LOC** (525 raw) |
-| audit | `uv run lc audit fixtures/py --max-mutants 40` | **score 0.925** (37/40) |
+| historical mutation audit (retired command) | previous measurement | **score 0.925** (37/40) |
 
 The "Measured" table above quotes 525 because it predates canonical-formatted
 counting (B1); 525 raw and 537 canonical are the same file under two metrics,

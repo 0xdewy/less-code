@@ -59,30 +59,77 @@ def count_ast_nodes(source: str, lang: str) -> int:
 
 
 FORMAT_CMDS = {
-    "python": ["ruff", "format", "--line-length", str(PRINT_WIDTH), "--stdin-filename", "x.py", "-"],
-    "javascript": ["prettier", "--stdin-filepath", "x.js", "--print-width", str(PRINT_WIDTH)],
-    "typescript": ["prettier", "--stdin-filepath", "x.ts", "--print-width", str(PRINT_WIDTH)],
-    "rust": ["rustfmt", "--emit", "stdout", "--config", f"max_width={PRINT_WIDTH}"],
+    "python": [
+        "ruff",
+        "format",
+        "--line-length",
+        str(PRINT_WIDTH),
+        "--stdin-filename",
+        "x.py",
+        "-",
+    ],
+    "javascript": [
+        "prettier",
+        "--stdin-filepath",
+        "x.js",
+        "--print-width",
+        str(PRINT_WIDTH),
+    ],
+    "typescript": [
+        "prettier",
+        "--stdin-filepath",
+        "x.ts",
+        "--print-width",
+        str(PRINT_WIDTH),
+    ],
+    "rust": [
+        "rustfmt",
+        "--emit",
+        "stdout",
+        "--edition",
+        "2024",
+        "--config",
+        f"max_width={PRINT_WIDTH}",
+    ],
 }
+PRETTIER_NPX = ["npx", "--yes", "prettier@3.9.6"]
+
+
+def format_command(lang: str) -> list[str] | None:
+    cmd = FORMAT_CMDS.get(lang)
+    if not cmd:
+        return None
+    if shutil.which(cmd[0]) is not None:
+        return cmd
+    if lang in ("javascript", "typescript") and shutil.which("npx") is not None:
+        filename = "x.ts" if lang == "typescript" else "x.js"
+        return PRETTIER_NPX + [
+            "--stdin-filepath",
+            filename,
+            "--print-width",
+            str(PRINT_WIDTH),
+        ]
+    return None
 
 
 def formatter_available(lang: str) -> bool:
-    cmd = FORMAT_CMDS.get(lang)
-    return bool(cmd) and shutil.which(cmd[0]) is not None
+    return format_command(lang) is not None
 
 
 @lru_cache(maxsize=512)
 def canonical_format(source: str, lang: str) -> tuple[str, bool]:
     """(text, formatted). Falls back to the raw text when the tool is absent
     or rejects the input (a syntactically broken candidate, typically)."""
-    cmd = FORMAT_CMDS.get(lang)
-    if not cmd or shutil.which(cmd[0]) is None:
+    cmd = format_command(lang)
+    if not cmd:
         return source, False
     try:
-        proc = subprocess.run(cmd, input=source, capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(
+            cmd, input=source, capture_output=True, text=True, timeout=60, check=False
+        )
     except (OSError, subprocess.SubprocessError):
         return source, False
-    if proc.returncode != 0 or not proc.stdout.strip():
+    if proc.returncode != 0:
         return source, False
     return proc.stdout, True
 
@@ -95,11 +142,22 @@ def count_python(source: str) -> Loc:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     except (tokenize.TokenError, IndentationError, SyntaxError):
         tokens = []
-    boundary = {None, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.NL, tokenize.SEMI}
+    boundary = {
+        None,
+        tokenize.NEWLINE,
+        tokenize.INDENT,
+        tokenize.DEDENT,
+        tokenize.NL,
+        tokenize.SEMI,
+    }
     prev_significant = None
     skipped_types = {
-        tokenize.COMMENT, tokenize.NL, tokenize.INDENT, tokenize.DEDENT,
-        tokenize.ENDMARKER, tokenize.ENCODING,
+        tokenize.COMMENT,
+        tokenize.NL,
+        tokenize.INDENT,
+        tokenize.DEDENT,
+        tokenize.ENDMARKER,
+        tokenize.ENCODING,
     }
     for tok in tokens:
         if tok.type in skipped_types:
@@ -107,9 +165,11 @@ def count_python(source: str) -> Loc:
         if tok.type == tokenize.NEWLINE:
             prev_significant = tok.type
             continue
-        if tok.type == tokenize.STRING and (
-            '"""' in tok.string or "'''" in tok.string
-        ) and prev_significant in boundary:
+        if (
+            tok.type == tokenize.STRING
+            and ('"""' in tok.string or "'''" in tok.string)
+            and prev_significant in boundary
+        ):
             doc_lines.update(range(tok.start[0], tok.end[0] + 1))
             prev_significant = tok.type
             continue
@@ -175,10 +235,14 @@ LANG_COUNTERS = {
 
 def count_source(source: str, lang: str, format_first: bool = False) -> Loc:
     """Count code-LOC. `format_first` canonicalises the text first (B1)."""
-    text, formatted = canonical_format(source, lang) if format_first else (source, False)
+    text, formatted = (
+        canonical_format(source, lang) if format_first else (source, False)
+    )
     base = LANG_COUNTERS[lang](text)
     return Loc(
-        base.code, base.comment, base.blank,
+        base.code,
+        base.comment,
+        base.blank,
         formatted=formatted,
         tokens=count_tokens(text),
         ast_nodes=count_ast_nodes(text, lang),
@@ -207,5 +271,11 @@ def count_tree(files: list[Path], lang: str, format_first: bool = False) -> Loc:
         tokens += loc.tokens
         nodes += loc.ast_nodes
         formatted = formatted and loc.formatted
-    return Loc(code, comment, blank, formatted=formatted and format_first,
-               tokens=tokens, ast_nodes=nodes)
+    return Loc(
+        code,
+        comment,
+        blank,
+        formatted=formatted and format_first,
+        tokens=tokens,
+        ast_nodes=nodes,
+    )

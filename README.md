@@ -1,268 +1,109 @@
 # less-code
 
-Hybrid **static + LLM + RL (GRPO)** lines-of-code reduction for Rust /
-JavaScript / Python, with a hard verify gate: **a reduction is accepted only
-if the frozen test suite stays green, the public API is preserved, and
-code-LOC shrinks.** Everything else reverts.
+Shrink a Python / JavaScript / Rust codebase using the existing static
+analysis ecosystem plus a focused semantic-preserving rule library,
+gated by the frozen test suite and a public-API check.
 
-"Public API preserved" means preserved **relative to the post-static surface**:
-the L1 static layer removes provably-dead public items by design (nothing in the
-project, tests included, references them), and every layer above it is then held
-to that surface exactly. So a reduced tree's API can be *smaller* than the
-original's by exactly the dead items L1 dropped — the report names the baseline
-(`api_baseline: "post-static"`) and lists them (`static_removed_symbols`), and
-`REPRODUCE.md` in each evidence directory repeats the list. Read those two
-fields before treating a reduced tree as a drop-in replacement: on the rust
-fixture L1 dropped `is_blank`, `indent_lines` and `reverse_words`, and on the
-python one the five symbols of the legacy section.
+```
+L0  canonical formatter (not counted as reduction)
+L1  external static tools: ruff / snapshot-isolated clippy
+L1b rule library: AST semantic-preserving rewrites
+L1c guard-block outlining: project-wide repeated guards -> helper
+L2  optional per-symbol LLM rewrites
+```
+
+A reduction is accepted only if the frozen suite stays green, the public
+API and documentation are preserved, and code-LOC (after canonical formatting) shrinks.
+Everything else reverts.
 
 ## Architecture
 
-```
-L0  normalize (format-only; not counted as reduction)
-L1  static provably-safe pass
-      python: AST dead-code/unused-symbol removal, `ruff check --fix` safe
-              tier automatically and the unsafe tier as its own gated layer
-              (LOC-reducing families: RET/SIM/C4/PIE/UP/PLR1/PERF/FURB), plus
-              unreachable-code removal after `return`/`raise` — all test-gated
-      rust:   cargo fix + clippy --fix (compiler-verified), then the
-              `clippy::pedantic`/`::complexity` tier as its own gated,
-              tree-restoring step (on the rs fixture it ADDS 19 lines —
-              `#[must_use]`, `# Panics` docs — so the size gate drops it),
-              then dead `pub` item removal — brace-matched extraction incl. doc comments and
-              attributes, kept only if no project file (tests included)
-              mentions the name
-      js:     dead exports via import-graph scan, cross-checked with
-              `npx knip` when it is available (exports only — never
-              knip's unused-*files* report, which would delete
-              `tests_hidden/`), plus non-exported top-level functions
-              and consts nothing in the project references
-L1b rule library (less_code/rules.py): deterministic, semantics-preserving
-      AST rewrites, applied file-wide and gated by the frozen suite
-      python: `if c: return True/return False` -> `return c`;
-              append-loop -> comprehension / `list()`, including an `if`
-              guard as a comprehension clause and a twice-read temp bound with
-              a walrus in that clause when it is the guard's first-evaluated
-              name (so evaluation order is provably unchanged);
-              `t = 0` + `+=` loop -> `sum()` (float start preserved);
-              fresh-list + `.sort()` -> `sorted()`;
-              `try/except X: raise` -> the try body;
-              `if x == "A": return 1 / elif ... / return d` ladders ->
-              `{...}.get(x, d)` (one hashable non-bool key type only);
-              ordered threshold ladders -> a lazy `next(...)` tuple scan,
-              which keeps the comparisons and their order exactly;
-              a `None`-sentinel manual max loop -> `max(it, key=..., 
-              default=None)` — a numeric sentinel is declined, because
-              `-1` is not provably equivalent to `default=None`
-      on red the gate narrows rule by rule, keeping only what stays green
-L1c guard-block outlining (less_code/outline.py, python): project-wide, not
-      peephole. Runs of `if <test>: raise` / `name = expr` statements that
-      repeat >= 3 times across function bodies — after alpha-renaming and
-      constant abstraction — are outlined into one module-level `_`-prefixed
-      helper and each site becomes a single call line. Cross-module groups
-      only travel along import edges that already exist, and the emitted
-      import is relative inside a package (`from ._textwrap import _check`),
-      flat absolute in a package-free tree — a *new* module-level dependency
-      can break a contract the suite pins (click's `test_light_imports`) or
-      manufacture an import cycle. Names the block binds
-      are returned and unpacked; names it reads are passed by value, and only
-      `Name`/`Constant` leaves may become arguments so an eagerly-evaluated
-      argument can never raise before a guard does. `return`/`break`/`yield`,
-      lambdas, nested defs, walruses and `global`/`nonlocal` targets are
-      refused, as is any free name not provably bound at the window. Error
-      messages are never rewritten: a message that is the same everywhere is
-      re-emitted verbatim, a message that differs becomes a literal argument.
-      A group that does not pay for its own helper in code lines is declined.
-      On the py fixture this is 107 code lines from four helpers.
-L1.5 audit: mutation score of the test suite (trust oracle)
-      built-in mutation engine (py: AST, js/rust: masked token swaps)
-L2  LLM semantic reduction, verify-gated
-      pre-gates (cheapest first): not-smaller -> docs-preservation ->
-        parse (ast/node --check/cargo check) -> API surface -> frozen
-        tests, + a content-hash cache so the same tree is never tested
-        twice. The docs gate rejects ANY deletion or rewording of
-        documentation (python docstrings and `#` comments incl. `#:`
-        Sphinx docs, js `/** */`, rust `///`) — doc loss is invisible to
-        the suite and free in code-LOC, and doc-eating is measurably a 7B
-        model's DEFAULT strategy on mature code (40% of its click
-        proposals)
-      **per-symbol proposals are the default**: the model rewrites ONE
-        top-level symbol at a time, biggest first (python via ast, js/rust via
-        the brace matcher), given that symbol, a signatures-only map of the
-        rest of the file and the test spec. Each proposal goes through the
-        same gate, so one budget buys ~20 independent bets instead of one
-        all-or-nothing whole-file gamble
-      **a big python class is decomposed into its methods** (`Class.method`
-        units over a 40-LOC threshold), each spliced over its own ast span,
-        prompted with the class's other method signatures and `__init__`'s
-        full body; the class docstring and attributes are outside every
-        method span and so are never touched
-      **duplicate-group proposals** (less_code/dedup.py) are the third
-        granularity: near-duplicate symbols/methods are found project-wide
-        (comments stripped, literals folded, identifiers erased, difflib
-        ratio >= 0.6), and each group gets ONE proposal — a shared
-        `_`-prefixed helper plus minimal rewrites of every member — applied
-        as a single MULTI-FILE candidate through a gate that snapshots and
-        restores every touched file. This is the only shape that can merge
-        `csv_escape_row`/`_owned`/`_rows` or six pasted SKU validators
-      an optional whole-file sweep runs last with hunk salvage on its rejects
-      local ollama (qwen2.5-coder) or any OpenAI-compatible endpoint;
-      test suite included in prompt as behavior spec; per-attempt feedback —
-      a test failure *and* an `api-changed` rejection's concrete
-      missing/changed/added symbol list both go into the next prompt;
-      hard LLM-call budget for shared-GPU machines
-      hunk decomposition: a rejected whole-file rewrite is split at top-level
-        symbol boundaries and delta-debugged, so the correct 2 of 3 functions
-        are accepted instead of the whole candidate being thrown away
-L3  GRPO-trained reducer (Qwen2.5-Coder QLoRA, 8GB-friendly)
-      reward = frozen-test gate x LOC delta - anti-hack penalties, plus a
-      mutation-weighted variant that scales the LOC term by the sample suite's
-      mutant kill rate (a saving is only as trustworthy as the oracle that
-      certified it); the gate itself is never scaled
-```
+The pipeline runs each layer independently and gates it with the frozen
+test suite: applied, tested, kept iff `tests_ok AND api_ok AND loc_down`,
+otherwise reverted (snapshot/restore). A misfiring layer costs only its
+own yield.
 
-**Metric**: code-LOC is counted *after canonical formatting* (`ruff format` /
-`prettier` / `rustfmt` at width 88), so joining lines or minifying buys
-nothing; the report records whether a formatter was available, plus token and
-AST-node counts as secondary metrics.
+**Why this works:**
+- Static tools (ruff and clippy) are mature, free, and get the
+  bulk of provably-safe deletions.
+- The rule library covers semantic-preserving rewrites no general tool
+  covers (`if-elif` -> `dict.get`, accumulator -> `sum()`,
+  manual max -> `max(key=..., default=None)` with sentinel refusal, etc.).
+- Guard-block outlining factors repeated `if X: raise` patterns into
+  one shared `_check` helper across an entire project.
+- An optional LLM backend handles residual per-symbol simplifications; every
+  proposal passes the same formatter, tests, API, and documentation gates.
 
-**Safety**: each fixture carries a `tests_hidden/` suite that is excluded from
-the prompt spec and from the frozen verify gate. Only `lc bench` runs it, as
-an independent check that a reduction did not change behaviour the visible
-suite failed to pin.
-
-Research basis: `docs/research.md` (synthesis; 53 numbered sources, 52
-distinct URLs, all listed in full at the end of that file, incl. the
-verified gap that no published GRPO-for-LOC-reduction work exists).
-
-## Quickstart
+## Install & quickstart
 
 ```bash
-uv sync
-uv run lc analyze fixtures/py            # map + LOC baseline
-uv run lc audit fixtures/py              # mutation score of the suite
-uv run lc reduce fixtures/py \
-    --copy-to /tmp/py-work \             # reduce a COPY; fixtures/ stays pristine
-    --model qwen2.5-coder:7b \           # needs: ollama serve
-    --attempts 2 --max-llm-calls 6 \
-    --num-ctx 16384 --out report.json
-uv run lc report --json report.json      # markdown summary
-uv run lc bench --static-only            # all fixtures + hidden tests, no GPU
+uv sync                                # python deps (pytest, ruff)
+uv run lc --help
+
+uv run lc analyze path/to/code         # map + LOC baseline
+uv run lc shrink  path/to/code         # shrink in place
+uv run lc shrink  path/to/code \
+         --copy-to /tmp/work           # shrink a copy instead
+uv run lc report --json shrink-report.json
+uv run lc corpus                         # six pinned real projects
 ```
 
-`lc bench [dir]` reduces every fixture under `dir` (default `fixtures/`) in a
-scratch copy — the repo is never mutated — runs the hidden suite afterwards,
-prints a markdown table and appends one JSON row per (fixture, config, commit)
-to `bench/results/<timestamp>.jsonl`: LOC before/after static/final, static
-and hybrid %, tests/api/hidden green, LLM calls and wall seconds. **Rows are
-appended as each fixture finishes**, so an interrupted run still leaves the
-fixtures that completed. A row whose language has no formatter installed is
-marked `"metric": "raw"`, shouted about on stderr and printed as `**RAW**` in
-the table — raw physical lines are not comparable with canonical ones.
+External tools are picked up automatically if installed:
+- Python: `ruff`
+- JavaScript / TypeScript: `prettier` (via `npx`) plus explicit AST rules
+- Rust: snapshot-isolated `cargo clippy --fix`, `cargo fmt`
 
-`--static-only` runs L1 only (no GPU). `--max-llm-calls N` bounds GPU time.
-`--fixture NAME` benches a single fixture. `--keep-tree DIR` copies each
-reduced scratch tree to `DIR/<fixture>` instead of deleting it — **use it for
-any run whose number you intend to cite**: a bench row without the tree that
-produced it is the tool's own self-report and nothing more.
+## CLI
 
-Likewise `lc reduce --copy-to DIR` reduces a copy and leaves the original
-alone. `reduce` rewrites its target in place otherwise, and warns on stderr
-when that target is a git tree with uncommitted changes.
+| command | purpose |
+|---|---|
+| `lc analyze <path>` | language, source/test files, canonical code-LOC baseline |
+| `lc shrink <path>` | run the layered pipeline; report per-layer yield |
+| `lc report --json <file>` | render a shrink report as markdown |
+| `lc corpus` | clone and score the pinned Python/JavaScript/Rust corpus |
 
-## Reducing external repositories
+## Safety
 
-The gate runs the target's own suite, so the target must match the runner
-conventions (`pytest` / `node --test` / `cargo test`, `testrunners.py`) and
-its suite must run under the host venv's tool versions — python-dateutil's
-suite, for instance, is a hard error under pytest 8.4. For a src-layout
-project, editable-install **the copy** into the host venv so `import pkg`
-resolves to the tree under reduction:
+* Every candidate change is gated by the frozen test suite + a public-API
+  surface check. A red suite reverts the layer that caused it.
+* Each candidate is counted after canonical formatting
+  (`ruff format` / `prettier --print-width 88` / `rustfmt` at width 88),
+  so joining lines or minifying buys nothing. When the formatter is
+  absent, raw LOC is used and the report shouts about it.
+* Every reduction layer preserves the exact multiset of source comments and
+  docstrings. Documentation-losing candidates are reverted and score zero.
+* `shrink` always restores the tree on `Ctrl-C` (signal handler).
 
-```bash
-cp -a target/ /tmp/work && uv pip install -e /tmp/work
-PATH=$PWD/.venv/bin:$PATH .venv/bin/lc reduce /tmp/work --static-only --out r.json
-```
+## What it shrinks, in priority order
 
-Two hardening rules learned reducing click/packaging/tenacity: the pipeline
-**refuses to start** if a target package imports from outside the tree
-(`shadowed_imports` preflight — a host-venv dependency, e.g. pytest's own
-`packaging`, can shadow the editable and make the gate test the wrong code;
-`uv run` re-sync can reinstall that shadow, so prefer the direct venv
-binary), and dev-tool code is out of scope by design: `docs/`, `examples/`,
-`benchmarks/` are never mapped, and entry-point files (`noxfile.py`,
-`setup.py`, ...) are scanned for references but never dead-stripped — their
-functions are invoked by name from CI, not imported.
+1. **Dead code** — unused top-level defs/classes (Python, JS, Rust via
+   the static pass and the external tools).
+2. **Mechanical simplifications** — `if c: return True/return False`
+   -> `return c`, sorted/append/sum loops -> `sum()`/`sorted()`/
+   comprehensions, manual max/min -> `max(key=..., default=None)`
+   (numeric sentinels declined because `-1` is not provably equivalent
+   to `default=None`).
+3. **Repeated guards** — three or more identical `if X: raise ...` blocks
+   across function bodies become one module-level helper, each site a
+   one-line call. The helper travels along existing import edges, never
+   introducing a new dependency.
+4. **External tool yield** — whatever `ruff` / `clippy --fix` /
+   the language-specific static tools find.
+5. **Optional model proposals** — bounded per-symbol rewrites supplied by
+   `--ml-cli`, accepted only when every normal gate passes.
 
-## GRPO
+## What it does NOT do
 
-```bash
-uv run python grpo/build_dataset.py      # CPU: verify-gated samples from fixtures
-uv run python grpo/train.py --validate-config   # CPU: config check, no model load
-uv run python grpo/train.py --steps 10   # GPU: QLoRA smoke (0.5B, ~minutes)
-uv run python grpo/train.py --steps 10 --reward mutation-weighted   # weighted variant
-```
-
-Dataset rows: `prompt` (instruction + verbose unit + frozen tests as spec),
-`unit_source`/`unit_loc` for reward normalization, and `mutation_score` — the
-kill rate of that sample's fixture suite, measured on a throwaway copy by
-`less_code.audit` (`--mutants N`, default 20; `--mutants 0` skips it).
-
-Two TRL-compatible reward callables in `grpo/rewards.py`:
-
-| callable | reward | when |
-|---|---|---|
-| `reward_fn` | `gate × (1 + 0.5·loc_delta) − penalties` | default |
-| `reward_fn_mutation_weighted` | `gate × (1 + 0.5·loc_delta × mutation_score)` | mixed-quality corpora |
-
-Both share the same gate — frozen tests green **and** public API preserved,
-else exactly −1 — plus api-preservation, minification and degenerate-output
-guards; tests run on CPU inside the reward. The weighted variant scales only
-the *shaping* term, so a weak oracle earns less credit for the same line delta
-while a behavior break is still −1 no matter how strong the suite is. At
-`mutation_score == 1.0`, and for samples with no score recorded, the two are
-identical.
+* No LLM training or bundled model. The deterministic reducer runs without
+  one; `--ml-cli` can connect a model for bounded per-symbol proposals.
+* No whole-file semantic rewrite by an LLM.
+* No doc-eating. No comments are removed by the deterministic layers.
 
 ## Repo layout
 
 ```
-less_code/   the tool        tests/      255 tests (unit + integration + reward)
-fixtures/    py/js/rs demo targets (mutation-scored suites + tests_hidden/)
-bench/       results/*.jsonl — one bench row per fixture/config/commit
-grpo/        dataset builder, reward fn, TRL trainer
-docs/        research synthesis + sub-reports
-iterations/  goal-loop records    status.json  durable run state
-CRITERIA.md  fixed acceptance criteria for the build
+less_code/    the tool        tests/    unit + end-to-end tests
+fixtures/     py / js / rs demo targets
+bench/        pinned real-project corpus + weighted post-formatter baseline
+CRITERIA.md   acceptance criteria for the build
 ```
-
-## Status vs goal
-
-All three demos pass their ≥ 25 % bar, **each with a preserved, independently
-checkable reduced tree** and both suites (frozen + hidden) green. Every number
-is canonical code-LOC measured off the pristine fixture.
-
-| criterion | result | artifact |
-|---|---|---|
-| C1 research | ✅ | `docs/research.md` + three sub-reports, 53 numbered sources |
-| C2 tool | ✅ | `uv run pytest -q` → **259 passed**; `uv run lc --help` exit 0 |
-| **C3 py** | ✅ **33.5 %** — 537 → 357, static only, 0 LLM calls | `docs/evidence/py-static-357/` |
-| **C4 js** | ✅ **29.1 %** — 601 → 553 static → 426, 3 LLM calls | `docs/evidence/js-reduced-426/` (+ `REPRODUCE.md`) |
-| **C5 rs** | ✅ **25.5 %** — 392 → 372 static → 292, 4 chained rounds | `docs/evidence/rs-reduced-292/` (+ `REPRODUCE.md`) |
-| C6 grpo | ✅ | 69 samples with mutation scores; both reward variants; `--validate-config` exit 0 |
-| C7 review | 🔄 in progress | first pass FAILed with 11 defects (`docs/evidence/C7-REVIEW.md`); all addressed in `iterations/12-rs-settlement-and-c7-fixes.md`, re-review pending |
-
-Two things the numbers do not say on their own:
-
-- **py's 33.5 % is entirely deterministic** — no model, no GPU, reproducible to
-  the line. 107 of the 180 lines are guard-block outlining (four helpers over
-  30 sites), the rest dead-code removal, the rule library and ruff's
-  LOC-reducing tiers.
-- **js and rs are carried by hunk salvage.** Across both, *every* whole-file
-  proposal a 7B model made was rejected — wrong API, unparseable, or a red
-  test — and *every* accepted line was recovered by splitting those rejects at
-  symbol boundaries and delta-debugging them. Discarding a rejected candidate
-  whole was throwing away all of the model's usable output.
-
-LLM rounds are not deterministic: re-running the recipes in the two
-`REPRODUCE.md` files will land on different numbers. The preserved trees, not
-the logs, are the evidence.

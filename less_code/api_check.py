@@ -14,42 +14,57 @@ import re
 from pathlib import Path
 
 
+def _argument(arg: ast.arg) -> str:
+    return arg.arg + (f":{ast.unparse(arg.annotation)}" if arg.annotation else "")
+
+
 def _signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
-    """`def(a,b=1,*rest,c=2,**kw)` — names and default values are both API."""
+    """Names, defaults, annotations and return type are all API."""
     a = node.args
     positional = a.posonlyargs + a.args
     defaults: list[str] = [""] * (len(positional) - len(a.defaults))
     defaults += [ast.unparse(d) for d in a.defaults]
     parts = [
-        f"{arg.arg}={default}" if default else arg.arg
-        for arg, default in zip(positional, defaults)
+        f"{_argument(arg)}={default}" if default else _argument(arg)
+        for arg, default in zip(positional, defaults, strict=True)
     ]
     if a.posonlyargs:
         parts.insert(len(a.posonlyargs), "/")
     if a.vararg:
-        parts.append(f"*{a.vararg.arg}")
+        parts.append(f"*{_argument(a.vararg)}")
     elif a.kwonlyargs:
         parts.append("*")
-    for arg, default in zip(a.kwonlyargs, a.kw_defaults):
-        parts.append(f"{arg.arg}={ast.unparse(default)}" if default is not None else arg.arg)
+    for arg, default in zip(a.kwonlyargs, a.kw_defaults, strict=True):
+        parts.append(
+            f"{_argument(arg)}={ast.unparse(default)}"
+            if default is not None
+            else _argument(arg)
+        )
     if a.kwarg:
-        parts.append(f"**{a.kwarg.arg}")
+        parts.append(f"**{_argument(a.kwarg)}")
     prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
-    return f"{prefix}({','.join(parts)})"
+    returns = f"->{ast.unparse(node.returns)}" if node.returns else ""
+    return f"{prefix}({','.join(parts)}){returns}"
 
 
 def python_api(source: str) -> dict[str, str]:
-    """Top-level functions/classes plus `Class.method` entries."""
+    """Public top-level functions/classes plus their public methods."""
     api: dict[str, str] = {}
     tree = ast.parse(source)
     for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef)
+        ) and not node.name.startswith("_"):
             api[node.name] = _signature(node)
-        elif isinstance(node, ast.ClassDef):
+        elif isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
             bases = ",".join(ast.unparse(b) for b in node.bases)
             api[node.name] = f"class({bases})" if bases else "class"
             for child in node.body:
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+                    not child.name.startswith("_")
+                    or child.name.startswith("__")
+                    and child.name.endswith("__")
+                ):
                     decorators = sorted(
                         ast.unparse(d).split("(")[0] for d in child.decorator_list
                     )
@@ -63,30 +78,62 @@ JS_EXPORT = re.compile(
     re.MULTILINE,
 )
 JS_EXPORT_LIST = re.compile(r"export\s*\{([^}]*)\}", re.MULTILINE)
-JS_EXPORT_DEFAULT = re.compile(r"export\s+default\s+(?!(?:async\s+)?(?:function|class)\b)", re.MULTILINE)
+JS_EXPORT_DEFAULT = re.compile(
+    r"export\s+default\s+(?!(?:async\s+)?(?:function|class)\b)", re.MULTILINE
+)
 JS_MODULE_EXPORTS_PROP = re.compile(r"module\.exports\.(\w+)\s*=", re.MULTILINE)
 JS_MODULE_EXPORTS_OBJ = re.compile(r"module\.exports\s*=\s*\{([^}]*)\}", re.MULTILINE)
-JS_MODULE_EXPORTS_NAME = re.compile(r"module\.exports\s*=\s*(\w+)\s*;?\s*$", re.MULTILINE)
+JS_MODULE_EXPORTS_NAME = re.compile(
+    r"module\.exports\s*=\s*(\w+)\s*;?\s*$", re.MULTILINE
+)
 JS_EXPORTS_PROP = re.compile(r"(?<!module\.)\bexports\.(\w+)\s*=", re.MULTILINE)
+JS_FUNCTION = re.compile(
+    r"(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*(\w+)"
+    r"\s*\(([^)]*)\)",
+    re.MULTILINE,
+)
+
+
+def _js_functions(source: str) -> dict[str, str]:
+    return {
+        name: "function(" + re.sub(r"\s+", " ", params).strip() + ")"
+        for name, params in JS_FUNCTION.findall(source)
+    }
 
 
 def js_api(source: str) -> dict[str, str]:
     """ESM (`export`, `export {a, b as c}`, `export default`) and CJS
     (`module.exports = {…}`, `module.exports.x`, `exports.x`)."""
-    api: dict[str, str] = {m: "export" for group in JS_EXPORT.findall(source) for m in group if m}
+    functions = _js_functions(source)
+    api: dict[str, str] = {
+        m: "export" for group in JS_EXPORT.findall(source) for m in group if m
+    }
+    for name in set(api) & set(functions):
+        api[name] = functions[name]
     for body in JS_EXPORT_LIST.findall(source):
         for item in body.split(","):
             item = item.strip()
             if not item:
                 continue
             name = item.split(" as ")[-1].strip() if " as " in item else item
-            api[name] = "export"
+            local = item.split(" as ")[0].strip()
+            api[name] = functions.get(local, "export")
     if JS_EXPORT_DEFAULT.search(source) or re.search(
         r"export\s+default\s+(?:async\s+)?(?:function|class)\b", source
     ):
-        api["default"] = "export-default"
-    for name in JS_MODULE_EXPORTS_PROP.findall(source) + JS_EXPORTS_PROP.findall(source):
-        api[name] = "export"
+        match = re.search(
+            r"export\s+default\s+(?:async\s+)?function\s*\*?\s*(\w+)?",
+            source,
+        )
+        api["default"] = (
+            functions.get(match.group(1), "export-default")
+            if match
+            else "export-default"
+        )
+    for name in JS_MODULE_EXPORTS_PROP.findall(source) + JS_EXPORTS_PROP.findall(
+        source
+    ):
+        api[name] = functions.get(name, "export")
     for body in JS_MODULE_EXPORTS_OBJ.findall(source):
         for item in body.split(","):
             item = item.strip()
@@ -94,7 +141,7 @@ def js_api(source: str) -> dict[str, str]:
                 continue
             api[item.split(":")[0].strip()] = "export"
     for name in JS_MODULE_EXPORTS_NAME.findall(source):
-        api[name] = "export"
+        api[name] = functions.get(name, "export")
     return api
 
 
@@ -108,8 +155,19 @@ RUST_PUB_FN = re.compile(
     r"^\s+pub(?:\([^)]*\))?\s+(?:async\s+)?(?:unsafe\s+)?(?:const\s+)?fn\s+(\w+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)",
     re.MULTILINE,
 )
-RUST_PUB_FIELD = re.compile(r"^\s+pub(?:\([^)]*\))?\s+(\w+)\s*:\s*([^,\n]+)", re.MULTILINE)
-RUST_BLOCK = re.compile(r"^(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?(struct|enum|trait)\s+(\w+)[^;{]*\{", re.MULTILINE)
+RUST_PUB_FIELD = re.compile(
+    r"^\s+pub(?:\([^)]*\))?\s+(\w+)\s*:\s*([^,\n]+)", re.MULTILINE
+)
+RUST_BLOCK = re.compile(
+    r"^(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?(struct|enum|trait)\s+(\w+)[^;{]*\{",
+    re.MULTILINE,
+)
+RUST_TOP_FN = re.compile(
+    r"^\s*pub(?:\([^)]*\))?\s+"
+    r"((?:(?:async|unsafe|const)\s+)*fn\s+(\w+)\s*(?:<[^>{}]*>)?"
+    r"\s*\([^)]*\)\s*(?:->\s*[^\{;]+)?)\s*(?:\{|;)",
+    re.MULTILINE,
+)
 
 
 def _block_body(source: str, brace_at: int) -> str:
@@ -128,7 +186,11 @@ def _block_body(source: str, brace_at: int) -> str:
 def rust_api(source: str) -> dict[str, str]:
     """`pub` items, `pub` methods inside `impl` blocks (`Type::method` with
     its parameter list) and `pub` struct/enum fields (`Type.field`)."""
-    api: dict[str, str] = {m: "pub" for group in RUST_PUB.findall(source) for m in group if m}
+    api: dict[str, str] = {
+        m: "pub" for group in RUST_PUB.findall(source) for m in group if m
+    }
+    for signature, name in RUST_TOP_FN.findall(source):
+        api[name] = "pub " + re.sub(r"\s+", " ", signature).strip()
     for m in RUST_IMPL.finditer(source):
         target = re.sub(r"\s+", " ", m.group(1)).strip()
         name = target.split(" for ")[-1].split("<")[0].strip()
@@ -143,7 +205,12 @@ def rust_api(source: str) -> dict[str, str]:
     return api
 
 
-EXTRACTORS = {"python": python_api, "javascript": js_api, "typescript": js_api, "rust": rust_api}
+EXTRACTORS = {
+    "python": python_api,
+    "javascript": js_api,
+    "typescript": js_api,
+    "rust": rust_api,
+}
 
 
 def api_surface(files: list[Path], lang: str) -> dict[str, dict[str, str]]:
@@ -158,17 +225,16 @@ def api_violations(
     before: dict[str, dict[str, str]], after: dict[str, dict[str, str]]
 ) -> list[str]:
     """Files whose public API changed. Underscore-prefixed additions are
-    allowed (internal helpers created during dedup); removals/changes of
+    allowed (internal helpers may be created by reducers); removals/changes of
     existing public symbols are violations."""
     problems: list[str] = []
     for file, api in before.items():
         new_api = after.get(file, {})
         missing = set(api) - set(new_api)
-        changed = {
-            k for k in set(api) & set(new_api) if api[k] != new_api[k]
-        }
+        changed = {k for k in set(api) & set(new_api) if api[k] != new_api[k]}
         added_public = {
-            k for k in set(new_api) - set(api)
+            k
+            for k in set(new_api) - set(api)
             if not k.split(".")[-1].split("::")[-1].startswith("_")
         }
         parts = []

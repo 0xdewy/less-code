@@ -25,11 +25,18 @@ Public API:
 from __future__ import annotations
 
 import ast
+import io
 import re
+import tokenize
 from dataclasses import dataclass
 
 RULES = (
     "bool-return",
+    "conditional-return",
+    "conditional-assignment",
+    "inline-return-temp",
+    "dict-build-to-literal",
+    "boolean-loop-to-any-all",
     "append-loop-to-comprehension",
     "accumulate-to-sum",
     "sort-to-sorted",
@@ -77,7 +84,14 @@ def _boolish(node: ast.expr) -> bool:
         return all(_boolish(v) for v in node.values)
     if isinstance(node, ast.Constant) and isinstance(node.value, bool):
         return True
-    return bool(isinstance(node, ast.Call) and _is_name(node.func) and (node.func.id in ('bool', 'isinstance', 'issubclass', 'hasattr', 'callable', 'any', 'all')))
+    return bool(
+        isinstance(node, ast.Call)
+        and _is_name(node.func)
+        and (
+            node.func.id
+            in ("bool", "isinstance", "issubclass", "hasattr", "callable", "any", "all")
+        )
+    )
 
 
 def _names(node: ast.AST) -> set[str]:
@@ -94,10 +108,15 @@ def scope_name_lines(scope: ast.AST) -> dict[str, list[int]]:
     for node in ast.walk(scope):
         if isinstance(node, ast.Name):
             out.setdefault(node.id, []).append(node.lineno)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for name in node.names:
+                out.setdefault(f"!declared:{name}", []).append(node.lineno)
     return out
 
 
-def _leaks(scope_lines: dict[str, list[int]], names: set[str], start: int, end: int) -> bool:
+def _leaks(
+    scope_lines: dict[str, list[int]], names: set[str], start: int, end: int
+) -> bool:
     """Does a loop target escape the loop it is about to be absorbed into?
 
     A `for` target leaks into the enclosing *function* scope in Python, so a
@@ -112,8 +131,12 @@ def _leaks(scope_lines: dict[str, list[int]], names: set[str], start: int, end: 
     return False
 
 
-def _call(func: str, args: list[ast.expr], keywords: list[ast.keyword] | None = None) -> ast.Call:
-    return ast.Call(func=ast.Name(id=func, ctx=ast.Load()), args=args, keywords=keywords or [])
+def _call(
+    func: str, args: list[ast.expr], keywords: list[ast.keyword] | None = None
+) -> ast.Call:
+    return ast.Call(
+        func=ast.Name(id=func, ctx=ast.Load()), args=args, keywords=keywords or []
+    )
 
 
 def _comprehension(
@@ -133,17 +156,14 @@ def _span(nodes: list[ast.stmt]) -> tuple[int, int]:
 
 
 def _end_col(nodes: list[ast.stmt], end: int) -> int:
-    return max(
-        (n.end_col_offset or 0) for n in nodes if n.end_lineno == end
-    )
-
+    return max((n.end_col_offset or 0) for n in nodes if n.end_lineno == end)
 
 
 class _Substitute(ast.NodeTransformer):
     def __init__(self, name: str, value: ast.expr) -> None:
         self.name, self.value = name, value
 
-    def visit_Name(self, node: ast.Name):  # noqa: N802
+    def visit_Name(self, node: ast.Name):
         if node.id == self.name and isinstance(node.ctx, ast.Load):
             return self.value
         return node
@@ -207,7 +227,10 @@ def _pure(node: ast.AST) -> bool:
     kind of rewrite the frozen suite might not catch).
     """
     return not any(
-        isinstance(n, (ast.Call, ast.Await, ast.Yield, ast.YieldFrom, ast.NamedExpr, ast.Lambda))
+        isinstance(
+            n,
+            (ast.Call, ast.Await, ast.Yield, ast.YieldFrom, ast.NamedExpr, ast.Lambda),
+        )
         for n in ast.walk(node)
     )
 
@@ -256,7 +279,7 @@ class _SubstituteFirst(ast.NodeTransformer):
     def __init__(self, name: str, value: ast.expr) -> None:
         self.name, self.value, self.done = name, value, False
 
-    def visit_Name(self, node: ast.Name):  # noqa: N802
+    def visit_Name(self, node: ast.Name):
         if not self.done and node.id == self.name and isinstance(node.ctx, ast.Load):
             self.done = True
             return self.value
@@ -264,7 +287,8 @@ class _SubstituteFirst(ast.NodeTransformer):
 
 
 def _collapse_loop_body(
-    body: list[ast.stmt], class_body: bool = False,
+    body: list[ast.stmt],
+    class_body: bool = False,
 ) -> tuple[ast.stmt, ast.expr | None, set[str]] | None:
     """`(final_stmt, condition_or_None, bound_names)` for a loop body.
 
@@ -314,14 +338,18 @@ def _collapse_loop_body(
             cond = sub.visit(cond) if cond is not None else None
             final = sub.visit(final)
         elif (
-            uses > 1 and cond is not None and not class_body
+            uses > 1
+            and cond is not None
+            and not class_body
             and _first_evaluated_name(cond) == name
         ):
             if walruses:
                 return None  # one walrus is all the order proof covers
             walruses += 1
             target = ast.Name(id=name, ctx=ast.Store())
-            cond = _SubstituteFirst(name, ast.NamedExpr(target=target, value=stmt.value)).visit(cond)
+            cond = _SubstituteFirst(
+                name, ast.NamedExpr(target=target, value=stmt.value)
+            ).visit(cond)
         else:
             return None
     return final, cond, bound
@@ -348,7 +376,9 @@ def _fresh_list(value: ast.expr) -> ast.expr | None:
 # ---- rules -----------------------------------------------------------------
 
 
-def _rule_bool_return(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
+def _rule_bool_return(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
     """`if c: return True` + `return False` -> `return c` / `return bool(c)`.
 
     Both the fall-through form and the explicit `else:` form; the inverted
@@ -376,8 +406,219 @@ def _rule_bool_return(body: list[ast.stmt], i: int, scope_lines: dict, class_bod
     else:
         return None
     start, end = _span(covered)
-    return Rewrite("bool-return", start, end, [ast.Return(value=value)], stmt.col_offset,
-                   _end_col(covered, end))
+    return Rewrite(
+        "bool-return",
+        start,
+        end,
+        [ast.Return(value=value)],
+        stmt.col_offset,
+        _end_col(covered, end),
+    )
+
+
+def _rule_conditional_return(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """`if c: return a; return b` -> `return a if c else b`.
+
+    The explicit `else: return b` spelling is accepted too. Conditional
+    expressions retain the branch's lazy evaluation and evaluate the test
+    once, exactly like the statement form.
+    """
+    stmt = body[i]
+    if not (
+        isinstance(stmt, ast.If)
+        and len(stmt.body) == 1
+        and isinstance(stmt.body[0], ast.Return)
+        and stmt.body[0].value is not None
+    ):
+        return None
+    if len(stmt.orelse) == 1 and isinstance(stmt.orelse[0], ast.Return):
+        second, covered = stmt.orelse[0], [stmt]
+    elif not stmt.orelse and i + 1 < len(body) and isinstance(body[i + 1], ast.Return):
+        second, covered = body[i + 1], [stmt, body[i + 1]]
+    else:
+        return None
+    if second.value is None:
+        return None
+    value = ast.IfExp(test=stmt.test, body=stmt.body[0].value, orelse=second.value)
+    if len(" " * stmt.col_offset + "return " + ast.unparse(value)) > 88:
+        return None
+    start, end = _span(covered)
+    return Rewrite(
+        "conditional-return",
+        start,
+        end,
+        [ast.Return(value=value)],
+        stmt.col_offset,
+        _end_col(covered, end),
+    )
+
+
+def _rule_inline_return_temp(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """`result = expression; return result` -> `return expression`."""
+    assign = body[i]
+    if not (
+        isinstance(assign, ast.Assign)
+        and len(assign.targets) == 1
+        and _is_name(assign.targets[0])
+        and i + 1 < len(body)
+        and isinstance(body[i + 1], ast.Return)
+        and _is_name(body[i + 1].value, assign.targets[0].id)
+        and f"!declared:{assign.targets[0].id}" not in scope_lines
+    ):
+        return None
+    covered = [assign, body[i + 1]]
+    start, end = _span(covered)
+    return Rewrite(
+        "inline-return-temp",
+        start,
+        end,
+        [ast.Return(value=assign.value)],
+        assign.col_offset,
+        _end_col(covered, end),
+    )
+
+
+def _rule_conditional_assignment(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """`if c: x = a; else: x = b` -> `x = a if c else b`."""
+    stmt = body[i]
+    if not (
+        isinstance(stmt, ast.If)
+        and len(stmt.body) == 1
+        and len(stmt.orelse) == 1
+        and isinstance(stmt.body[0], ast.Assign)
+        and isinstance(stmt.orelse[0], ast.Assign)
+    ):
+        return None
+    first, second = stmt.body[0], stmt.orelse[0]
+    if not (
+        len(first.targets) == len(second.targets) == 1
+        and _is_name(first.targets[0])
+        and _is_name(second.targets[0], first.targets[0].id)
+        and first.type_comment is None
+        and second.type_comment is None
+        and not isinstance(first.value, ast.Lambda)
+        and not isinstance(second.value, ast.Lambda)
+    ):
+        return None
+    value = ast.IfExp(test=stmt.test, body=first.value, orelse=second.value)
+    if (
+        len(" " * stmt.col_offset + first.targets[0].id + " = " + ast.unparse(value))
+        > 88
+    ):
+        return None
+    start, end = _span([stmt])
+    return Rewrite(
+        "conditional-assignment",
+        start,
+        end,
+        [ast.Assign(targets=first.targets, value=value)],
+        stmt.col_offset,
+        _end_col([stmt], end),
+    )
+
+
+def _rule_dict_build_literal(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """Fold consecutive writes to a fresh empty dict into its literal."""
+    assign = body[i]
+    if not (
+        isinstance(assign, ast.Assign)
+        and len(assign.targets) == 1
+        and _is_name(assign.targets[0])
+        and isinstance(assign.value, ast.Dict)
+        and not assign.value.keys
+    ):
+        return None
+    name = assign.targets[0].id
+    keys: list[ast.expr] = []
+    values: list[ast.expr] = []
+    end = i + 1
+    while end < len(body):
+        item = body[end]
+        if not (
+            isinstance(item, ast.Assign)
+            and len(item.targets) == 1
+            and isinstance(item.targets[0], ast.Subscript)
+            and _is_name(item.targets[0].value, name)
+            and name not in _names(item.targets[0].slice)
+            and name not in _names(item.value)
+        ):
+            break
+        keys.append(item.targets[0].slice)
+        values.append(item.value)
+        end += 1
+    if len(keys) < 2:
+        return None
+    covered = body[i:end]
+    start_line, end_line = _span(covered)
+    return Rewrite(
+        "dict-build-to-literal",
+        start_line,
+        end_line,
+        [
+            ast.Assign(
+                targets=assign.targets,
+                value=ast.Dict(keys=keys, values=values),
+            )
+        ],
+        assign.col_offset,
+        _end_col(covered, end_line),
+    )
+
+
+def _rule_boolean_loop(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """Collapse a short-circuiting boolean search loop to `any` or `all`."""
+    loop = body[i]
+    if not (
+        isinstance(loop, ast.For)
+        and not loop.orelse
+        and len(loop.body) == 1
+        and isinstance(loop.body[0], ast.If)
+        and not loop.body[0].orelse
+        and len(loop.body[0].body) == 1
+        and isinstance(loop.body[0].body[0], ast.Return)
+        and i + 1 < len(body)
+        and isinstance(body[i + 1], ast.Return)
+    ):
+        return None
+    branch = loop.body[0].body[0].value
+    fallback = body[i + 1].value
+    if not (
+        isinstance(branch, ast.Constant)
+        and isinstance(branch.value, bool)
+        and isinstance(fallback, ast.Constant)
+        and isinstance(fallback.value, bool)
+        and branch.value is not fallback.value
+    ):
+        return None
+    test = loop.body[0].test
+    if branch.value:
+        func, element = "any", test
+    else:
+        func, element = "all", ast.UnaryOp(op=ast.Not(), operand=test)
+    generator = ast.GeneratorExp(
+        elt=element,
+        generators=[_comprehension(loop.target, loop.iter)],
+    )
+    covered = [loop, body[i + 1]]
+    start, end = _span(covered)
+    return Rewrite(
+        "boolean-loop-to-any-all",
+        start,
+        end,
+        [ast.Return(value=_call(func, [generator]))],
+        loop.col_offset,
+        _end_col(covered, end),
+    )
 
 
 def _append_target(stmt: ast.stmt, name: str) -> ast.expr | None:
@@ -393,7 +634,9 @@ def _append_target(stmt: ast.stmt, name: str) -> ast.expr | None:
     return call.args[0]
 
 
-def _rule_append_loop(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
+def _rule_append_loop(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
     """`x = []` + `for t in it: x.append(e)` -> `x = [e for t in it]`."""
     assign = body[i]
     if not (
@@ -424,17 +667,27 @@ def _rule_append_loop(body: list[ast.stmt], i: int, scope_lines: dict, class_bod
         return None
     if cond is not None and name in _names(cond):
         return None
-    if leaked & _names(loop.iter) or _leaks(scope_lines, leaked, loop.lineno, loop.end_lineno):
+    if leaked & _names(loop.iter) or _leaks(
+        scope_lines, leaked, loop.lineno, loop.end_lineno
+    ):
         return None
-    generator = _comprehension(loop.target, loop.iter, [cond] if cond is not None else [])
+    generator = _comprehension(
+        loop.target, loop.iter, [cond] if cond is not None else []
+    )
     if not cond and _is_name(element) and _is_name(generator.target, element.id):
         value = _call("list", [loop.iter])  # `[t for t in it]` is just `list(it)`
     else:
         value = ast.ListComp(elt=element, generators=[generator])
     new = ast.Assign(targets=[ast.Name(id=name, ctx=ast.Store())], value=value)
     start, end = _span([assign, loop])
-    return Rewrite("append-loop-to-comprehension", start, end, [new], assign.col_offset,
-                   _end_col([assign, loop], end))
+    return Rewrite(
+        "append-loop-to-comprehension",
+        start,
+        end,
+        [new],
+        assign.col_offset,
+        _end_col([assign, loop], end),
+    )
 
 
 def _added_expr(stmt: ast.stmt, name: str) -> ast.expr | None:
@@ -453,7 +706,9 @@ def _added_expr(stmt: ast.stmt, name: str) -> ast.expr | None:
     return None
 
 
-def _rule_accumulate_sum(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
+def _rule_accumulate_sum(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
     """`t = 0` + `for v in xs: t += f(v)` -> `t = sum(f(v) for v in xs)`."""
     assign = body[i]
     if not (
@@ -483,24 +738,38 @@ def _rule_accumulate_sum(body: list[ast.stmt], i: int, scope_lines: dict, class_
         return None
     if cond is not None and name in _names(cond):
         return None
-    if leaked & _names(loop.iter) or _leaks(scope_lines, leaked, loop.lineno, loop.end_lineno):
+    if leaked & _names(loop.iter) or _leaks(
+        scope_lines, leaked, loop.lineno, loop.end_lineno
+    ):
         return None
     gen = ast.GeneratorExp(
         elt=added,
-        generators=[_comprehension(loop.target, loop.iter, [cond] if cond is not None else [])],
+        generators=[
+            _comprehension(loop.target, loop.iter, [cond] if cond is not None else [])
+        ],
     )
     args = [gen]
     if type(assign.value.value) is not int:
         # `total = 0.0` must stay a float even for an empty iterable, so the
         # original initial value becomes sum()'s explicit start.
         args.append(assign.value)
-    new = ast.Assign(targets=[ast.Name(id=name, ctx=ast.Store())], value=_call("sum", args))
+    new = ast.Assign(
+        targets=[ast.Name(id=name, ctx=ast.Store())], value=_call("sum", args)
+    )
     start, end = _span([assign, loop])
-    return Rewrite("accumulate-to-sum", start, end, [new], assign.col_offset,
-                   _end_col([assign, loop], end))
+    return Rewrite(
+        "accumulate-to-sum",
+        start,
+        end,
+        [new],
+        assign.col_offset,
+        _end_col([assign, loop], end),
+    )
 
 
-def _rule_sort_to_sorted(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
+def _rule_sort_to_sorted(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
     """`x = <list expr>` + `x.sort(...)` -> `x = sorted(<list expr>, ...)`.
 
     Only fires when the value is *provably* a fresh list (a literal or a
@@ -535,11 +804,19 @@ def _rule_sort_to_sorted(body: list[ast.stmt], i: int, scope_lines: dict, class_
         value=_call("sorted", [inner], list(call.keywords)),
     )
     start, end = _span([assign, call_stmt])
-    return Rewrite("sort-to-sorted", start, end, [new], assign.col_offset,
-                   _end_col([assign, call_stmt], end))
+    return Rewrite(
+        "sort-to-sorted",
+        start,
+        end,
+        [new],
+        assign.col_offset,
+        _end_col([assign, call_stmt], end),
+    )
 
 
-def _rule_bare_reraise(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
+def _rule_bare_reraise(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
     """`try: B except X: raise` -> `B` (every handler a bare re-raise)."""
     stmt = body[i]
     if not isinstance(stmt, ast.Try) or stmt.orelse or stmt.finalbody:
@@ -557,8 +834,14 @@ def _rule_bare_reraise(body: list[ast.stmt], i: int, scope_lines: dict, class_bo
     # a `try` body containing `continue`/`break`/`return` is still equivalent:
     # the handlers re-raise unchanged, so the try adds no observable behaviour.
     start, end = _span([stmt])
-    return Rewrite("drop-bare-reraise", start, end, list(stmt.body), stmt.col_offset,
-                   _end_col([stmt], end))
+    return Rewrite(
+        "drop-bare-reraise",
+        start,
+        end,
+        list(stmt.body),
+        stmt.col_offset,
+        _end_col([stmt], end),
+    )
 
 
 # ---- if/elif ladders and the manual max loop (iteration 09) -----------------
@@ -640,7 +923,9 @@ def _all_constants(nodes: list[ast.expr]) -> bool:
     return all(isinstance(n, ast.Constant) for n in nodes)
 
 
-def _rule_if_ladder_dict(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
+def _rule_if_ladder_dict(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
     """`if x == 'A': return 1` ... `return 9` -> `return {...}.get(x, 9)`.
 
     Only for `==` against constants of one hashable, non-bool type, all
@@ -679,15 +964,21 @@ def _rule_if_ladder_dict(body: list[ast.stmt], i: int, scope_lines: dict, class_
     call.args = [subject, default]
     start, end = _span(covered)
     return Rewrite(
-        "if-ladder-to-dict", start, end, [ast.Return(value=call)],
-        covered[0].col_offset, _end_col(covered, end),
+        "if-ladder-to-dict",
+        start,
+        end,
+        [ast.Return(value=call)],
+        covered[0].col_offset,
+        _end_col(covered, end),
     )
 
 
 _ORDER_OPS = {ast.Gt: ast.Gt, ast.GtE: ast.GtE, ast.Lt: ast.Lt, ast.LtE: ast.LtE}
 
 
-def _rule_threshold_ladder(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
+def _rule_threshold_ladder(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
     """`if q >= 100: return .15` ... `return 0` -> an ordered tuple scan.
 
     `next((v for t, v in ((100, .15), ...) if q >= t), 0.0)` evaluates the
@@ -703,7 +994,11 @@ def _rule_threshold_ladder(body: list[ast.stmt], i: int, scope_lines: dict, clas
     tests, values, default, covered = ladder
     if len(tests) < 3:
         return None
-    op_type = type(tests[0].ops[0]) if isinstance(tests[0], ast.Compare) and tests[0].ops else None
+    op_type = (
+        type(tests[0].ops[0])
+        if isinstance(tests[0], ast.Compare) and tests[0].ops
+        else None
+    )
     if op_type not in _ORDER_OPS:
         return None
     subject = _same_subject(tests, (op_type,))
@@ -730,18 +1025,26 @@ def _rule_threshold_ladder(body: list[ast.stmt], i: int, scope_lines: dict, clas
         generators=[
             ast.comprehension(
                 target=ast.Tuple(
-                    elts=[ast.Name(id=key, ctx=ast.Store()), ast.Name(id=val, ctx=ast.Store())],
+                    elts=[
+                        ast.Name(id=key, ctx=ast.Store()),
+                        ast.Name(id=val, ctx=ast.Store()),
+                    ],
                     ctx=ast.Store(),
                 ),
-                iter=pairs, ifs=[guard], is_async=0,
+                iter=pairs,
+                ifs=[guard],
+                is_async=0,
             )
         ],
     )
     start, end = _span(covered)
     return Rewrite(
-        "threshold-ladder-to-scan", start, end,
+        "threshold-ladder-to-scan",
+        start,
+        end,
         [ast.Return(value=_call("next", [gen, default]))],
-        covered[0].col_offset, _end_col(covered, end),
+        covered[0].col_offset,
+        _end_col(covered, end),
     )
 
 
@@ -754,7 +1057,9 @@ def _fresh(base: str, taken: set[str]) -> str:
     return name
 
 
-def _rule_max_loop(body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False) -> Rewrite | None:
+def _rule_max_loop(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
     """A `None`-sentinel manual max loop -> `max(it, key=..., default=None)`.
 
     Exactly this shape, and no other::
@@ -779,9 +1084,17 @@ def _rule_max_loop(body: list[ast.stmt], i: int, scope_lines: dict, class_body: 
     if i + 2 >= len(body):
         return None
     first, second, loop = body[i], body[i + 1], body[i + 2]
-    if not (isinstance(first, ast.Assign) and len(first.targets) == 1 and _is_name(first.targets[0])):
+    if not (
+        isinstance(first, ast.Assign)
+        and len(first.targets) == 1
+        and _is_name(first.targets[0])
+    ):
         return None
-    if not (isinstance(second, ast.Assign) and len(second.targets) == 1 and _is_name(second.targets[0])):
+    if not (
+        isinstance(second, ast.Assign)
+        and len(second.targets) == 1
+        and _is_name(second.targets[0])
+    ):
         return None
     if not (_is_const(first.value, None) and _is_const(second.value, None)):
         return None
@@ -794,7 +1107,11 @@ def _rule_max_loop(body: list[ast.stmt], i: int, scope_lines: dict, class_body: 
     if len(loop.body) != 2:
         return None
     value_stmt, guard = loop.body
-    if not (isinstance(value_stmt, ast.Assign) and len(value_stmt.targets) == 1 and _is_name(value_stmt.targets[0])):
+    if not (
+        isinstance(value_stmt, ast.Assign)
+        and len(value_stmt.targets) == 1
+        and _is_name(value_stmt.targets[0])
+    ):
         return None
     temp = value_stmt.targets[0].id
     # the iterable is evaluated once, at the same point, in both forms, so it
@@ -806,24 +1123,36 @@ def _rule_max_loop(body: list[ast.stmt], i: int, scope_lines: dict, class_body: 
     if not isinstance(guard, ast.If) or guard.orelse or len(guard.body) != 2:
         return None
     test = guard.test
-    if not (isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or) and len(test.values) == 2):
+    if not (
+        isinstance(test, ast.BoolOp)
+        and isinstance(test.op, ast.Or)
+        and len(test.values) == 2
+    ):
         return None
     sentinel, compare = test.values
     if not (
-        isinstance(sentinel, ast.Compare) and _is_name(sentinel.left, best_v)
-        and len(sentinel.ops) == 1 and isinstance(sentinel.ops[0], ast.Is)
+        isinstance(sentinel, ast.Compare)
+        and _is_name(sentinel.left, best_v)
+        and len(sentinel.ops) == 1
+        and isinstance(sentinel.ops[0], ast.Is)
         and _is_const(sentinel.comparators[0], None)
     ):
         return None
     if not (
-        isinstance(compare, ast.Compare) and _is_name(compare.left, temp)
-        and len(compare.ops) == 1 and isinstance(compare.ops[0], ast.Gt)
+        isinstance(compare, ast.Compare)
+        and _is_name(compare.left, temp)
+        and len(compare.ops) == 1
+        and isinstance(compare.ops[0], ast.Gt)
         and _is_name(compare.comparators[0], best_v)
     ):
         return None
     assigns = {}
     for stmt in guard.body:
-        if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and _is_name(stmt.targets[0])):
+        if not (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and _is_name(stmt.targets[0])
+        ):
             return None
         assigns[stmt.targets[0].id] = stmt.value
     if set(assigns) != {best, best_v}:
@@ -837,19 +1166,29 @@ def _rule_max_loop(body: list[ast.stmt], i: int, scope_lines: dict, class_body: 
         return None
     key = ast.Lambda(
         args=ast.arguments(
-            posonlyargs=[], args=[ast.arg(arg=item)], kwonlyargs=[],
-            kw_defaults=[], defaults=[],
+            posonlyargs=[],
+            args=[ast.arg(arg=item)],
+            kwonlyargs=[],
+            kw_defaults=[],
+            defaults=[],
         ),
         body=value_stmt.value,
     )
     call = _call(
-        "max", [loop.iter],
-        [ast.keyword(arg="key", value=key), ast.keyword(arg="default", value=ast.Constant(value=None))],
+        "max",
+        [loop.iter],
+        [
+            ast.keyword(arg="key", value=key),
+            ast.keyword(arg="default", value=ast.Constant(value=None)),
+        ],
     )
     return Rewrite(
-        "max-loop-to-max", start, end,
+        "max-loop-to-max",
+        start,
+        end,
         [ast.Assign(targets=[ast.Name(id=best, ctx=ast.Store())], value=call)],
-        first.col_offset, _end_col(covered, end),
+        first.col_offset,
+        _end_col(covered, end),
     )
 
 
@@ -964,24 +1303,39 @@ def _rule_loop_dict_update(block, i, scope_lines, class_body):
     if not isinstance(node, ast.For) or node.orelse or not node.body:
         return None
     target = node.target
-    if not (isinstance(target, ast.Tuple) and len(target.elts) == 2
-            and all(isinstance(e, ast.Name) for e in target.elts)):
+    if not (
+        isinstance(target, ast.Tuple)
+        and len(target.elts) == 2
+        and all(isinstance(e, ast.Name) for e in target.elts)
+    ):
         return None
     k, v = (e.id for e in target.elts)
     it = node.iter
-    if not (isinstance(it, ast.Call) and not it.keywords and not it.args
-            and isinstance(it.func, ast.Attribute) and it.func.attr == "items"):
+    if not (
+        isinstance(it, ast.Call)
+        and not it.keywords
+        and not it.args
+        and isinstance(it.func, ast.Attribute)
+        and it.func.attr == "items"
+    ):
         return None
     src = it.func.value
     stmts = list(node.body)
     guarded = False
-    if (len(stmts) == 1 and isinstance(stmts[0], ast.If)
-            and len(stmts[0].body) == 1 and not stmts[0].orelse):
+    if (
+        len(stmts) == 1
+        and isinstance(stmts[0], ast.If)
+        and len(stmts[0].body) == 1
+        and not stmts[0].orelse
+    ):
         test = stmts[0].test
-        if not (isinstance(test, ast.Compare) and len(test.ops) == 1
-                and isinstance(test.ops[0], ast.NotIn)
-                and _is_name(test.left, k)
-                and isinstance(test.comparators[0], ast.Name)):
+        if not (
+            isinstance(test, ast.Compare)
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.NotIn)
+            and _is_name(test.left, k)
+            and isinstance(test.comparators[0], ast.Name)
+        ):
             return None
         dest_name = test.comparators[0].id
         stmts = [stmts[0].body[0]]
@@ -992,8 +1346,12 @@ def _rule_loop_dict_update(block, i, scope_lines, class_body):
         return None
     assign = stmts[0]
     at = assign.targets
-    if not (len(at) == 1 and isinstance(at[0], ast.Subscript)
-            and _is_name(at[0].value) and _is_name(at[0].slice, k)):
+    if not (
+        len(at) == 1
+        and isinstance(at[0], ast.Subscript)
+        and _is_name(at[0].value)
+        and _is_name(at[0].slice, k)
+    ):
         return None
     dest = at[0].value.id
     if guarded and dest != dest_name:
@@ -1016,16 +1374,26 @@ def _rule_loop_dict_update(block, i, scope_lines, class_body):
         func=ast.Attribute(
             value=ast.Name(id=dest, ctx=ast.Load()), attr="update", ctx=ast.Load()
         ),
-        args=[arg], keywords=[],
+        args=[arg],
+        keywords=[],
     )
     return Rewrite(
-        "loop-dict-to-update", node.lineno, node.end_lineno,
+        "loop-dict-to-update",
+        node.lineno,
+        node.end_lineno,
         [ast.Expr(value=update)],
-        node.col_offset, node.end_col_offset,
+        node.col_offset,
+        node.end_col_offset,
     )
+
 
 _RULE_FNS = {
     "bool-return": _rule_bool_return,
+    "conditional-return": _rule_conditional_return,
+    "conditional-assignment": _rule_conditional_assignment,
+    "inline-return-temp": _rule_inline_return_temp,
+    "dict-build-to-literal": _rule_dict_build_literal,
+    "boolean-loop-to-any-all": _rule_boolean_loop,
     "append-loop-to-comprehension": _rule_append_loop,
     "accumulate-to-sum": _rule_accumulate_sum,
     "sort-to-sorted": _rule_sort_to_sorted,
@@ -1044,7 +1412,10 @@ SCOPES = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
 
 def _collect(
-    node: ast.AST, only: set[str], out: list[Rewrite], scope_lines: dict,
+    node: ast.AST,
+    only: set[str],
+    out: list[Rewrite],
+    scope_lines: dict,
     class_body: bool = False,
 ) -> None:
     """Depth-first scan for non-overlapping rewrites over every statement list.
@@ -1061,7 +1432,9 @@ def _collect(
         class_body = True
     for field in _BLOCK_FIELDS:
         block = getattr(node, field, None)
-        if not isinstance(block, list) or not all(isinstance(s, ast.stmt) for s in block):
+        if not isinstance(block, list) or not all(
+            isinstance(s, ast.stmt) for s in block
+        ):
             continue
         i = 0
         while i < len(block):
@@ -1113,10 +1486,17 @@ def _one_pass(source: str, only: set[str]) -> tuple[str, list[str]]:
     _collect(tree, only, rewrites, scope_name_lines(tree), False)
     if not rewrites:
         return source, []
+    comment_lines = {
+        token.start[0]
+        for token in tokenize.generate_tokens(io.StringIO(source).readline)
+        if token.type == tokenize.COMMENT
+    }
     lines = source.splitlines()
     applied = []
     for rw in sorted(rewrites, key=lambda r: r.start, reverse=True):
-        if not _line_aligned(lines, rw):
+        if not _line_aligned(lines, rw) or comment_lines.intersection(
+            range(rw.start, rw.end + 1)
+        ):
             continue
         lines[rw.start - 1 : rw.end] = _render(rw)
         applied.append(rw.rule)

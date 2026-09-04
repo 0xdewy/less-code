@@ -90,8 +90,8 @@ def test_bool_return(before, after):
     assert applied in (["bool-return"], ["else-after-terminator", "bool-return"])
 
 
-def test_bool_return_leaves_other_constants_alone():
-    src = norm(
+def test_nonboolean_return_pair_becomes_conditional_expression():
+    before = norm(
         """
         def f(x):
             if x:
@@ -99,7 +99,162 @@ def test_bool_return_leaves_other_constants_alone():
             return 0
         """
     )
-    assert apply_rules(src) == (src, [])
+    after = norm(
+        """
+        def f(x):
+            return 1 if x else 0
+        """
+    )
+    assert apply_rules(before) == (after, ["conditional-return"])
+
+
+def test_explicit_else_return_becomes_conditional_expression():
+    before = norm(
+        """
+        def f(x):
+            if x:
+                return left()
+            else:
+                return right()
+        """
+    )
+    after = norm(
+        """
+        def f(x):
+            return left() if x else right()
+        """
+    )
+    out, applied = apply_rules(before)
+    assert out == after
+    assert applied == ["else-after-terminator", "conditional-return"]
+
+
+def test_immediate_return_temp_is_inlined():
+    before = norm(
+        """
+        def f(value):
+            result = transform(value)
+            return result
+        """
+    )
+    after = norm(
+        """
+        def f(value):
+            return transform(value)
+        """
+    )
+    assert apply_rules(before) == (after, ["inline-return-temp"])
+
+
+def test_ast_rule_declines_comment_bearing_span():
+    source = norm(
+        """
+        def f(value):
+            result = transform(value)  # explains the intermediate value
+            return result
+        """
+    )
+    assert apply_rules(source) == (source, [])
+
+
+def test_return_temp_keeps_nonlocal_cache_assignment():
+    source = norm(
+        """
+        def once(function):
+            result = None
+            def wrapper():
+                nonlocal result
+                result = function()
+                return result
+            return wrapper
+        """
+    )
+    out, _ = apply_rules(source)
+    assert "result = function()" in out
+
+
+def test_conditional_assignment_declines_lambdas():
+    source = norm(
+        """
+        def f(ordering):
+            if ordering is None:
+                key = lambda x: x[0]
+            else:
+                key = lambda x: ordering(x[0])
+            return key
+        """
+    )
+    out, applied = apply_rules(source, {"conditional-assignment"})
+    assert out == source and applied == []
+
+
+def test_two_branch_assignment_becomes_conditional_expression():
+    before = norm(
+        """
+        def f(condition):
+            if condition():
+                result = left()
+            else:
+                result = right()
+            return result
+        """
+    )
+    after = norm(
+        """
+        def f(condition):
+            return left() if condition() else right()
+        """
+    )
+    assert apply_rules(before) == (
+        after,
+        ["conditional-assignment", "inline-return-temp"],
+    )
+
+
+def test_fresh_dict_writes_become_literal():
+    before = norm(
+        """
+        def f(first, second):
+            result = {}
+            result["a"] = first()
+            result["b"] = second()
+            return result
+        """
+    )
+    after = norm(
+        """
+        def f(first, second):
+            return {'a': first(), 'b': second()}
+        """
+    )
+    assert apply_rules(before) == (
+        after,
+        ["dict-build-to-literal", "inline-return-temp"],
+    )
+
+
+@pytest.mark.parametrize(
+    "condition,branch,fallback,expression",
+    [
+        ("row.ok", "True", "False", "any((row.ok for row in rows))"),
+        ("row.bad", "False", "True", "all((not row.bad for row in rows))"),
+    ],
+)
+def test_boolean_search_loop_becomes_any_or_all(
+    condition, branch, fallback, expression
+):
+    before = norm(
+        f"""
+        def f(rows):
+            for row in rows:
+                if {condition}:
+                    return {branch}
+            return {fallback}
+        """
+    )
+    out, applied = apply_rules(before)
+    assert f"return {expression}" in out
+    assert applied == ["boolean-loop-to-any-all"]
 
 
 # ---- append-loop-to-comprehension -----------------------------------------
@@ -120,11 +275,10 @@ def test_append_loop_to_comprehension():
     assert out == norm(
         """
         def f(rows):
-            out = [row.name for row in rows]
-            return out
+            return [row.name for row in rows]
         """
     )
-    assert applied == ["append-loop-to-comprehension"]
+    assert applied == ["append-loop-to-comprehension", "inline-return-temp"]
 
 
 def test_append_identity_loop_becomes_list_call():
@@ -139,7 +293,7 @@ def test_append_identity_loop_becomes_list_call():
             """
         )
     )
-    assert "keys = list(d.keys())" in out
+    assert "return list(d.keys())" in out
 
 
 def test_append_loop_with_single_use_temp_prefix():
@@ -158,11 +312,10 @@ def test_append_loop_with_single_use_temp_prefix():
     assert out == norm(
         """
         def f(d, order):
-            out = [d[k].qty for k in order]
-            return out
+            return [d[k].qty for k in order]
         """
     )
-    assert applied == ["append-loop-to-comprehension"]
+    assert applied == ["append-loop-to-comprehension", "inline-return-temp"]
 
 
 def test_append_loop_not_rewritten_when_temp_used_twice():
@@ -263,7 +416,9 @@ def test_twice_read_temp_is_walrus_bound_in_the_guard():
     new_src, applied = apply_rules(src, {"append-loop-to-comprehension"})
     assert applied == ["append-loop-to-comprehension"]
     assert "(item := d[k]).qty <= item.floor" in new_src
-    assert _behaves_the_same(src, new_src, "f", [{"a": _Item(1, 5), "b": _Item(9, 5)}, ["a", "b"]])
+    assert _behaves_the_same(
+        src, new_src, "f", [{"a": _Item(1, 5), "b": _Item(9, 5)}, ["a", "b"]]
+    )
 
 
 def test_walrus_is_refused_when_the_temp_is_not_evaluated_first():
@@ -350,8 +505,8 @@ def test_accumulate_augassign_to_sum():
             """
         )
     )
-    assert "total = sum((row.qty for row in rows))" in out
-    assert applied == ["accumulate-to-sum"]
+    assert "return sum((row.qty for row in rows))" in out
+    assert applied == ["accumulate-to-sum", "inline-return-temp"]
 
 
 def test_accumulate_legacy_assign_form_to_sum():
@@ -366,8 +521,8 @@ def test_accumulate_legacy_assign_form_to_sum():
             """
         )
     )
-    assert "total = sum((row.qty for row in rows))" in out
-    assert applied == ["accumulate-to-sum"]
+    assert "return sum((row.qty for row in rows))" in out
+    assert applied == ["accumulate-to-sum", "inline-return-temp"]
 
 
 def test_accumulate_float_start_is_preserved():
@@ -421,11 +576,14 @@ def test_sort_to_sorted_composes_with_the_append_rule():
     assert out == norm(
         """
         def f(d):
-            keys = sorted(d)
-            return keys
+            return sorted(d)
         """
     )
-    assert set(applied) == {"append-loop-to-comprehension", "sort-to-sorted"}
+    assert set(applied) == {
+        "append-loop-to-comprehension",
+        "sort-to-sorted",
+        "inline-return-temp",
+    }
 
 
 def test_sort_to_sorted_keeps_keywords():
@@ -439,7 +597,7 @@ def test_sort_to_sorted_keeps_keywords():
             """
         )
     )
-    assert "out = sorted([r.name for r in rows], reverse=True)" in out
+    assert "return sorted([r.name for r in rows], reverse=True)" in out
 
 
 def test_sort_not_rewritten_on_an_aliased_list():
@@ -565,6 +723,11 @@ def test_semicolon_packed_lines_are_not_clobbered():
 def test_every_rule_name_is_reachable():
     assert set(RULES) == {
         "bool-return",
+        "conditional-return",
+        "conditional-assignment",
+        "inline-return-temp",
+        "dict-build-to-literal",
+        "boolean-loop-to-any-all",
         "append-loop-to-comprehension",
         "accumulate-to-sum",
         "sort-to-sorted",
@@ -622,8 +785,12 @@ def test_else_after_return_in_a_loop():
         """
     )
     out, applied = apply_rules(src)
-    assert applied == ["else-after-terminator"]
-    assert "else" not in out
+    assert applied == [
+        "else-after-terminator",
+        "inline-return-temp",
+        "conditional-return",
+    ]
+    assert "return None if row.bad else row.value" in out
 
 
 def test_if_without_terminator_is_untouched():
@@ -640,7 +807,7 @@ def test_if_without_terminator_is_untouched():
     assert apply_rules(src) == (src, [])
 
 
-def test_elif_arms_are_declined_soundly():
+def test_elif_else_is_not_incorrectly_dedented():
     """An elif arm's else cannot dedent: its new position after the whole
     chain is reachable from earlier branches. click's version_option broke
     exactly here — the successful `len == 1` branch fell into the dedented
@@ -658,8 +825,13 @@ def test_elif_arms_are_declined_soundly():
         """
     )
     out, applied = apply_rules(src)
-    assert applied == []
-    assert out == src
+    assert applied == ["conditional-return"]
+    assert "if x < 0:" in out
+    ns: dict = {}
+    exec(out, ns)
+    assert ns["f"](0) == "zero" and ns["f"](1) == "pos"
+    with pytest.raises(ValueError):
+        ns["f"](-1)
 
 
 def test_nested_collapses_apply_over_passes():
@@ -763,7 +935,7 @@ def test_dict_loop_with_extra_body_is_declined():
 
 # ---- the gate catches a misfiring rule ------------------------------------
 
-MISFIRE_MODULE = '''
+MISFIRE_MODULE = """
 def is_low(on_hand, reorder):
     if on_hand <= reorder:
         return True
@@ -775,9 +947,9 @@ def total(rows):
     for r in rows:
         total += r
     return total
-'''.lstrip()
+""".lstrip()
 
-MISFIRE_TESTS = '''
+MISFIRE_TESTS = """
 from mod import is_low, total
 
 def test_is_low():
@@ -786,7 +958,7 @@ def test_is_low():
 
 def test_total():
     assert total([1, 2, 3]) == 6
-'''.lstrip()
+""".lstrip()
 
 
 def _misfire(body, index, scope_lines, class_body=False):
@@ -800,14 +972,21 @@ def _misfire(body, index, scope_lines, class_body=False):
         return None
     if not isinstance(stmt.body[0], ast.Return):
         return None
-    if stmt.orelse or index + 1 >= len(body) or not isinstance(body[index + 1], ast.Return):
+    if (
+        stmt.orelse
+        or index + 1 >= len(body)
+        or not isinstance(body[index + 1], ast.Return)
+    ):
         return None
     covered = [stmt, body[index + 1]]
     start, end = _span(covered)
     return Rewrite(
-        "bool-return", start, end,
+        "bool-return",
+        start,
+        end,
         [ast.Return(value=ast.Constant(value=False))],
-        stmt.col_offset, _end_col(covered, end),
+        stmt.col_offset,
+        _end_col(covered, end),
     )
 
 
@@ -818,20 +997,26 @@ def test_pipeline_gate_reverts_a_misfiring_rule(tmp_path, monkeypatch):
     sabotaged `bool-return` because the frozen suite goes red with it.
     """
     from less_code import rules
-    from less_code.pipeline import reduce_project
+    from less_code.pipeline import shrink_project
+    from less_code.static import StaticResult
 
     monkeypatch.setitem(rules._RULE_FNS, "bool-return", _misfire)
+    monkeypatch.setattr(
+        "less_code.pipeline.static_pass", lambda *_args, **_kw: StaticResult()
+    )
 
     root = tmp_path / "proj"
     root.mkdir()
     (root / "mod.py").write_text(MISFIRE_MODULE)
     (root / "test_mod.py").write_text(MISFIRE_TESTS)
 
-    stats = reduce_project(root, backend=None, formatter=False)
+    stats = shrink_project(root)
     source = (root / "mod.py").read_text()
 
     assert stats.tests_ok
-    assert any("rule bool-return reverted by the gate" in n for n in stats.static_notes)
+    assert any(
+        "rules:bool-return: reverted by the gate" in n for n in stats.static_notes
+    )
     assert "sum(" in source  # the correct rule survived the narrowing
     # behaviour, not text: a later layer (ruff's RET/SIM tier) may legitimately
     # perform the same collapse the sabotaged rule got wrong, so what must hold
@@ -841,9 +1026,8 @@ def test_pipeline_gate_reverts_a_misfiring_rule(tmp_path, monkeypatch):
     assert ns["is_low"](1, 5) is True and ns["is_low"](9, 5) is False
 
 
-def test_pipeline_gate_reverts_everything_without_a_runner(tmp_path, monkeypatch):
-    """With no runner the static layer is all-or-nothing: the pipeline's own
-    gate reverts the whole edit set rather than accepting a broken rule."""
+def test_static_pass_leaves_rules_to_the_pipeline(tmp_path, monkeypatch):
+    """The static pass cannot apply an untested rule before the pipeline gate."""
     from less_code import rules
     from less_code.langdetect import map_project
     from less_code.static import static_pass
@@ -854,34 +1038,15 @@ def test_pipeline_gate_reverts_everything_without_a_runner(tmp_path, monkeypatch
     (root / "mod.py").write_text(MISFIRE_MODULE)
     (root / "test_mod.py").write_text(MISFIRE_TESTS)
     project = map_project(root)
-    result = static_pass(root, "python", project.source_files,
-                         project.source_files + project.test_files)
-    assert "return False\n" in result.changed_files[str(root / "mod.py")]
+    result = static_pass(
+        root, "python", project.source_files, project.source_files + project.test_files
+    )
+    candidate = result.changed_files.get(str(root / "mod.py"), MISFIRE_MODULE)
+    namespace = {}
+    exec(candidate, namespace)
+    assert namespace["is_low"](1, 5) is True
     # nothing was written: static_pass is pure without a runner
     assert "if on_hand <= reorder:" in (root / "mod.py").read_text()
-
-
-def test_backend_timeout_is_configurable():
-    """A 600s ceiling turns a slow-but-correct rewrite into a lost LLM call."""
-    from less_code.backends import DEFAULT_TIMEOUT, OllamaBackend, OpenAICompatBackend
-
-    assert DEFAULT_TIMEOUT == 600
-    assert OllamaBackend(model="m").timeout == 600
-    assert OllamaBackend(model="m", timeout=2400).timeout == 2400
-    assert OpenAICompatBackend(model="m", timeout=90).timeout == 90
-
-
-def test_bench_row_records_attempt_outcomes(tmp_path):
-    """A finished bench row must stay diagnosable: the scratch tree is deleted
-    and the attempt records live only in ReduceStats, so the tally is the only
-    surviving evidence of what the LLM layer actually did."""
-    from less_code.bench import BenchRow
-
-    row = BenchRow(fixture="x", lang="python", config="c", commit="d", timestamp="t")
-    assert row.attempt_outcomes == {}
-    row.attempt_outcomes = {"tests-failed": 2, "hunks-accepted": 1}
-    import dataclasses
-    assert dataclasses.asdict(row)["attempt_outcomes"]["hunks-accepted"] == 1
 
 
 class _Item:
@@ -916,7 +1081,7 @@ def _behaves_the_same(before: str, after: str, fn: str, args: list) -> bool:
 # ---- iteration 09: if/elif ladders and the manual max loop -----------------
 
 
-LADDER_EQ = textwrap.dedent('''
+LADDER_EQ = textwrap.dedent("""
     def priority(status):
         if status == "STOCKOUT":
             return 1
@@ -925,9 +1090,9 @@ LADDER_EQ = textwrap.dedent('''
         elif status == "BACKORDER":
             return 3
         return 9
-''').lstrip()
+""").lstrip()
 
-LADDER_THRESHOLD = textwrap.dedent('''
+LADDER_THRESHOLD = textwrap.dedent("""
     def tier(qty):
         if qty >= 100:
             return 0.15
@@ -936,13 +1101,13 @@ LADDER_THRESHOLD = textwrap.dedent('''
         elif qty >= 10:
             return 0.05
         return 0.0
-''').lstrip()
+""").lstrip()
 
 
 def test_equality_ladder_becomes_a_dict_lookup():
     out, applied = apply_rules(LADDER_EQ, {"if-ladder-to-dict"})
     assert applied == ["if-ladder-to-dict"]
-    assert '.get(status, 9)' in out
+    assert ".get(status, 9)" in out
     for arg in ("STOCKOUT", "LOW", "BACKORDER", "WAT", None):
         assert _behaves_the_same(LADDER_EQ, out, "priority", [arg])
 
@@ -980,7 +1145,9 @@ def test_a_non_constant_arm_is_refused():
 
 
 def test_threshold_ladder_becomes_an_ordered_scan_not_a_dict():
-    out, applied = apply_rules(LADDER_THRESHOLD, {"if-ladder-to-dict", "threshold-ladder-to-scan"})
+    out, applied = apply_rules(
+        LADDER_THRESHOLD, {"if-ladder-to-dict", "threshold-ladder-to-scan"}
+    )
     assert applied == ["threshold-ladder-to-scan"]
     assert "next(" in out and ".get(" not in out
     for qty in (0, 9, 10, 49, 50, 99, 100, 1000):
@@ -1008,7 +1175,7 @@ def test_the_scan_variable_does_not_capture_the_subject_name():
         assert _behaves_the_same(src, out, "f", [qty])
 
 
-MAX_LOOP = textwrap.dedent('''
+MAX_LOOP = textwrap.dedent("""
     def busiest(counts):
         best = None
         best_units = None
@@ -1018,7 +1185,7 @@ MAX_LOOP = textwrap.dedent('''
                 best = area
                 best_units = units
         return best
-''').lstrip()
+""").lstrip()
 
 
 def test_a_none_sentinel_max_loop_becomes_max_with_a_key():

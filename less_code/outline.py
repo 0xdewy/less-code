@@ -83,7 +83,13 @@ _BUILTINS = frozenset(dir(builtins))
 
 # statements that cannot cross a call boundary
 _ESCAPES = (ast.Return, ast.Break, ast.Continue, ast.Yield, ast.YieldFrom, ast.Await)
-_SCOPE_TRICKS = (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.NamedExpr)
+_SCOPE_TRICKS = (
+    ast.Lambda,
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+    ast.NamedExpr,
+)
 
 
 @dataclass
@@ -92,14 +98,14 @@ class Site:
 
     path: str
     func: str
-    start: int          # index into the body list
-    end: int            # inclusive
+    start: int  # index into the body list
+    end: int  # inclusive
     lineno: int
     end_lineno: int
     col: int
     end_col: int
-    params: list[str]   # actual names, in canonical P0..Pn order
-    binds: list[str]    # actual names, in canonical B0..Bm order
+    params: list[str]  # actual names, in canonical P0..Pn order
+    binds: list[str]  # actual names, in canonical B0..Bm order
     consts: list[object]
     used_after: set[int] = field(default_factory=set)
     stmts: list = field(default_factory=list)
@@ -176,7 +182,11 @@ def _eligible(stmt: ast.stmt) -> bool:
 
 
 def _loads(node: ast.AST) -> list[str]:
-    return [n.id for n in ast.walk(node) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
+    return [
+        n.id
+        for n in ast.walk(node)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+    ]
 
 
 def _all_ids(nodes) -> set[str]:
@@ -212,7 +222,9 @@ class _Abstract(ast.NodeTransformer):
 class _Concretize(ast.NodeTransformer):
     """Undo `_Abstract` for the helper body: literal back, or a parameter."""
 
-    def __init__(self, values: list[object], params: dict[int, str], names: dict[str, str]) -> None:
+    def __init__(
+        self, values: list[object], params: dict[int, str], names: dict[str, str]
+    ) -> None:
         self.values = values
         self.params = params
         self.names = names
@@ -226,7 +238,8 @@ class _Concretize(ast.NodeTransformer):
         # grammar only allows Constant/FormattedValue inside JoinedStr.values
         self.generic_visit(node)
         node.values = [
-            v if isinstance(v, (ast.Constant, ast.FormattedValue))
+            v
+            if isinstance(v, (ast.Constant, ast.FormattedValue))
             else ast.FormattedValue(value=v, conversion=-1)
             for v in node.values
         ]
@@ -243,8 +256,14 @@ class _Concretize(ast.NodeTransformer):
 
 
 def _window_site(
-    path: str, func: str, body: list[ast.stmt], start: int, end: int,
-    bound_before: set[str], argnames: set[str], declared: set[str],
+    path: str,
+    func: str,
+    body: list[ast.stmt],
+    start: int,
+    end: int,
+    bound_before: set[str],
+    argnames: set[str],
+    declared: set[str],
     module_names: set[str],
 ) -> tuple[str, Site] | None:
     """Validate `body[start:end+1]` as a window; return `(key, site)` or None."""
@@ -290,10 +309,18 @@ def _window_site(
     copied = [abstract.visit(copy.deepcopy(s)) for s in stmts]
     key = "\n".join(ast.dump(s) for s in copied)
     site = Site(
-        path=path, func=func, start=start, end=end,
-        lineno=stmts[0].lineno, end_lineno=stmts[-1].end_lineno,
-        col=stmts[0].col_offset, end_col=stmts[-1].end_col_offset,
-        params=params, binds=binds, consts=abstract.consts, stmts=copied,
+        path=path,
+        func=func,
+        start=start,
+        end=end,
+        lineno=stmts[0].lineno,
+        end_lineno=stmts[-1].end_lineno,
+        col=stmts[0].col_offset,
+        end_col=stmts[-1].end_col_offset,
+        params=params,
+        binds=binds,
+        consts=abstract.consts,
+        stmts=copied,
     )
     later = _all_ids(body[end + 1 :])
     site.used_after = {i for i, name in enumerate(binds) if name in later}
@@ -333,8 +360,15 @@ def _collect_sites(path: str, tree: ast.Module) -> dict[str, list[Site]]:
                 for b in range(a, len(run)):
                     start, end = run[a], run[b]
                     made = _window_site(
-                        path, f"{fn.name}:{fn.lineno}", body, start, end,
-                        bound_at[start], argnames, declared, module_names,
+                        path,
+                        f"{fn.name}:{fn.lineno}",
+                        body,
+                        start,
+                        end,
+                        bound_at[start],
+                        argnames,
+                        declared,
+                        module_names,
                     )
                     if made is None:
                         continue
@@ -386,8 +420,12 @@ def _pick(candidates: list[str], taken: set[str], fallback: str) -> str:
 
 
 def _render_helper(
-    sites: list[Site], classes: list[list[int]], helper: str,
-    param_names: list[str], const_names: list[str], bind_names: list[str],
+    sites: list[Site],
+    classes: list[list[int]],
+    helper: str,
+    param_names: list[str],
+    const_names: list[str],
+    bind_names: list[str],
     returns: list[int],
 ) -> str:
     import copy
@@ -416,17 +454,25 @@ def _render_helper(
     fn = ast.FunctionDef(
         name=helper,
         args=ast.arguments(
-            posonlyargs=[], args=[ast.arg(arg=n) for n in param_names + const_names],
-            kwonlyargs=[], kw_defaults=[], defaults=[],
+            posonlyargs=[],
+            args=[ast.arg(arg=n) for n in param_names + const_names],
+            kwonlyargs=[],
+            kw_defaults=[],
+            defaults=[],
         ),
-        body=body, decorator_list=[], returns=None, type_params=[],
+        body=body,
+        decorator_list=[],
+        returns=None,
+        type_params=[],
     )
     module = ast.Module(body=[fn], type_ignores=[])
     ast.fix_missing_locations(module)
     return ast.unparse(module)
 
 
-def _render_call(site: Site, helper: str, classes: list[list[int]], returns: list[int]) -> str:
+def _render_call(
+    site: Site, helper: str, classes: list[list[int]], returns: list[int]
+) -> str:
     args = [ast.Name(id=n, ctx=ast.Load()) for n in site.params]
     args += [ast.Constant(value=site.consts[cls[0]]) for cls in classes]
     call = ast.Call(func=ast.Name(id=helper, ctx=ast.Load()), args=args, keywords=[])
@@ -434,13 +480,17 @@ def _render_call(site: Site, helper: str, classes: list[list[int]], returns: lis
     if not returns:
         stmt = ast.Expr(value=call)
     elif len(returns) == 1:
-        stmt = ast.Assign(targets=[ast.Name(id=site.binds[returns[0]], ctx=ast.Store())], value=call)
+        stmt = ast.Assign(
+            targets=[ast.Name(id=site.binds[returns[0]], ctx=ast.Store())], value=call
+        )
     else:
         stmt = ast.Assign(
-            targets=[ast.Tuple(
-                elts=[ast.Name(id=site.binds[i], ctx=ast.Store()) for i in returns],
-                ctx=ast.Store(),
-            )],
+            targets=[
+                ast.Tuple(
+                    elts=[ast.Name(id=site.binds[i], ctx=ast.Store()) for i in returns],
+                    ctx=ast.Store(),
+                )
+            ],
             value=call,
         )
     module = ast.Module(body=[stmt], type_ignores=[])
@@ -543,13 +593,14 @@ def _references_module(source: str, stem: str) -> bool:
     pattern = re.compile(rf"\b{re.escape(stem)}\b")
     for line in source.splitlines():
         stripped = line.strip()
-        if (stripped.startswith("import ") or stripped.startswith("from ")) and pattern.search(stripped):
+        if stripped.startswith(("import ", "from ")) and pattern.search(stripped):
             return True
     return False
 
 
 def outline_guards(
-    sources: dict[str, str], min_occurrences: int = MIN_OCCURRENCES,
+    sources: dict[str, str],
+    min_occurrences: int = MIN_OCCURRENCES,
 ) -> tuple[dict[str, str], list[str]]:
     """Outline repeated validate-and-raise blocks into shared helpers.
 
@@ -620,8 +671,10 @@ def outline_guards(
         # can break an architectural contract (click's test_light_imports) or
         # manufacture an import cycle. Anything else keeps its inline guard.
         live = [
-            s for s in live
-            if s.path == host or (
+            s
+            for s in live
+            if s.path == host
+            or (
                 _cross_import(Path(s.path), Path(host)) is not None
                 and _references_module(sources[s.path], Path(host).stem)
             )
@@ -652,18 +705,28 @@ def outline_guards(
             _pick([s.binds[i] for s in live], pool, f"tmp{i}") for i in range(n_binds)
         ]
         returns = sorted({i for s in live for i in s.used_after})
-        helper = _pick(
-            [f"_check_{param_names[0]}"] if param_names else [], name_pool, "_check"
+        has_message = any(
+            isinstance(value, str) for site in live for value in site.consts
         )
-        taken[host].add(helper)  # _pick registered into the copy, not the real pool
-        text = _render_helper(live, classes, helper, param_names, const_names, bind_names, returns)
+        prefix = "_check" if has_message else "_require"
+        helper = _pick(
+            [f"{prefix}_{param_names[0]}"] if param_names else [],
+            name_pool,
+            prefix,
+        )
+        text = _render_helper(
+            live, classes, helper, param_names, const_names, bind_names, returns
+        )
         if _score(live, len(text.splitlines())) <= 0:
             continue
+        taken[host].add(helper)  # _pick registered into the copy, not the real pool
 
         helpers[host].append(text)
         for site in live:
             call = _render_call(site, helper, classes, returns)
-            edits[site.path].append((site.lineno, site.end_lineno, " " * site.col + call))
+            edits[site.path].append(
+                (site.lineno, site.end_lineno, " " * site.col + call)
+            )
             used.setdefault((site.path, site.func), []).append((site.start, site.end))
             if site.path != host:
                 spec = _cross_import(Path(site.path), Path(host))
@@ -685,7 +748,7 @@ def outline_guards(
             anchor = _helper_anchor(trees[path])
             block: list[str] = []
             for helper_text in helpers[path]:
-                block += helper_text.splitlines() + [""]
+                block += helper_text.splitlines() + ["", ""]
             if anchor is None:
                 lines += [""] + block
             else:
