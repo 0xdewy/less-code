@@ -460,6 +460,14 @@ def shrink_project(
                 }
             )
 
+    # `loc_after_static` now means "after every deterministic rewrite":
+    # external-static + rules + outline all reduce without external state.
+    # The ML layer below is the only non-deterministic step, and `loc_final`
+    # is set AFTER it - so when an ML backend is wired, `loc_after_static <
+    # loc_final` measures its contribution, which is what the field has
+    # always purported to do (its old value just stopped counting too early).
+    stats.loc_after_static = _tree_loc(project.source_files, project.lang)
+
     if ml_backend is not None:
         pre_loc = _tree_loc(project.source_files, project.lang)
         proposals, notes, considered = _ml_proposals(
