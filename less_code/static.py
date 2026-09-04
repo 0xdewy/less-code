@@ -570,7 +570,7 @@ def _rust_clippy_pedantic(
 # is a feature probe), and `UP` may raise a project's minimum Python version.
 # Keep only syntax-local families that do not delete arbitrary expressions or
 # substitute newer runtime APIs.
-RUFF_SELECT = "RET,SIM,C4,PIE,PLR1,PERF"
+RUFF_SELECT = "RET,SIM,C4,PIE,PLR1,PERF,F"
 
 
 def _ruff_fix(text: str, filename: str, unsafe: bool = False) -> str:

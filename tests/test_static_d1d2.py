@@ -29,12 +29,39 @@ def norm(text: str) -> str:
 
 
 @ruff_only
-def test_ruff_tier_leaves_imports_and_unused_locals_alone():
-    """Imports can be feature probes or have side effects; locals can too."""
-    src = "import os, sys\n\n\ndef f(x):\n    y = 1\n    return x\n"
-    fixed = _ruff_fix(src, "m.py")
-    assert "import os, sys" in fixed
+def test_ruff_safe_tier_removes_truly_unused_imports():
+    """A plain unused import is fair game; a try/except feature probe stays.
+
+    Ruff detects the feature-probe shape (`try: import X; except ImportError: ...`)
+    and does not flag X, so enabling F401 in the safe tier is safe-by-construction.
+    The previous contract was overly conservative: it required `# noqa` or manual
+    review even for clearly unused imports, costing an LOC tier across the corpus.
+    F841's fix is unsafe (it can delete attached comments) so it stays in the
+    unsafe tier - see test_ruff_unsafe_tier_removes_unused_local.
+    """
+    fixed = _ruff_fix("import os, sys\n\n\ndef f(x):\n    return x\n", "m.py")
+    assert "import os, sys" not in fixed
+
+
+@ruff_only
+def test_ruff_safe_tier_preserves_feature_probe_import():
+    """A try/except import probe must not be removed even with F401 active."""
+    src_probe = "try:\n    import readline\nexcept ImportError:\n    available = False\n"
+    assert _ruff_fix(src_probe, "m.py") == src_probe
+
+
+@ruff_only
+def test_ruff_safe_tier_keeps_unused_local():
+    """F841 is unsafe (might delete attached comments); safe tier leaves it alone."""
+    fixed = _ruff_fix("def f(x):\n    y = 1\n    return x\n", "m.py")
     assert "y = 1" in fixed
+
+
+@ruff_only
+def test_ruff_unsafe_tier_removes_unused_local():
+    """The unsafe tier applies F841 fixes; F401 still works the same as safe."""
+    fixed_unsafe = _ruff_fix("def f(x):\n    y = 1\n    return x\n", "m.py", unsafe=True)
+    assert "y = 1" not in fixed_unsafe
 
 
 @ruff_only
