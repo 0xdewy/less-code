@@ -170,37 +170,24 @@ def write_corpus_report(result: dict, json_path: Path, markdown_path: Path) -> N
         "# Pinned corpus baseline",
         "",
         (
-            f"Weighted post-formatter code LOC: **{aggregate['loc_start']} → "
-            f"{aggregate['loc_after_static']} (static) → "
-            f"{aggregate['loc_final']} (full pipeline)** "
-            f"| static {aggregate['static_pct']}% "
-            f"| raw {aggregate['raw_pct']}% "
-            f"| audited (static, idempotent) {aggregate['audited_pct']}%"
+            f"Weighted post-formatter code LOC: "
+            f"**{aggregate['loc_start']} → {aggregate['loc_final']}** "
+            f"({aggregate['static_pct']}% reduction)"
         ),
         "",
-        "| Project | Language | LOC | static % | raw % | audited % | LLM considered / accepted | Tests/API/docs |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Project | Language | LOC | reduction % | Tests/API/docs |",
+        "|---|---:|---:|---:|---|",
     ]
     for row in result["projects"]:
         gates = "pass" if row["valid"] else "fail (scored as 0%)"
-        ml = row.get("ml_stats", {}) or {}
-        cons = ml.get("symbols_considered", 0)
-        acc = ml.get("accepted", 0)
-        ml_summary = f"{cons} / {acc}" if cons else "-"
         lines.append(
             f"| {row['name']} | {row['lang']} | "
             f"{row['loc_start']} → {row['loc_final']} | "
-            f"{row.get('static_pct', 0.0)}% | "
-            f"{row.get('raw_pct', 0.0)}% | "
-            f"{row.get('audited_pct', 0.0)}% | {ml_summary} | {gates} |"
+            f"{row.get('static_pct', 0.0)}% | {gates} |"
         )
     lines += [
         "",
-        (
-            "Every revision is pinned in `corpus.toml`; percentages are weighted "
-            "by code LOC. `LLM considered / accepted` is `ml_stats`: symbols the "
-            "backend inspected vs. proposals that survived the gate stack. Empty "
-            "when no `lc` ML backend is wired."
-        ),
+        "Every revision is pinned in `corpus.toml`; "
+        "percentages are weighted by code LOC.",
     ]
     markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
