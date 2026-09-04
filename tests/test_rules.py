@@ -720,6 +720,51 @@ def test_semicolon_packed_lines_are_not_clobbered():
     assert applied == [] and out == src
 
 
+def test_strip_main_block_removes_dunder_main():
+    """`if __name__ == "__main__":` block goes; everything around it stays."""
+    src = (
+        'def hello():\n'
+        '    return 1\n'
+        '\n'
+        "if __name__ == '__main__':\n"
+        "    print('hello')\n"
+        "    print('world')\n"
+    )
+    out, names = apply_rules(src, {"strip-main-block"})
+    assert 'strip-main-block' in names
+    assert 'if __name__' not in out
+    assert 'def hello' in out
+    assert out.count('print') == 0
+
+
+def test_strip_main_block_preserves_referenced_inner_function():
+    """A function defined inside the block must not be stripped if called outside."""
+    src = (
+        'def _main():\n'
+        '    return 1\n'
+        '\n'
+        'x = _main() + 1\n'
+        '\n'
+        "if __name__ == '__main__':\n"
+        '    def _main():\n'
+        '        return 2\n'
+        '    _main()\n'
+    )
+    out, names = apply_rules(src, {'strip-main-block'})
+    assert 'strip-main-block' not in names
+
+
+def test_strip_main_block_handles_both_comparison_orderings():
+    """`__name__ == "__main__"` AND `"__main__" == __name__` are the same intent."""
+    src = (
+        'if "__main__" == __name__:\n'
+        "    print('hi')\n"
+    )
+    out, names = apply_rules(src, {'strip-main-block'})
+    assert 'strip-main-block' in names
+    assert 'if' not in out
+
+
 def test_every_rule_name_is_reachable():
     assert set(RULES) == {
         "bool-return",
@@ -737,6 +782,7 @@ def test_every_rule_name_is_reachable():
         "max-loop-to-max",
         "else-after-terminator",
         "loop-dict-to-update",
+        "strip-main-block",
     }
 
 

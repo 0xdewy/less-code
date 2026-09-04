@@ -46,6 +46,7 @@ RULES = (
     "max-loop-to-max",
     "else-after-terminator",
     "loop-dict-to-update",
+    "strip-main-block",
 )
 
 MAX_PASSES = 6
@@ -1387,6 +1388,52 @@ def _rule_loop_dict_update(block, i, scope_lines, class_body):
     )
 
 
+def _rule_strip_main_block(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """`if __name__ == "__main__": ...` is dead-code in a library: pytest never
+    reaches it, no caller imports it, and the only entry path (`python -m`)
+    is a power-user convenience that the public API does not advertise.
+
+    Caveat: a `def _main()` inside such a block is only safe to remove if no
+    other code in this module reaches for it - the function would become
+    undefined at import time. Walk the module body once; if any statement
+    OUTSIDE the block references one of the names defined inside, refuse.
+    """
+    stmt = body[i]
+    if not isinstance(stmt, ast.If) or stmt.orelse:
+        return None
+    test = stmt.test
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)):
+        return None
+    left, right = test.left, test.comparators
+    ok = (
+        (isinstance(left, ast.Name) and left.id == "__name__"
+         and len(right) == 1 and isinstance(right[0], ast.Constant) and right[0].value == "__main__")
+        or (isinstance(left, ast.Constant) and left.value == "__main__"
+            and len(right) == 1 and isinstance(right[0], ast.Name) and right[0].id == "__name__")
+    )
+    if not ok:
+        return None
+    parent_module = body
+    inner_names = {n.name for n in ast.walk(stmt) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    for j, sibling in enumerate(parent_module):
+        if j == i:
+            continue
+        for n in ast.walk(sibling):
+            if isinstance(n, ast.Name) and n.id in inner_names:
+                return None
+    start, end = _span([stmt])
+    return Rewrite(
+        "strip-main-block",
+        start,
+        end,
+        [ast.Pass()],
+        stmt.col_offset,
+        _end_col([stmt], end),
+    )
+
+
 _RULE_FNS = {
     "bool-return": _rule_bool_return,
     "conditional-return": _rule_conditional_return,
@@ -1402,6 +1449,7 @@ _RULE_FNS = {
     "threshold-ladder-to-scan": _rule_threshold_ladder,
     "max-loop-to-max": _rule_max_loop,
     "loop-dict-to-update": _rule_loop_dict_update,
+    "strip-main-block": _rule_strip_main_block,
 }
 
 
