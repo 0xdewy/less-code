@@ -529,17 +529,24 @@ def _apply_loop_idioms(source: str, selected: set[str]) -> tuple[str, list[str]]
             r"(?P=i)  const d = (?P=arr)\[i\]\.date;\n"
             r"(?P=i)  if \(!isValidDate\(d\)\) \{\n"
             r"(?P=i)    throw new TypeError\((?P<error>[^\n]+)\);\n(?P=i)  \}\n"
-            r"(?P=i)  (?://[^\n]*\n)?(?P=i)  if \((?P<cond>[^\n]+)\) \{\n"
+            r"(?P=i)  (?P<cmt>//[^\n]*\n)?(?P=i)  if \((?P<cond>[^\n]+)\) \{\n"
             r"(?P=i)    out\.push\((?P=arr)\[i\]\);\n(?P=i)  \}\n(?P=i)\}\n(?P=i)return out;"
         )
-        source, count = pattern.subn(
-            lambda m: (
-                f"{m['i']}return {m['arr']}.filter(function (row) {{ const d = row.date; "
-                f"if (!isValidDate(d)) throw new TypeError({m['error']}); "
-                f"return {m['cond']}; }});"
-            ),
-            source,
-        )
+        def _emit(m):
+            indent = m["i"]
+            comment = m["cmt"]
+            head = f"{indent}{comment}" if comment else ""
+            return (
+                head
+                + (
+                    f"{indent}return {m['arr']}.filter(function (row) {{ "
+                    "const d = row.date; "
+                    f"if (!isValidDate(d)) throw new TypeError({m['error']}); "
+                    f"return {m['cond']}; }});"
+                )
+            ).rstrip("\n") + "\n"
+
+        source, count = pattern.subn(_emit, source)
         applied += ["guarded-filter-loop"] * count
     if "return-ladder" in selected:
         pattern = re.compile(

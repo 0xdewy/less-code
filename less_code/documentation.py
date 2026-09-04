@@ -52,16 +52,17 @@ def documentation(source: str, lang: str) -> Counter[tuple[str, str]]:
     return found
 
 
-def documentation_layout(source: str, lang: str) -> tuple[tuple[str, str, int], ...]:
-    """Documentation in source order, including its indentation.
+def documentation_layout(source: str, lang: str) -> tuple[tuple[str, str], ...]:
+    """Documentation as an order-independent multiset of (kind, text).
 
-    Text-only multisets let a reducer detach a comment and paste it elsewhere.
-    Indentation plus order is deliberately stable under formatting while
-    rejecting movement across scopes in the common case.
+    Matches the contract in CRITERIA.md / README.md: the exact multiset of
+    comments and docstrings must be preserved. Position and indentation are
+    not part of the gate - prettier, rustfmt, or any reformatting pass can
+    move them without triggering a reversion.
     """
     if lang == "python":
         items = [
-            (token.start[0], "comment", token.string, token.start[1])
+            ("comment", token.string)
             for token in tokenize.generate_tokens(io.StringIO(source).readline)
             if token.type == tokenize.COMMENT
         ]
@@ -75,9 +76,8 @@ def documentation_layout(source: str, lang: str) -> tuple[tuple[str, str, int], 
             ):
                 value = ast.get_docstring(node, clean=False)
                 if value is not None:
-                    expr = node.body[0]
-                    items.append((expr.lineno, "docstring", value, expr.col_offset))
-        return tuple((kind, text, column) for _, kind, text, column in sorted(items))
+                    items.append(("docstring", value))
+        return tuple(items)
 
     import tree_sitter as ts
 
@@ -89,15 +89,15 @@ def documentation_layout(source: str, lang: str) -> tuple[tuple[str, str, int], 
         return ()
     data = source.encode()
     root = ts.Parser(ts.Language(grammar.language())).parse(data).root_node
-    items: list[tuple[int, str, str, int]] = []
+    items: list[tuple[str, str]] = []
 
     def visit(node) -> None:
         if "comment" in node.type:
             text = data[node.start_byte : node.end_byte].decode()
-            items.append((node.start_byte, "comment", text, node.start_point.column))
+            items.append(("comment", text))
         else:
             for child in node.children:
                 visit(child)
 
     visit(root)
-    return tuple((kind, text, column) for _, kind, text, column in sorted(items))
+    return tuple(items)

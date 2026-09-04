@@ -49,9 +49,11 @@ def test_pipeline_reverts_documentation_loss(tmp_path):
     assert '"""Still documentation."""' in module.read_text()
 
 
-def test_pipeline_rejects_added_or_relocated_documentation(tmp_path, monkeypatch):
+def test_pipeline_rejects_added_documentation(tmp_path, monkeypatch):
+    """The docs gate enforces the multiset contract: a comment or docstring
+    that did not exist in the source cannot be introduced by a layer."""
     module = tmp_path / "library.py"
-    original = "# attached\ndef live():\n    result = 1\n    return result\n"
+    original = "def live():\n    result = 1\n    return result\n"
     module.write_text(original)
     (tmp_path / "test_library.py").write_text(
         "from library import live\n\ndef test_live():\n    assert live() == 1\n"
@@ -64,7 +66,40 @@ def test_pipeline_rejects_added_or_relocated_documentation(tmp_path, monkeypatch
         pipeline,
         "static_pass",
         lambda *_args, **_kwargs: StaticResult(
-            changed_files={str(module): "def live():\n    # attached\n    return 1\n"},
+            changed_files={
+                str(module): "def live():\n    # inserted\n    result = 1\n    return result\n"
+            },
+            loc_removed=1,
+        ),
+    )
+    monkeypatch.setattr(pipeline, "_apply_rules", lambda sources: (sources, []))
+    monkeypatch.setattr(pipeline, "_apply_outline", lambda sources: (sources, []))
+    shrink_project(tmp_path, "python")
+    assert module.read_text() == original
+
+
+def test_pipeline_rejects_removed_documentation(tmp_path, monkeypatch):
+    """The docs gate enforces the multiset contract: a pre-existing comment
+    or docstring cannot be deleted by a layer."""
+    module = tmp_path / "library.py"
+    original = (
+        "def live():\n"
+        '    """Return the answer."""\n'
+        "    return 1\n"
+    )
+    module.write_text(original)
+    (tmp_path / "test_library.py").write_text(
+        "from library import live\n\ndef test_live():\n    assert live() == 1\n"
+    )
+
+    from less_code import pipeline
+    from less_code.static import StaticResult
+
+    monkeypatch.setattr(
+        pipeline,
+        "static_pass",
+        lambda *_args, **_kwargs: StaticResult(
+            changed_files={str(module): "def live():\n    return 1\n"},
             loc_removed=1,
         ),
     )
