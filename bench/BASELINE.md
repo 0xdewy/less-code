@@ -1,10 +1,10 @@
 # Pinned corpus baseline
 
-Weighted post-formatter code LOC: **13620 → 13275 (static) → 13275 (full pipeline)** | static 2.53% | raw 2.53% | audited (static, idempotent) 2.53%
+Weighted post-formatter code LOC: **13620 → 13268 (static) → 13268 (full pipeline)** | static 2.58% | raw 2.58% | audited (static, idempotent) 2.58%
 
 | Project | Language | LOC | static % | raw % | audited % | LLM considered / accepted | Tests/API/docs |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| boltons | python | 8939 → 8626 | 3.5% | 3.5% | 3.5% | - | pass |
+| boltons | python | 8939 → 8619 | 3.58% | 3.58% | 3.58% | - | pass |
 | more-itertools | python | 2652 → 2620 | 1.21% | 1.21% | 1.21% | - | pass |
 | yocto-queue | javascript | 64 → 64 | 0.0% | 0.0% | 0.0% | - | pass |
 | p-limit | javascript | 489 → 489 | 0.0% | 0.0% | 0.0% | - | pass |

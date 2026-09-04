@@ -1424,11 +1424,15 @@ def _rule_strip_main_block(
             if isinstance(n, ast.Name) and n.id in inner_names:
                 return None
     start, end = _span([stmt])
+    # Replace the entire block with nothing. The module remains valid
+    # Python (body simply has one fewer statement); `_render` with an
+    # empty stmt list produces an empty string, and the slice assignment
+    # collapses the block. A leading `pass` would be one wasted code line.
     return Rewrite(
         "strip-main-block",
         start,
         end,
-        [ast.Pass()],
+        [],
         stmt.col_offset,
         _end_col([stmt], end),
     )
