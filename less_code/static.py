@@ -711,8 +711,12 @@ def _python_layers(dead: StaticResult) -> list[tuple[str, object]]:
 
     layers: list[tuple[str, object]] = [("dead-code", dead_layer)]
     layers.append(("unreachable-code", unreachable_layer))
-    # ruff last: the layers above create new unused imports and locals for it
-    layers.append(("ruff-safe", ruff_layer(False)))
+    # ruff last: the layers above create new unused imports and locals for it.
+    # Pass --unsafe-fixes: rules like RET504 (unnecessary assignment before
+    # return) are reported-but-not-fixed by the safe tier. The unsafe tier is
+    # a strict superset of the safe tier's fix set, so one subprocess is
+    # enough; the gate stack rejects anything that breaks tests or docs.
+    layers.append(("ruff-unsafe", ruff_layer(True)))
     return layers
 
 
