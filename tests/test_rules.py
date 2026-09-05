@@ -28,7 +28,7 @@ def norm(text: str) -> str:
             """,
             """
             def f(a, b):
-                return a > b
+                return True if a > b else False
             """,
         ),
         (
@@ -41,7 +41,7 @@ def norm(text: str) -> str:
             """,
             """
             def f(a, b):
-                return a > b
+                return True if a > b else False
             """,
         ),
         (
@@ -65,7 +65,7 @@ def norm(text: str) -> str:
             """,
             """
             def f(x):
-                return bool(x)
+                return True if x else False
             """,
         ),
         (
@@ -77,7 +77,7 @@ def norm(text: str) -> str:
             """,
             """
             def f(x, y):
-                return x > 0 and y > 0
+                return True if x > 0 and y > 0 else False
             """,
         ),
     ],
@@ -88,6 +88,294 @@ def test_bool_return(before, after):
     # an explicit `else:` first meets else-after-terminator (which dedents the
     # arm), then bool-return collapses the shape: same output, two rule names
     assert applied in (["bool-return"], ["else-after-terminator", "bool-return"])
+
+
+def test_bool_return_preserves_overloaded_comparison_and_shadowed_bool():
+    source = "def f(a, b):\n    if a > b:\n        return True\n    return False\n"
+    proposed, _ = apply_rules(source, {"bool-return"})
+
+    class Operand:
+        def __gt__(self, other):
+            return [42]
+
+    namespace = {"bool": lambda _: "not a boolean"}
+    exec(proposed, namespace)  # noqa: S102 - fixed adversarial fixture
+    assert namespace["f"](Operand(), 0) is True
+
+
+@pytest.mark.parametrize("first", [False, True])
+@pytest.mark.parametrize("second", [False, True])
+def test_merge_same_terminal_branch_preserves_short_circuit(first, second):
+    source = (
+        "def f(a, b, events):\n"
+        "    if a():\n        events.append('body')\n        return 1\n"
+        "    if b():\n        events.append('body')\n        return 1\n"
+        "    return 0\n"
+    )
+    proposed, names = apply_rules(source, {"merge-same-branch"})
+    assert names == ["merge-same-branch"]
+    observed = []
+    for code in (source, proposed):
+        events = []
+
+        def a(events=events):
+            events.append("a")
+            return first
+
+        def b(events=events):
+            events.append("b")
+            return second
+
+        namespace = {}
+        exec(code, namespace)  # noqa: S102 - fixed differential fixture
+        result = namespace["f"](a, b, events)
+        observed.append((result, events))
+    assert observed[0] == observed[1]
+
+
+def test_merge_same_adjacent_nonterminal_branch_is_declined():
+    source = (
+        "def f(a, b):\n    values = []\n"
+        "    if a:\n        values.append(1)\n"
+        "    if b:\n        values.append(1)\n"
+        "    return values\n"
+    )
+    assert apply_rules(source, {"merge-same-branch"}) == (source, [])
+
+
+@pytest.mark.parametrize("first", [False, True])
+@pytest.mark.parametrize("second", [False, True])
+def test_merge_same_elif_branch_preserves_evaluation(first, second):
+    source = (
+        "def f(a, b, events):\n"
+        "    if a():\n        value = 1\n"
+        "    elif b():\n        value = 1\n"
+        "    else:\n        value = 2\n"
+        "    events.append(value)\n"
+    )
+    proposed, names = apply_rules(source, {"merge-same-branch"})
+    assert names == ["merge-same-branch"]
+    observed = []
+    for code in (source, proposed):
+        events = []
+
+        def a(events=events):
+            events.append("a")
+            return first
+
+        def b(events=events):
+            events.append("b")
+            return second
+
+        namespace = {}
+        exec(code, namespace)  # noqa: S102 - fixed differential fixture
+        namespace["f"](a, b, events)
+        observed.append(events)
+    assert observed[0] == observed[1]
+
+
+def test_merge_same_branch_preserves_comment_multiset():
+    source = (
+        "def f(value):\n"
+        "    if value == 1:\n        return None\n"
+        "    # the second spelling is also empty\n"
+        "    elif value == 2:\n        return None\n"
+        "    # retain this fallback explanation\n"
+        "    else:\n        return value\n"
+    )
+    proposed, names = apply_rules(source, {"merge-same-branch"})
+    assert names == ["merge-same-branch"]
+    assert proposed.count("#") == 2
+    assert "# the second spelling is also empty" in proposed
+    assert "# retain this fallback explanation" in proposed
+    original, candidate = {}, {}
+    exec(source, original)  # noqa: S102 - fixed differential fixture
+    exec(proposed, candidate)  # noqa: S102 - fixed differential fixture
+    assert [original["f"](v) for v in range(4)] == [
+        candidate["f"](v) for v in range(4)
+    ]
+
+
+def test_merge_same_branch_preserves_inline_comments():
+    source = (
+        "def f(value):\n"
+        "    if value == 1:  # first case\n        return None\n"
+        "    elif value == 2:\n        return None\n"
+        "    return value\n"
+    )
+    proposed, names = apply_rules(source, {"merge-same-branch"})
+    assert names == ["merge-same-branch"]
+    assert "# first case" in proposed
+
+
+def test_conditional_return_preserves_explanatory_comments():
+    source = (
+        "def f(value):\n"
+        "    if value:  # chosen path\n"
+        "        return value + 1\n"
+        "    # ordinary fallback\n"
+        "    return value - 1\n"
+    )
+    proposed, names = apply_rules(source, {"conditional-return"})
+    assert names == ["conditional-return"]
+    assert "# chosen path" in proposed and "# ordinary fallback" in proposed
+    original, candidate = {}, {}
+    exec(source, original)  # noqa: S102 - fixed differential fixture
+    exec(proposed, candidate)  # noqa: S102 - fixed differential fixture
+    assert [original["f"](v) for v in (0, 1)] == [
+        candidate["f"](v) for v in (0, 1)
+    ]
+
+
+@pytest.mark.parametrize(
+    "directive", ["# type: ignore", "# noqa", "# pragma: no cover", "# fmt: off"]
+)
+def test_comment_directives_are_never_moved(directive):
+    source = (
+        f"def f(value):\n    if value:  {directive}\n"
+        "        return 1\n    return 2\n"
+    )
+    assert apply_rules(source, {"conditional-return"}) == (source, [])
+
+
+@pytest.mark.parametrize("first", [False, True])
+@pytest.mark.parametrize("second", [False, True])
+def test_flatten_nested_if_preserves_short_circuit(first, second):
+    source = (
+        "def f(a, b, events):\n"
+        "    if a():  # outer\n"
+        "        if b():  # inner\n"
+        "            events.append('body')\n"
+    )
+    proposed, names = apply_rules(source, {"flatten-nested-if"})
+    assert names == ["flatten-nested-if"]
+    assert "# outer" in proposed and "# inner" in proposed
+    observed = []
+    for code in (source, proposed):
+        events = []
+
+        def a(events=events):
+            events.append("a")
+            return first
+
+        def b(events=events):
+            events.append("b")
+            return second
+
+        namespace = {}
+        exec(code, namespace)  # noqa: S102 - fixed differential fixture
+        namespace["f"](a, b, events)
+        observed.append(events)
+    assert observed[0] == observed[1]
+
+
+def test_flatten_nested_if_declines_else_ownership():
+    source = (
+        "def f(a, b):\n"
+        "    if a:\n"
+        "        if b:\n            return 1\n"
+        "        else:\n            return 2\n"
+    )
+    assert apply_rules(source, {"flatten-nested-if"}) == (source, [])
+
+
+def test_ruff_does_not_delete_imports_or_leak_comparison_values():
+    from less_code.static import _ruff_fix
+
+    source = "import codecs\n\ndef f(a, b):\n    if a > b:\n        return True\n    return False\n"
+    proposed = _ruff_fix(source, "module.py", unsafe=True)
+    assert "import codecs" in proposed
+
+    class Operand:
+        def __gt__(self, other):
+            return [42]
+
+    namespace = {}
+    exec(proposed, namespace)  # noqa: S102 - fixed adversarial fixture
+    assert namespace["f"](Operand(), 0) is True
+
+
+@pytest.mark.parametrize("first", [False, True])
+@pytest.mark.parametrize("second", [False, True])
+def test_elif_assignment_stays_inside_the_else_arm(first, second):
+    source = (
+        "def f(a, b):\n    if a:\n        x = 1\n"
+        "    elif b:\n        x = 2\n    else:\n        x = 3\n    return x\n"
+    )
+    proposed, names = apply_rules(source, {"conditional-assignment"})
+    assert names
+    original, candidate = {}, {}
+    exec(source, original)  # noqa: S102 - fixed differential fixture
+    exec(proposed, candidate)  # noqa: S102 - fixed differential fixture
+    assert original["f"](first, second) == candidate["f"](first, second)
+
+
+def test_elif_rewrite_does_not_evaluate_skipped_condition():
+    source = (
+        "def f(a, probe):\n    if a:\n        x = 1\n"
+        "    elif probe():\n        x = 2\n    else:\n        x = 3\n    return x\n"
+    )
+    proposed, _ = apply_rules(source, {"conditional-assignment"})
+    namespace = {}
+    exec(proposed, namespace)  # noqa: S102 - fixed regression fixture
+
+    def forbidden():
+        raise AssertionError("earlier branch should skip this condition")
+
+    assert namespace["f"](True, forbidden) == 1
+
+
+@pytest.mark.parametrize("condition", [False, True])
+@pytest.mark.parametrize(
+    "target", ["container()[index()]", "container().value", "a, b"]
+)
+def test_conditional_assignment_preserves_rhs_before_target_order(condition, target):
+    source = (
+        f"def f(condition, container, index, value):\n"
+        f"    if condition():\n        {target} = value(1)\n"
+        f"    else:\n        {target} = value(2)\n"
+    )
+    proposed, names = apply_rules(source, {"conditional-assignment"})
+    assert names
+    observed = []
+    for code in (source, proposed):
+        events = []
+
+        class Destination:
+            def __setitem__(self, key, value, events=events):
+                events.append(("setitem", key, value))
+
+            def __setattr__(self, name, value, events=events):
+                events.append(("setattr", name, value))
+
+        def container(events=events):
+            events.append("container")
+            return Destination()
+
+        def index(events=events):
+            events.append("index")
+            return 0
+
+        def value(which, events=events):
+            events.append(("value", which))
+            return (which, which + 1)
+
+        def test(events=events):
+            events.append("condition")
+            return condition
+
+        namespace = {}
+        exec(code, namespace)  # noqa: S102 - fixed differential fixture
+        namespace["f"](test, container, index, value)
+        observed.append(events)
+    assert observed[0] == observed[1]
+
+
+def test_conditional_assignment_declines_different_targets():
+    source = (
+        "def f(c, obj):\n    if c:\n        obj.a = 1\n    else:\n        obj.b = 2\n"
+    )
+    assert apply_rules(source, {"conditional-assignment"}) == (source, [])
 
 
 def test_nonboolean_return_pair_becomes_conditional_expression():
@@ -540,7 +828,7 @@ def test_accumulate_float_start_is_preserved():
     )
     assert "sum((row.cost for row in rows), 0.0)" in out
     ns = {}
-    exec(out, ns)
+    exec(out, ns)  # noqa: S102 - fixed differential fixture
     assert isinstance(ns["f"]([]), float)
 
 
@@ -720,54 +1008,51 @@ def test_semicolon_packed_lines_are_not_clobbered():
     assert applied == [] and out == src
 
 
-def test_strip_main_block_removes_dunder_main():
-    """`if __name__ == "__main__":` block goes; everything around it stays."""
+def test_rules_preserve_script_entrypoint(capsys):
+    """Import tests cannot authorize deleting behavior exercised by python -m."""
     src = (
-        'def hello():\n'
-        '    return 1\n'
-        '\n'
+        "def hello():\n"
+        "    return 1\n"
+        "\n"
         "if __name__ == '__main__':\n"
         "    print('hello')\n"
         "    print('world')\n"
     )
-    out, names = apply_rules(src, {"strip-main-block"})
-    assert 'strip-main-block' in names
-    assert 'if __name__' not in out
-    assert 'def hello' in out
-    assert out.count('print') == 0
+    out, _ = apply_rules(src)
+    exec(out, {"__name__": "__main__"})  # noqa: S102 - execute a fixed regression fixture
+    assert capsys.readouterr().out == "hello\nworld\n"
 
 
 def test_strip_main_block_preserves_referenced_inner_function():
     """A function defined inside the block must not be stripped if called outside."""
     src = (
-        'def _main():\n'
-        '    return 1\n'
-        '\n'
-        'x = _main() + 1\n'
-        '\n'
+        "def _main():\n"
+        "    return 1\n"
+        "\n"
+        "x = _main() + 1\n"
+        "\n"
         "if __name__ == '__main__':\n"
-        '    def _main():\n'
-        '        return 2\n'
-        '    _main()\n'
+        "    def _main():\n"
+        "        return 2\n"
+        "    _main()\n"
     )
-    out, names = apply_rules(src, {'strip-main-block'})
-    assert 'strip-main-block' not in names
+    out, _ = apply_rules(src)
+    assert "def _main" in out
 
 
-def test_strip_main_block_handles_both_comparison_orderings():
+def test_rules_preserve_reversed_main_comparison(capsys):
     """`__name__ == "__main__"` AND `"__main__" == __name__` are the same intent."""
-    src = (
-        'if "__main__" == __name__:\n'
-        "    print('hi')\n"
-    )
-    out, names = apply_rules(src, {'strip-main-block'})
-    assert 'strip-main-block' in names
-    assert 'if' not in out
+    src = "if \"__main__\" == __name__:\n    print('hi')\n"
+    out, _ = apply_rules(src)
+    exec(out, {"__name__": "__main__"})  # noqa: S102 - execute a fixed regression fixture
+    assert capsys.readouterr().out == "hi\n"
 
 
 def test_every_rule_name_is_reachable():
     assert set(RULES) == {
         "bool-return",
+        "merge-same-branch",
+        "flatten-nested-if",
         "conditional-return",
         "conditional-assignment",
         "inline-return-temp",
@@ -777,12 +1062,9 @@ def test_every_rule_name_is_reachable():
         "accumulate-to-sum",
         "sort-to-sorted",
         "drop-bare-reraise",
-        "if-ladder-to-dict",
         "threshold-ladder-to-scan",
         "max-loop-to-max",
         "else-after-terminator",
-        "loop-dict-to-update",
-        "strip-main-block",
     }
 
 
@@ -816,6 +1098,22 @@ def test_else_after_raise_collapses_and_keeps_comments():
                 return ctx.run()
         """
     )
+
+
+@pytest.mark.parametrize("prefix", ["", "b", "f"])
+def test_else_dedent_preserves_multiline_literal_contents(prefix):
+    source = (
+        "def f(flag):\n    if flag:\n        return None\n"
+        "    else:  # fallback explanation\n"
+        f'        return {prefix}"""first\n        second\n        """\n'
+    )
+    proposed, names = apply_rules(source, {"else-after-terminator"})
+    assert names
+    original, candidate = {}, {}
+    exec(source, original)  # noqa: S102 - fixed differential fixture
+    exec(proposed, candidate)  # noqa: S102 - fixed differential fixture
+    assert candidate["f"](False) == original["f"](False)
+    assert "# fallback explanation" in proposed
 
 
 def test_else_after_return_in_a_loop():
@@ -871,10 +1169,10 @@ def test_elif_else_is_not_incorrectly_dedented():
         """
     )
     out, applied = apply_rules(src)
-    assert applied == ["conditional-return"]
+    assert applied == ["conditional-return", "else-after-terminator"]
     assert "if x < 0:" in out
     ns: dict = {}
-    exec(out, ns)
+    exec(out, ns)  # noqa: S102 - fixed differential fixture
     assert ns["f"](0) == "zero" and ns["f"](1) == "pos"
     with pytest.raises(ValueError):
         ns["f"](-1)
@@ -923,7 +1221,7 @@ def test_else_after_terminator_the_click_misfire_is_impossible():
 # ---- loop-dict-to-update ---------------------------------------------------
 
 
-def test_plain_dict_copy_loop_becomes_update():
+def test_plain_dict_copy_loop_is_not_replaced_by_update():
     src = norm(
         """
         def merge(base, extra):
@@ -933,12 +1231,11 @@ def test_plain_dict_copy_loop_becomes_update():
         """
     )
     out, applied = apply_rules(src)
-    assert applied == ["loop-dict-to-update"]
-    assert "base.update(extra)" in out
+    assert applied == [] and out == src
     compile(out, "<t>", "exec")
 
 
-def test_guarded_merge_becomes_a_comprehension_update():
+def test_guarded_merge_is_not_replaced_by_comprehension_update():
     src = norm(
         """
         def merge(base, extra):
@@ -949,8 +1246,7 @@ def test_guarded_merge_becomes_a_comprehension_update():
         """
     )
     out, applied = apply_rules(src)
-    assert applied == ["loop-dict-to-update"]
-    assert "base.update({" in out and "if key not in base})" in out
+    assert applied == [] and out == src
     compile(out, "<t>", "exec")
 
 
@@ -1068,7 +1364,7 @@ def test_pipeline_gate_reverts_a_misfiring_rule(tmp_path, monkeypatch):
     # perform the same collapse the sabotaged rule got wrong, so what must hold
     # is that `is_low` still answers correctly.
     ns: dict = {}
-    exec(source, ns)
+    exec(source, ns)  # noqa: S102 - fixed regression fixture
     assert ns["is_low"](1, 5) is True and ns["is_low"](9, 5) is False
 
 
@@ -1089,7 +1385,7 @@ def test_static_pass_leaves_rules_to_the_pipeline(tmp_path, monkeypatch):
     )
     candidate = result.changed_files.get(str(root / "mod.py"), MISFIRE_MODULE)
     namespace = {}
-    exec(candidate, namespace)
+    exec(candidate, namespace)  # noqa: S102 - fixed regression fixture
     assert namespace["is_low"](1, 5) is True
     # nothing was written: static_pass is pure without a runner
     assert "if on_hand <= reorder:" in (root / "mod.py").read_text()
@@ -1119,8 +1415,8 @@ def _behaves_the_same(before: str, after: str, fn: str, args: list) -> bool:
     """Run the original and the rewrite side by side on the same input."""
     ns_a: dict = {}
     ns_b: dict = {}
-    exec(before, ns_a)
-    exec(after, ns_b)
+    exec(before, ns_a)  # noqa: S102 - fixed differential fixture
+    exec(after, ns_b)  # noqa: S102 - fixed differential fixture
     return ns_a[fn](*args) == ns_b[fn](*[a for a in args])
 
 
@@ -1150,18 +1446,18 @@ LADDER_THRESHOLD = textwrap.dedent("""
 """).lstrip()
 
 
-def test_equality_ladder_becomes_a_dict_lookup():
-    out, applied = apply_rules(LADDER_EQ, {"if-ladder-to-dict"})
-    assert applied == ["if-ladder-to-dict"]
-    assert ".get(status, 9)" in out
-    for arg in ("STOCKOUT", "LOW", "BACKORDER", "WAT", None):
+def test_equality_ladder_never_adds_a_hashability_requirement():
+    out, applied = apply_rules(LADDER_EQ)
+    assert "if-ladder-to-dict" not in applied
+    assert ".get(status, 9)" not in out
+    for arg in ("STOCKOUT", "LOW", "BACKORDER", "WAT", None, [], {}):
         assert _behaves_the_same(LADDER_EQ, out, "priority", [arg])
 
 
 def test_consecutive_ifs_are_the_same_ladder():
     src = LADDER_EQ.replace("elif", "if").replace("    if status", "    if status")
-    out, applied = apply_rules(src, {"if-ladder-to-dict"})
-    assert applied == ["if-ladder-to-dict"]
+    out, applied = apply_rules(src)
+    assert "if-ladder-to-dict" not in applied
     assert _behaves_the_same(src, out, "priority", ["LOW"])
 
 
@@ -1203,7 +1499,7 @@ def test_threshold_ladder_becomes_an_ordered_scan_not_a_dict():
 def test_a_threshold_scan_keeps_the_comparison_so_a_type_error_still_raises():
     out, _applied = apply_rules(LADDER_THRESHOLD, {"threshold-ladder-to-scan"})
     ns: dict = {}
-    exec(out, ns)
+    exec(out, ns)  # noqa: S102 - fixed differential fixture
     with pytest.raises(TypeError):
         ns["tier"]("not a number")
 
@@ -1266,5 +1562,5 @@ def test_the_new_rules_fire_on_the_py_fixture():
     """The two ladder rules exist because FIXTURE.md documents these shapes."""
     source = pathlib.Path("fixtures/py/inventory.py").read_text()
     _out, applied = apply_rules(source)
-    assert "if-ladder-to-dict" in applied
+    assert "if-ladder-to-dict" not in applied
     assert "threshold-ladder-to-scan" in applied

@@ -32,6 +32,8 @@ from dataclasses import dataclass
 
 RULES = (
     "bool-return",
+    "merge-same-branch",
+    "flatten-nested-if",
     "conditional-return",
     "conditional-assignment",
     "inline-return-temp",
@@ -41,12 +43,9 @@ RULES = (
     "accumulate-to-sum",
     "sort-to-sorted",
     "drop-bare-reraise",
-    "if-ladder-to-dict",
     "threshold-ladder-to-scan",
     "max-loop-to-max",
     "else-after-terminator",
-    "loop-dict-to-update",
-    "strip-main-block",
 )
 
 MAX_PASSES = 6
@@ -78,21 +77,15 @@ def _is_const(node: ast.AST, value) -> bool:
 def _boolish(node: ast.expr) -> bool:
     """True when the expression provably already evaluates to a bool."""
     if isinstance(node, ast.Compare):
-        return True
+        return all(
+            isinstance(op, (ast.Is, ast.IsNot, ast.In, ast.NotIn)) for op in node.ops
+        )
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
         return True
     if isinstance(node, ast.BoolOp):
         return all(_boolish(v) for v in node.values)
-    if isinstance(node, ast.Constant) and isinstance(node.value, bool):
-        return True
-    return bool(
-        isinstance(node, ast.Call)
-        and _is_name(node.func)
-        and (
-            node.func.id
-            in ("bool", "isinstance", "issubclass", "hasattr", "callable", "any", "all")
-        )
-    )
+    # Calls with builtin-looking names can be shadowed in the target.
+    return isinstance(node, ast.Constant) and isinstance(node.value, bool)
 
 
 def _names(node: ast.AST) -> set[str]:
@@ -401,7 +394,15 @@ def _rule_bool_return(
         return None
     a, b = first.value, second.value
     if _is_const(a, True) and _is_const(b, False):
-        value = stmt.test if _boolish(stmt.test) else _call("bool", [stmt.test])
+        value = (
+            stmt.test
+            if _boolish(stmt.test)
+            else ast.IfExp(
+                test=stmt.test,
+                body=ast.Constant(value=True),
+                orelse=ast.Constant(value=False),
+            )
+        )
     elif _is_const(a, False) and _is_const(b, True):
         value = ast.UnaryOp(op=ast.Not(), operand=stmt.test)
     else:
@@ -414,6 +415,95 @@ def _rule_bool_return(
         [ast.Return(value=value)],
         stmt.col_offset,
         _end_col(covered, end),
+    )
+
+
+def _rule_merge_same_branch(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """Combine conditions whose branches contain exactly the same statements.
+
+    ``if a: return x; if b: return x`` and ``if a: x; elif b: x`` both become
+    one ``if a or b``.  ``or`` retains left-to-right short-circuit evaluation.
+    Separate adjacent ``if`` statements are only equivalent when the shared
+    body terminates; otherwise both bodies could run when both tests are true.
+    """
+    stmt = body[i]
+    if not isinstance(stmt, ast.If) or not stmt.body:
+        return None
+
+    other: ast.If | None = None
+    covered: list[ast.stmt] = [stmt]
+    adjacent = False
+    if len(stmt.orelse) == 1 and isinstance(stmt.orelse[0], ast.If):
+        other = stmt.orelse[0]
+    elif (
+        not stmt.orelse
+        and i + 1 < len(body)
+        and isinstance(body[i + 1], ast.If)
+        and not body[i + 1].orelse
+        and isinstance(stmt.body[-1], (ast.Return, ast.Raise, ast.Break, ast.Continue))
+    ):
+        other = body[i + 1]
+        covered.append(other)
+        adjacent = True
+    if other is None or len(stmt.body) != len(other.body):
+        return None
+    if any(
+        ast.dump(left, include_attributes=False)
+        != ast.dump(right, include_attributes=False)
+        for left, right in zip(stmt.body, other.body)
+    ):
+        return None
+
+    combined = ast.If(
+        test=ast.BoolOp(op=ast.Or(), values=[stmt.test, other.test]),
+        body=stmt.body,
+        orelse=[] if adjacent else other.orelse,
+    )
+    start, end = _span(covered)
+    return Rewrite(
+        "merge-same-branch",
+        start,
+        end,
+        [combined],
+        stmt.col_offset,
+        _end_col(covered, end),
+    )
+
+
+def _rule_flatten_nested_if(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """``if a: if b: body`` -> ``if a and b: body``.
+
+    Both forms evaluate ``a`` first and evaluate ``b`` only when ``a`` is
+    truthy. Else branches are deliberately excluded because their ownership
+    would change when the nesting is flattened.
+    """
+    outer = body[i]
+    if not (
+        isinstance(outer, ast.If)
+        and not outer.orelse
+        and len(outer.body) == 1
+        and isinstance(outer.body[0], ast.If)
+        and not outer.body[0].orelse
+    ):
+        return None
+    inner = outer.body[0]
+    combined = ast.If(
+        test=ast.BoolOp(op=ast.And(), values=[outer.test, inner.test]),
+        body=inner.body,
+        orelse=[],
+    )
+    start, end = _span([outer])
+    return Rewrite(
+        "flatten-nested-if",
+        start,
+        end,
+        [combined],
+        outer.col_offset,
+        _end_col([outer], end),
     )
 
 
@@ -443,8 +533,6 @@ def _rule_conditional_return(
     if second.value is None:
         return None
     value = ast.IfExp(test=stmt.test, body=stmt.body[0].value, orelse=second.value)
-    if len(" " * stmt.col_offset + "return " + ast.unparse(value)) > 88:
-        return None
     start, end = _span(covered)
     return Rewrite(
         "conditional-return",
@@ -498,9 +586,10 @@ def _rule_conditional_assignment(
         return None
     first, second = stmt.body[0], stmt.orelse[0]
     if not (
-        len(first.targets) == len(second.targets) == 1
-        and _is_name(first.targets[0])
-        and _is_name(second.targets[0], first.targets[0].id)
+        len(first.targets) == len(second.targets)
+        and all(
+            ast.dump(a) == ast.dump(b) for a, b in zip(first.targets, second.targets)
+        )
         and first.type_comment is None
         and second.type_comment is None
         and not isinstance(first.value, ast.Lambda)
@@ -508,11 +597,6 @@ def _rule_conditional_assignment(
     ):
         return None
     value = ast.IfExp(test=stmt.test, body=first.value, orelse=second.value)
-    if (
-        len(" " * stmt.col_offset + first.targets[0].id + " = " + ast.unparse(value))
-        > 88
-    ):
-        return None
     start, end = _span([stmt])
     return Rewrite(
         "conditional-assignment",
@@ -924,56 +1008,6 @@ def _all_constants(nodes: list[ast.expr]) -> bool:
     return all(isinstance(n, ast.Constant) for n in nodes)
 
 
-def _rule_if_ladder_dict(
-    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
-) -> Rewrite | None:
-    """`if x == 'A': return 1` ... `return 9` -> `return {...}.get(x, 9)`.
-
-    Only for `==` against constants of one hashable, non-bool type, all
-    distinct, with constant results and a constant fallback.
-
-    Recorded caveat, deliberately not hidden: if `x` is *unhashable* at
-    runtime, `{...}.get(x, d)` raises `TypeError` where the `==` ladder
-    returned `d`. Nothing in the AST can rule that out, so this rule — like
-    `_python_drop_unreachable` — is correct-by-construction only up to that
-    case and relies on the frozen suite, which is exactly what the layer gate
-    exists for. A ladder whose subject can be an arbitrary object is the one
-    shape to watch in review.
-    """
-    ladder = _return_ladder(body, i)
-    if ladder is None:
-        return None
-    tests, values, default, covered = ladder
-    if len(tests) < 3:
-        return None  # two branches do not pay for a dict literal
-    subject = _same_subject(tests, (ast.Eq,))
-    if subject is None or not _all_constants(values + [default]):
-        return None
-    keys = [t.comparators[0].value for t in tests]
-    if any(isinstance(k, bool) for k in keys) or not all(
-        isinstance(k, (str, int)) for k in keys
-    ):
-        return None  # bools alias ints as dict keys; floats invite 1 == 1.0
-    if len({type(k) for k in keys}) != 1 or len(set(keys)) != len(keys):
-        return None
-    table = ast.Dict(
-        keys=[t.comparators[0] for t in tests],
-        values=list(values),
-    )
-    call = _call("", [])
-    call.func = ast.Attribute(value=table, attr="get", ctx=ast.Load())
-    call.args = [subject, default]
-    start, end = _span(covered)
-    return Rewrite(
-        "if-ladder-to-dict",
-        start,
-        end,
-        [ast.Return(value=call)],
-        covered[0].col_offset,
-        _end_col(covered, end),
-    )
-
-
 _ORDER_OPS = {ast.Gt: ast.Gt, ast.GtE: ast.GtE, ast.Lt: ast.Lt, ast.LtE: ast.LtE}
 
 
@@ -1227,6 +1261,14 @@ def _collapse_else(source: str) -> tuple[str, list[str]]:
         for child in ast.iter_child_nodes(node):
             parents[child] = node
     lines = source.splitlines()
+    string_continuations = {
+        line
+        for node in ast.walk(tree)
+        if isinstance(node, ast.JoinedStr)
+        or isinstance(node, ast.Constant)
+        and isinstance(node.value, (str, bytes))
+        for line in range(node.lineno, node.end_lineno)
+    }
     cuts: list[tuple[int, int, int]] = []  # (else_line_idx, span_end_idx, unit)
     for node in ast.walk(tree):
         if not isinstance(node, ast.If) or not node.orelse:
@@ -1253,6 +1295,8 @@ def _collapse_else(source: str) -> tuple[str, list[str]]:
         span_end = node.end_lineno - 1
         ok = True
         for j in range(idx + 1, span_end + 1):
+            if j in string_continuations:
+                continue  # these leading spaces belong to the literal value
             stripped = lines[j]
             if not stripped.strip():
                 continue
@@ -1275,9 +1319,12 @@ def _collapse_else(source: str) -> tuple[str, list[str]]:
         covered.append((idx, span_end))
     for idx, span_end, unit in sorted(accepted, reverse=True):
         body = [
-            line[unit:] if line.strip() else line
-            for line in lines[idx + 1 : span_end + 1]
+            line[unit:] if line.strip() and number not in string_continuations else line
+            for number, line in enumerate(lines[idx + 1 : span_end + 1], idx + 1)
         ]
+        header = _ELSE_HEADER.match(lines[idx])
+        if header.group(2):
+            body.insert(0, header.group(1) + header.group(2))
         lines[idx : span_end + 1] = body  # drops the `else:` header line
     new_source = "\n".join(lines)
     if source.endswith("\n"):
@@ -1289,157 +1336,10 @@ def _collapse_else(source: str) -> tuple[str, list[str]]:
     return new_source, ["else-after-terminator"] * len(accepted)
 
 
-def _rule_loop_dict_update(block, i, scope_lines, class_body):
-    """`for k, v in D.items(): target[k] = v` -> `target.update(D)`.
-
-    With a `if k not in target` guard the rewrite becomes
-    `target.update({k: v for k, v in D.items() if k not in target})` — the
-    comprehension evaluates the same conditions in the same order. Caveat,
-    recorded rather than hidden: if the comprehension raises midway the
-    intermediate dict is discarded, so `target` keeps NONE of the partial
-    writes the loop would already have made. The frozen suite gates every
-    application.
-    """
-    node = block[i]
-    if not isinstance(node, ast.For) or node.orelse or not node.body:
-        return None
-    target = node.target
-    if not (
-        isinstance(target, ast.Tuple)
-        and len(target.elts) == 2
-        and all(isinstance(e, ast.Name) for e in target.elts)
-    ):
-        return None
-    k, v = (e.id for e in target.elts)
-    it = node.iter
-    if not (
-        isinstance(it, ast.Call)
-        and not it.keywords
-        and not it.args
-        and isinstance(it.func, ast.Attribute)
-        and it.func.attr == "items"
-    ):
-        return None
-    src = it.func.value
-    stmts = list(node.body)
-    guarded = False
-    if (
-        len(stmts) == 1
-        and isinstance(stmts[0], ast.If)
-        and len(stmts[0].body) == 1
-        and not stmts[0].orelse
-    ):
-        test = stmts[0].test
-        if not (
-            isinstance(test, ast.Compare)
-            and len(test.ops) == 1
-            and isinstance(test.ops[0], ast.NotIn)
-            and _is_name(test.left, k)
-            and isinstance(test.comparators[0], ast.Name)
-        ):
-            return None
-        dest_name = test.comparators[0].id
-        stmts = [stmts[0].body[0]]
-        guarded = True
-    else:
-        dest_name = None
-    if len(stmts) != 1 or not isinstance(stmts[0], ast.Assign):
-        return None
-    assign = stmts[0]
-    at = assign.targets
-    if not (
-        len(at) == 1
-        and isinstance(at[0], ast.Subscript)
-        and _is_name(at[0].value)
-        and _is_name(at[0].slice, k)
-    ):
-        return None
-    dest = at[0].value.id
-    if guarded and dest != dest_name:
-        return None
-    # loop targets leak into the enclosing function: only absorb them when
-    # every mention stays inside the loop's own span
-    if _leaks(scope_lines, {k, v}, node.lineno, node.end_lineno):
-        return None
-    if guarded:
-        test = node.body[0].test
-        comp = ast.DictComp(
-            key=ast.Name(id=k, ctx=ast.Load()),
-            value=ast.Name(id=v, ctx=ast.Load()),
-            generators=[_comprehension(target, it, [test])],  # keep D.items()
-        )
-        arg: ast.expr = comp
-    else:
-        arg = src
-    update = ast.Call(
-        func=ast.Attribute(
-            value=ast.Name(id=dest, ctx=ast.Load()), attr="update", ctx=ast.Load()
-        ),
-        args=[arg],
-        keywords=[],
-    )
-    return Rewrite(
-        "loop-dict-to-update",
-        node.lineno,
-        node.end_lineno,
-        [ast.Expr(value=update)],
-        node.col_offset,
-        node.end_col_offset,
-    )
-
-
-def _rule_strip_main_block(
-    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
-) -> Rewrite | None:
-    """`if __name__ == "__main__": ...` is dead-code in a library: pytest never
-    reaches it, no caller imports it, and the only entry path (`python -m`)
-    is a power-user convenience that the public API does not advertise.
-
-    Caveat: a `def _main()` inside such a block is only safe to remove if no
-    other code in this module reaches for it - the function would become
-    undefined at import time. Walk the module body once; if any statement
-    OUTSIDE the block references one of the names defined inside, refuse.
-    """
-    stmt = body[i]
-    if not isinstance(stmt, ast.If) or stmt.orelse:
-        return None
-    test = stmt.test
-    if not (isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)):
-        return None
-    left, right = test.left, test.comparators
-    ok = (
-        (isinstance(left, ast.Name) and left.id == "__name__"
-         and len(right) == 1 and isinstance(right[0], ast.Constant) and right[0].value == "__main__")
-        or (isinstance(left, ast.Constant) and left.value == "__main__"
-            and len(right) == 1 and isinstance(right[0], ast.Name) and right[0].id == "__name__")
-    )
-    if not ok:
-        return None
-    parent_module = body
-    inner_names = {n.name for n in ast.walk(stmt) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-    for j, sibling in enumerate(parent_module):
-        if j == i:
-            continue
-        for n in ast.walk(sibling):
-            if isinstance(n, ast.Name) and n.id in inner_names:
-                return None
-    start, end = _span([stmt])
-    # Replace the entire block with nothing. The module remains valid
-    # Python (body simply has one fewer statement); `_render` with an
-    # empty stmt list produces an empty string, and the slice assignment
-    # collapses the block. A leading `pass` would be one wasted code line.
-    return Rewrite(
-        "strip-main-block",
-        start,
-        end,
-        [],
-        stmt.col_offset,
-        _end_col([stmt], end),
-    )
-
-
 _RULE_FNS = {
     "bool-return": _rule_bool_return,
+    "merge-same-branch": _rule_merge_same_branch,
+    "flatten-nested-if": _rule_flatten_nested_if,
     "conditional-return": _rule_conditional_return,
     "conditional-assignment": _rule_conditional_assignment,
     "inline-return-temp": _rule_inline_return_temp,
@@ -1449,11 +1349,8 @@ _RULE_FNS = {
     "accumulate-to-sum": _rule_accumulate_sum,
     "sort-to-sorted": _rule_sort_to_sorted,
     "drop-bare-reraise": _rule_bare_reraise,
-    "if-ladder-to-dict": _rule_if_ladder_dict,
     "threshold-ladder-to-scan": _rule_threshold_ladder,
     "max-loop-to-max": _rule_max_loop,
-    "loop-dict-to-update": _rule_loop_dict_update,
-    "strip-main-block": _rule_strip_main_block,
 }
 
 
@@ -1538,19 +1435,60 @@ def _one_pass(source: str, only: set[str]) -> tuple[str, list[str]]:
     _collect(tree, only, rewrites, scope_name_lines(tree), False)
     if not rewrites:
         return source, []
-    comment_lines = {
-        token.start[0]
+    comment_tokens = {
+        token.start[0]: token.string
         for token in tokenize.generate_tokens(io.StringIO(source).readline)
         if token.type == tokenize.COMMENT
     }
+    comment_lines = set(comment_tokens)
     lines = source.splitlines()
     applied = []
     for rw in sorted(rewrites, key=lambda r: r.start, reverse=True):
-        if not _line_aligned(lines, rw) or comment_lines.intersection(
-            range(rw.start, rw.end + 1)
-        ):
+        comments = sorted(comment_lines.intersection(range(rw.start, rw.end + 1)))
+        movable_comments = rw.rule in {
+            "bool-return",
+            "conditional-return",
+            "conditional-assignment",
+            "merge-same-branch",
+            "flatten-nested-if",
+        } and all(
+            not re.match(
+                r"#\s*(?:noqa\b|type:\s*ignore\b|pyright:|mypy:|ruff:|"
+                r"fmt:|isort:|pragma:|coverage:)",
+                comment_tokens[number],
+                re.IGNORECASE,
+            )
+            for number in comments
+        )
+        if not _line_aligned(lines, rw) or comments and not movable_comments:
             continue
-        lines[rw.start - 1 : rw.end] = _render(rw)
+        rendered = _render(rw)
+        if comments:
+            rendered = [
+                " " * rw.col + comment_tokens[number] for number in comments
+            ] + rendered
+        if re.match(r"elif\b", lines[rw.start - 1].lstrip()):
+            # An AST If in orelse can be a textual elif. Its replacement
+            # must remain conditional on all earlier branches failing.
+            rendered = [" " * rw.col + "else:"] + [
+                "    " + line if line else line for line in rendered
+            ]
+        candidate_lines = lines[: rw.start - 1] + rendered + lines[rw.end :]
+        if rw.rule in {
+            "conditional-return",
+            "conditional-assignment",
+            "merge-same-branch",
+            "flatten-nested-if",
+        }:
+            from .loc import measure
+
+            # Wide ternaries can expand under the unchanged canonical formatter.
+            # Do not let one such expansion consume unrelated savings in a file.
+            before = measure("\n".join(lines) + "\n", "python")
+            after = measure("\n".join(candidate_lines) + "\n", "python")
+            if not after.formatted or after.code > before.code:
+                continue
+        lines = candidate_lines
         applied.append(rw.rule)
     if not applied:
         return source, []

@@ -1,6 +1,4 @@
-"""less-code: shrink a Python / JavaScript / Rust codebase using the existing
-static-analysis ecosystem (ruff, snapshot-isolated clippy) plus a
-focused semantic-preserving rule library, all gated by the frozen test
-suite and a public-API check."""
+"""Shrink Python / JavaScript / Rust with Ruff and focused candidate rewrites,
+all gated by the frozen test suite, documentation, and public-API checks."""
 
 __version__ = "0.1.0"

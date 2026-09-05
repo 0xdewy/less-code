@@ -335,7 +335,6 @@ def _js_static(
     return combined
 
 
-
 # ---- D1: ruff --fix tiers and unreachable code ------------------------------
 
 
@@ -347,7 +346,7 @@ def _js_static(
 # is a feature probe), and `UP` may raise a project's minimum Python version.
 # Keep only syntax-local families that do not delete arbitrary expressions or
 # substitute newer runtime APIs.
-RUFF_SELECT = "RET,SIM,C4,PIE,PLR1,PERF,F"
+RUFF_SELECT = "RET,SIM,C4,PIE,PLR1,PLR5501,PERF,F"
 
 
 def _ruff_fix(text: str, filename: str, unsafe: bool = False) -> str:
@@ -361,7 +360,18 @@ def _ruff_fix(text: str, filename: str, unsafe: bool = False) -> str:
     """
     if shutil.which("ruff") is None:
         return text
-    cmd = ["ruff", "check", "--select", RUFF_SELECT, "--fix", "--quiet"]
+    cmd = [
+        "ruff",
+        "check",
+        "--select",
+        RUFF_SELECT,
+        "--ignore",
+        "F401,SIM103",
+        "--fix",
+        "--quiet",
+    ]
+    # F401 can erase import side effects/module attributes. SIM103 can leak
+    # a user-defined rich comparison result instead of returning a bool.
     if unsafe:
         cmd.append("--unsafe-fixes")
     cmd += ["--stdin-filename", filename, "-"]

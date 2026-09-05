@@ -33,7 +33,7 @@ def test_if_ladder_skips_non_contiguous():
         "  return 'b';\n"
         "}\n"
     )
-    new, applied = apply_rules(src)
+    _new, applied = apply_rules(src)
     assert applied == []
 
 
@@ -46,7 +46,7 @@ def test_if_ladder_skips_non_throw_terminal():
         "  return -1;\n"
         "}\n"
     )
-    new, applied = apply_rules(src)
+    _new, applied = apply_rules(src)
     assert applied == []
 
 
@@ -76,7 +76,7 @@ def test_accumulator_skips_when_init_is_expression():
         "  return out;\n"
         "}\n"
     )
-    new, applied = apply_rules(src)
+    _new, applied = apply_rules(src)
     assert applied == []
 
 
@@ -111,7 +111,7 @@ def test_rules_idempotent_on_already_reduced():
         "  return ['January', 'February', 'December'][month - 1];\n"
         "}\n"
     )
-    new, applied = apply_rules(src)
+    _new, applied = apply_rules(src)
     assert applied == []
 
 

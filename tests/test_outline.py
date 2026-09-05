@@ -26,7 +26,7 @@ def one(src: str, **kw):
 
 def run(src: str):
     ns: dict = {}
-    exec(compile(src, "m.py", "exec"), ns)
+    exec(compile(src, "m.py", "exec"), ns)  # noqa: S102 - fixed test source
     return ns
 
 
@@ -463,6 +463,7 @@ def test_a_group_spanning_two_package_modules_imports_relatively(tmp_path):
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert r.returncode == 0, r.stderr
 
