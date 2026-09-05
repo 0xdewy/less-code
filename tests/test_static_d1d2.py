@@ -10,6 +10,7 @@ from less_code.pipeline import shrink_project
 from less_code.static import (
     _js_internal_spans,
     _js_remove_dead_internal,
+    _js_static,
     _python_drop_unreachable,
     _ruff_fix,
     _unreachable_line_spans,
@@ -156,6 +157,20 @@ def test_a_statement_sharing_the_return_line_is_left_alone():
 
 
 # ---- D2: JS ----------------------------------------------------------------
+
+
+def test_js_static_does_not_format_files_without_rule_hits(tmp_path, monkeypatch):
+    source = "export const answer = 42;\n"
+    path = tmp_path / "index.js"
+    path.write_text(source)
+
+    def unexpected_lint(*_args, **_kwargs):
+        raise AssertionError("lint fixer called for an unchanged file")
+
+    monkeypatch.setattr("less_code.static._project_js_lint_fix", unexpected_lint)
+    result = _js_static(tmp_path, [path], [path])
+    assert result.changed_files == {}
+    assert path.read_text() == source
 
 
 def test_js_internal_spans_skips_exported_symbols():

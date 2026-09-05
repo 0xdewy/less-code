@@ -30,6 +30,17 @@ Implemented rules:
                                collapse to `if (X >= lo && X <= hi) return
                                arr[X - lo];` plus a single range check.
 
+  conditional-return           `if (C) return A; return B;` -> `return C ? A : B;`.
+                               A bare return is represented by `void 0`, not the
+                               shadowable global named `undefined`.
+
+  inline-return-binding        `const X = EXPR; return X;` -> `return EXPR;`
+                               when X has no other reference in the block.
+
+  substring-replace-loop       A private helper that repeatedly appends slices
+                               around a known-found delimiter -> the equivalent
+                               prefix plus `split(...).join(...)` expression.
+
 All rules are conservative: anything outside the strict pattern is left
 alone. The verify gate is still the source of truth.
 """
@@ -37,6 +48,7 @@ alone. The verify gate is still the source of truth.
 from __future__ import annotations
 
 import re
+from itertools import pairwise
 
 import tree_sitter as ts
 import tree_sitter_javascript as tsj
@@ -63,6 +75,207 @@ ASSIGNMENT_OPS = {
 
 def _node_text(src: bytes, node) -> str:
     return src[node.start_byte : node.end_byte].decode("utf-8")
+
+
+def _argument(node):
+    """The value returned by a return statement, or None for bare return."""
+    return next(iter(node.named_children), None)
+
+
+def _identifier_nodes(src: bytes, node, name: str) -> list:
+    found = []
+
+    def visit(current):
+        if current.type == "identifier" and _node_text(src, current) == name:
+            found.append(current)
+            return
+        for child in current.named_children:
+            visit(child)
+
+    visit(node)
+    return found
+
+
+# ---- small control-flow and binding laws -----------------------------------
+
+
+def _single_return(consequence):
+    if consequence is None:
+        return None
+    if consequence.type == "return_statement":
+        return consequence
+    if consequence.type != "statement_block":
+        return None
+    children = list(consequence.named_children)
+    if len(children) != 1 or children[0].type != "return_statement":
+        return None
+    return children[0]
+
+
+def _collect_conditional_returns(src: bytes, root):
+    out = []
+
+    def visit(node):
+        if node.type == "statement_block":
+            statements = list(node.named_children)
+            for first, second in pairwise(statements):
+                if first.type != "if_statement" or second.type != "return_statement":
+                    continue
+                if any(child.type == "else_clause" for child in first.children):
+                    continue
+                first_return = _single_return(first.child_by_field_name("consequence"))
+                condition = first.child_by_field_name("condition")
+                if first_return is None or condition is None:
+                    continue
+                left = _argument(first_return)
+                right = _argument(second)
+                # boolean-chain-collapse owns this overlap.
+                if (
+                    left is not None
+                    and right is not None
+                    and left.type == "false"
+                    and right.type == "true"
+                ):
+                    continue
+                condition_text = _node_text(src, condition).strip()
+                if condition.type == "parenthesized_expression":
+                    condition_text = condition_text[1:-1].strip()
+                left_text = "void 0" if left is None else _node_text(src, left)
+                right_text = "void 0" if right is None else _node_text(src, right)
+                semicolon = (
+                    ";" if _node_text(src, second).rstrip().endswith(";") else ""
+                )
+                inner = next(iter(condition.named_children), None)
+                if (
+                    condition.type == "parenthesized_expression"
+                    and inner is not None
+                    and inner.type == "unary_expression"
+                    and condition_text.startswith("!")
+                ):
+                    condition_text = condition_text[1:].strip()
+                    replacement = f"return {condition_text} ? {right_text} : {left_text}{semicolon}"
+                else:
+                    replacement = f"return {condition_text} ? {left_text} : {right_text}{semicolon}"
+                out.append(
+                    (
+                        first.start_point[0] + 1,
+                        second.end_point[0] + 1,
+                        replacement,
+                        "conditional-return",
+                    )
+                )
+                return
+        for child in node.named_children:
+            visit(child)
+
+    visit(root)
+    return out
+
+
+def _collect_inline_return_bindings(src: bytes, root):
+    out = []
+
+    def visit(node):
+        if node.type == "statement_block":
+            statements = list(node.named_children)
+            for declaration, returned in pairwise(statements):
+                if (
+                    declaration.type
+                    not in {
+                        "lexical_declaration",
+                        "variable_declaration",
+                    }
+                    or returned.type != "return_statement"
+                ):
+                    continue
+                declarators = [
+                    child
+                    for child in declaration.named_children
+                    if child.type == "variable_declarator"
+                ]
+                if len(declarators) != 1:
+                    continue
+                # `var`/`let` bindings can be observable through direct eval;
+                # this rule is intentionally limited to immutable forwarding.
+                if not _node_text(src, declaration).lstrip().startswith("const "):
+                    continue
+                declarator = declarators[0]
+                name = declarator.child_by_field_name("name")
+                value = declarator.child_by_field_name("value")
+                argument = _argument(returned)
+                if (
+                    name is None
+                    or name.type != "identifier"
+                    or value is None
+                    or argument is None
+                ):
+                    continue
+                name_text = _node_text(src, name)
+                uses = _identifier_nodes(src, argument, name_text)
+                if len(uses) != 1:
+                    continue
+                direct_return = (
+                    argument.type == "identifier"
+                    and _node_text(src, argument) == name_text
+                )
+                if not direct_return and (
+                    value.start_point[0] != value.end_point[0]
+                    or returned.start_point[0] != returned.end_point[0]
+                ):
+                    continue
+                # Removing a declaration must not change hoisting/TDZ behavior
+                # for another reference elsewhere in this lexical block.
+                if len(_identifier_nodes(src, node, name_text)) != 2:
+                    continue
+                use = uses[0]
+                returned_text = _node_text(src, returned)
+                offset = use.start_byte - returned.start_byte
+                value_text = _node_text(src, value)
+                if direct_return and "\n" in value_text:
+                    line_start = src.rfind(b"\n", 0, declaration.start_byte) + 1
+                    prefix = src[line_start : declaration.start_byte].decode("utf-8")
+                    value_lines = value_text.splitlines()
+                    value_text = "\n".join(
+                        [value_lines[0]]
+                        + [line.removeprefix(prefix) for line in value_lines[1:]]
+                    )
+                inserted = (
+                    value_text
+                    if value.type
+                    in {
+                        "identifier",
+                        "member_expression",
+                        "call_expression",
+                        "new_expression",
+                        "await_expression",
+                    }
+                    or (use.parent is not None and use.parent.type == "arguments")
+                    else f"({value_text})"
+                )
+                replacement = (
+                    returned_text[:offset]
+                    + inserted
+                    + returned_text[offset + len(name_text) :]
+                )
+                if (
+                    not direct_return
+                    and returned.start_point[1] + len(replacement) > 88
+                ):
+                    continue
+                out.append(
+                    (
+                        declaration.start_point[0] + 1,
+                        returned.end_point[0] + 1,
+                        replacement,
+                        "inline-return-binding",
+                    )
+                )
+                return
+        for child in node.named_children:
+            visit(child)
+
+    visit(root)
+    return out
 
 
 # ---- if-ladder-to-array-lookup --------------------------------------------
@@ -425,6 +638,8 @@ RULES = (
     "if-ladder-to-array-lookup",
     "accumulator-to-direct",
     "boolean-chain-collapse",
+    "conditional-return",
+    "inline-return-binding",
     "for-loop-with-early-return-to-every",
     "multi-condition-ladder",
     "filter-loop",
@@ -436,6 +651,8 @@ RULES = (
     "guarded-filter-loop",
     "return-ladder",
     "undefined-default",
+    "substring-replace-loop",
+    "concise-arrow-return",
 )
 
 
@@ -532,6 +749,7 @@ def _apply_loop_idioms(source: str, selected: set[str]) -> tuple[str, list[str]]
             r"(?P=i)  (?P<cmt>//[^\n]*\n)?(?P=i)  if \((?P<cond>[^\n]+)\) \{\n"
             r"(?P=i)    out\.push\((?P=arr)\[i\]\);\n(?P=i)  \}\n(?P=i)\}\n(?P=i)return out;"
         )
+
         def _emit(m):
             indent = m["i"]
             comment = m["cmt"]
@@ -576,6 +794,60 @@ def _apply_loop_idioms(source: str, selected: set[str]) -> tuple[str, list[str]]
             source,
         )
         applied += ["undefined-default"] * count
+    if "substring-replace-loop" in selected:
+        pattern = re.compile(
+            r"(?m)^(?P<i>[ \t]*)let (?P<fn>\w+) = \((?P<string>\w+), "
+            r"(?P<close>\w+), (?P<replace>\w+), (?P<index>\w+)\) => \{\n"
+            r'(?P=i)[ \t]+let (?P<result>\w+) = "", (?P<cursor>\w+) = 0\n'
+            r"(?P=i)[ \t]+do \{\n"
+            r"(?P=i)[ \t]+(?P=result) \+= (?P=string)\.substring\((?P=cursor), (?P=index)\) \+ (?P=replace)\n"
+            r"(?P=i)[ \t]+(?P=cursor) = (?P=index) \+ (?P=close)\.length\n"
+            r"(?P=i)[ \t]+(?P=index) = (?P=string)\.indexOf\((?P=close), (?P=cursor)\)\n"
+            r"(?P=i)[ \t]+\} while \(~(?P=index)\)\n"
+            r"(?P=i)[ \t]+return (?P=result) \+ (?P=string)\.substring\((?P=cursor)\)\n"
+            r"(?P=i)\}"
+        )
+
+        def replace_loop(match):
+            # The sole accepted caller has already proved `index` is found.
+            call = (
+                rf"~{re.escape(match['index'])}\s*\?[^\n]*"
+                rf"{re.escape(match['fn'])}\("
+                rf"{re.escape(match['string'])},\s*{re.escape(match['close'])},\s*"
+                rf"{re.escape(match['replace'])},\s*{re.escape(match['index'])}\)"
+            )
+            if len(re.findall(rf"\b{re.escape(match['fn'])}\b", source)) != 2:
+                return match.group(0)
+            if re.search(call, source) is None:
+                return match.group(0)
+            indent = match["i"]
+            return (
+                f"{indent}let {match['fn']} = ({match['string']}, {match['close']}, "
+                f"{match['replace']}, {match['index']}) =>\n"
+                f"{indent}\t{match['string']}.substring(0, {match['index']}) + "
+                f"{match['string']}.substring({match['index']}).split({match['close']})"
+                f".join({match['replace']})"
+            )
+
+        before = source
+        source = pattern.sub(replace_loop, source)
+        if source != before:
+            applied.append("substring-replace-loop")
+    if "concise-arrow-return" in selected:
+        pattern = re.compile(
+            r"(?m)^(?P<i>[ \t]*)(?P<head>[^\n]*=>) \{\n"
+            r"(?P=i)[ \t]+return (?P<expr>[^\n]+);\n"
+            r"(?P=i)\};"
+        )
+
+        def concise_arrow(match):
+            expression = match["expr"]
+            if expression.lstrip().startswith("{"):
+                expression = f"({expression})"
+            return f"{match['i']}{match['head']} {expression};"
+
+        source, count = pattern.subn(concise_arrow, source)
+        applied += ["concise-arrow-return"] * count
     return source, applied
 
 
@@ -1042,6 +1314,10 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
         rewrites.extend(_collect_accumulators(src_bytes, tree.root_node))
     if "boolean-chain-collapse" in selected:
         rewrites.extend(_collect_boolean_chains(src_bytes, tree.root_node))
+    if "conditional-return" in selected:
+        rewrites.extend(_collect_conditional_returns(src_bytes, tree.root_node))
+    if "inline-return-binding" in selected:
+        rewrites.extend(_collect_inline_return_bindings(src_bytes, tree.root_node))
     if "for-loop-with-early-return-to-every" in selected:
         rewrites.extend(_collect_for_loop_every(src_bytes, tree.root_node))
     if "multi-condition-ladder" in selected:
@@ -1054,7 +1330,7 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
         if start - 1 >= len(lines) or end - 1 >= len(lines):
             continue
         indent = len(lines[start - 1]) - len(lines[start - 1].lstrip())
-        pad = " " * indent
+        pad = lines[start - 1][:indent]
         new_block = [
             (pad + ln) if ln.strip() else "" for ln in replacement.splitlines()
         ]
@@ -1070,7 +1346,9 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
     if not applied:
         return source, []
     try:
-        JS_PARSER.parse(new_source.encode("utf-8"))
+        parsed = JS_PARSER.parse(new_source.encode("utf-8"))
     except Exception:  # noqa: BLE001 - parser bindings may raise implementation errors
+        return source, []
+    if parsed.root_node.has_error:
         return source, []
     return new_source, applied

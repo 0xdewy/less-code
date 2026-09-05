@@ -19,7 +19,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .loc import PRETTIER_NPX, measure
+from .loc import measure
 
 
 @dataclass
@@ -175,23 +175,6 @@ def _python_remove_dead(
 # ---- D2: JS dead internal (non-exported) symbols ----------------------------
 
 
-def _project_prettier(source: str, path: Path, root: Path) -> str:
-    """Format a JS candidate with the target project's own style settings."""
-    try:
-        proc = subprocess.run(
-            PRETTIER_NPX + ["--stdin-filepath", str(path)],
-            cwd=root,
-            input=source,
-            capture_output=True,
-            text=True,
-            timeout=240,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return source
-    return proc.stdout if proc.returncode == 0 and proc.stdout.strip() else source
-
-
 def _project_js_lint_fix(source: str, path: Path, root: Path) -> str:
     """Apply an installed project's own XO/ESLint fixes without leaving writes."""
     commands = [
@@ -309,9 +292,8 @@ def _js_static(
     js_rule_notes: list[str] = []
     for path, text in originals.items():
         new_text, names = _js_apply_rules(text)
-        new_text = _project_prettier(new_text, path, root)
-        new_text = _project_js_lint_fix(new_text, path, root)
-        if new_text != text:
+        if names and new_text != text:
+            new_text = _project_js_lint_fix(new_text, path, root)
             js_rule_changes[str(path)] = new_text
             js_rule_notes.append(f"{path.name}: js-rules {names}")
     js_rules = StaticResult(

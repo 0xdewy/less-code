@@ -4,12 +4,12 @@ Experiment: historical unsafe proposal replay; not new inference.
 
 Coverage: 2/2 projects passed. Complete run.
 
-Weighted post-formatter code LOC: **9317 → 9002** (3.38% reduction)
+Weighted post-formatter code LOC: **9317 → 9001** (3.39% reduction)
 
 | Project | Language | LOC | static % | total % | Tests/API/docs |
 |---|---:|---:|---:|---:|---|
 | boltons | python | 8939 → 8624 | 3.52% | 3.52% | pass |
-| fastq | javascript | 378 → 378 | 0.0% | 0.0% | pass |
+| fastq | javascript | 378 → 377 | 0.26% | 0.26% | pass |
 
 Every revision is pinned in `corpus.toml`; percentages are weighted by code LOC. Passing tests is not proof of semantic equivalence.
 Projects with a final regression/validation audit: 2. Audit-based checkpoint selection is not independent held-out evaluation.

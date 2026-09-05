@@ -214,3 +214,99 @@ def test_repeat_loop():
     new, applied = apply_rules(src)
     assert "repeat-loop" in applied
     assert "let out = '='.repeat(title.length);" in new
+
+
+def test_conditional_return_preserves_bare_undefined():
+    src = """function peek(head) {
+  if (!head) {
+    return;
+  }
+  return head.value;
+}
+"""
+    new, applied = apply_rules(src, {"conditional-return"})
+    assert applied == ["conditional-return"]
+    assert "return head ? head.value : void 0;" in new
+
+
+def test_conditional_return_does_not_cross_comment():
+    src = """function f(value) {
+  if (value) return 1;
+  // The fallback is intentionally lazy.
+  return fallback();
+}
+"""
+    assert apply_rules(src, {"conditional-return"}) == (src, [])
+
+
+def test_inline_return_binding_requires_no_other_reference():
+    reducible = "function f() {\n  const value = build();\n  return value;\n}\n"
+    new, applied = apply_rules(reducible, {"inline-return-binding"})
+    assert applied == ["inline-return-binding"]
+    assert "return build();" in new
+
+    observed = (
+        "function f() {\n  const value = build();\n  log(value);\n  return value;\n}\n"
+    )
+    assert apply_rules(observed, {"inline-return-binding"}) == (observed, [])
+
+    mutable = "function f() {\n  let value = build();\n  return value;\n}\n"
+    assert apply_rules(mutable, {"inline-return-binding"}) == (mutable, [])
+
+
+def test_inline_return_binding_can_forward_into_call():
+    source = """function makeTemporary(name) {
+  const prefix = path.join(tmpdir(), name);
+  return fs.make(prefix);
+}
+"""
+    new, applied = apply_rules(source, {"inline-return-binding"})
+    assert applied == ["inline-return-binding"]
+    assert "return fs.make(path.join(tmpdir(), name));" in new
+
+
+def test_inline_return_binding_preserves_multiline_expression_indent():
+    source = """function drained() {
+\tconst promise = new Promise(resolve => {
+\t\tcomplete = resolve;
+\t});
+\treturn promise;
+}
+"""
+    new, applied = apply_rules(source, {"inline-return-binding"})
+    assert applied == ["inline-return-binding"]
+    assert new == """function drained() {
+\treturn new Promise(resolve => {
+\t\tcomplete = resolve;
+\t});
+}
+"""
+
+
+def test_concise_arrow_return():
+    source = """const classify = value => {
+  return value ? 'yes' : 'no';
+};
+"""
+    new, applied = apply_rules(source, {"concise-arrow-return"})
+    assert applied == ["concise-arrow-return"]
+    assert new == "const classify = value => value ? 'yes' : 'no';\n"
+
+
+def test_private_substring_replace_loop_collapses():
+    src = """let format = (string, close, replace, index) =>
+  ~index ? prefix + replaceClose(string, close, replace, index) : string
+let replaceClose = (string, close, replace, index) => {
+  let result = "", cursor = 0
+  do {
+    result += string.substring(cursor, index) + replace
+    cursor = index + close.length
+    index = string.indexOf(close, cursor)
+  } while (~index)
+  return result + string.substring(cursor)
+}
+"""
+    new, applied = apply_rules(src, {"substring-replace-loop"})
+    assert applied == ["substring-replace-loop"]
+    assert ".substring(index).split(close).join(replace)" in new
+    assert "do {" not in new

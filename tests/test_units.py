@@ -674,9 +674,36 @@ def test_rust_rules_leave_inline_test_helpers_unchanged():
         "fn count(s: &str) -> usize {\n    let mut count = 0usize;\n"
         "    for _ in s.chars() {\n        count = count + 1;\n    }\n    count\n}\n"
     )
-    assert apply_rules(helper)[1]  # This fixture exercises an actual rule.
+    reduced, applied = apply_rules(helper)
+    assert applied == ["for-count-to-method"]
+    assert "let count = s.chars().count();" in reduced
+    assert "count\n}" in reduced
     source = "#[cfg(test)]\nmod tests {\n" + helper + "}\n"
     assert apply_rules(source) == (source, [])
+
+
+def test_rust_inline_single_use_binding():
+    from less_code.rust_rules import apply_rules
+
+    source = """fn divide(n: u128, divisor: u128) -> (u128, u64) {
+    let quotient = n / divisor;
+    let remainder = n - quotient * divisor;
+    (quotient, remainder as u64)
+}
+"""
+    reduced, applied = apply_rules(source, {"inline-single-use-binding"})
+    assert applied == ["inline-single-use-binding"]
+    assert "(quotient, (n - quotient * divisor) as u64)" in reduced
+
+
+def test_rust_inline_single_use_binding_keeps_types_and_later_uses():
+    from less_code.rust_rules import apply_rules
+
+    typed = "fn f() -> u64 {\n    let value: u64 = 1;\n    value\n}\n"
+    assert apply_rules(typed, {"inline-single-use-binding"}) == (typed, [])
+
+    reused = "fn f() {\n    let value = make();\n    consume(value);\n    inspect(value);\n}\n"
+    assert apply_rules(reused, {"inline-single-use-binding"}) == (reused, [])
 
 
 def test_cli_model_protocol_with_context_and_feedback():

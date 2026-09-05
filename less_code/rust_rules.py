@@ -11,11 +11,16 @@ Implemented rules:
                          `arr.iter().map(PROC).collect::<Vec<_>>().join(&SEP_STR) +
                          NEWLINE`. Catches `csv_escape_row`, `csv_escape_row_owned`,
                          and the inner loop in `csv_escape_rows`.
+
+  inline-single-use-binding  `let x = EXPR; USE(x)` -> `USE(EXPR)` when the
+                             untyped, immutable binding has exactly one use,
+                             in the immediately following statement.
 """
 
 from __future__ import annotations
 
 import re
+from itertools import pairwise
 
 import tree_sitter as ts
 import tree_sitter_rust as tsr
@@ -57,6 +62,112 @@ def test_spans(source: str) -> list[tuple[int, int]]:
 
 def _node_text(src: bytes, node) -> str:
     return src[node.start_byte : node.end_byte].decode("utf-8")
+
+
+def _identifier_nodes(src: bytes, node, name: str) -> list:
+    found = []
+
+    def visit(current):
+        if current.type == "identifier" and _node_text(src, current) == name:
+            found.append(current)
+            return
+        for child in current.named_children:
+            visit(child)
+
+    visit(node)
+    return found
+
+
+def _collect_inline_single_use_bindings(src: bytes, root):
+    """Inline a short forwarding local into its sole, adjacent use.
+
+    Mutable and typed declarations are excluded: mutation needs an identity,
+    while an explicit type can supply coercion or inference context that the
+    use site does not. Comments are named siblings and therefore interrupt the
+    adjacent pair instead of being crossed by the rewrite.
+    """
+    out = []
+
+    def visit(node):
+        if node.type == "block":
+            statements = list(node.named_children)
+            for index, (declaration, following) in enumerate(pairwise(statements)):
+                if declaration.type != "let_declaration":
+                    continue
+                declaration_text = _node_text(src, declaration)
+                if re.match(r"\s*let\s+(?:mut|ref)\b", declaration_text):
+                    continue
+                if declaration.child_by_field_name("type") is not None:
+                    continue
+                pattern = declaration.child_by_field_name("pattern")
+                value = declaration.child_by_field_name("value")
+                if (
+                    pattern is None
+                    or pattern.type != "identifier"
+                    or value is None
+                    or value.start_point[0] != value.end_point[0]
+                    or following.start_point[0] != following.end_point[0]
+                ):
+                    continue
+                name = _node_text(src, pattern)
+                uses = _identifier_nodes(src, following, name)
+                if len(uses) != 1:
+                    continue
+                if any(
+                    _identifier_nodes(src, later, name)
+                    for later in statements[index + 2 :]
+                ):
+                    continue
+                use = uses[0]
+                following_text = _node_text(src, following)
+                offset = use.start_byte - following.start_byte
+                value_text = _node_text(src, value)
+                atomic = value.type in {
+                    "identifier",
+                    "scoped_identifier",
+                    "field_expression",
+                    "call_expression",
+                    "try_expression",
+                    "integer_literal",
+                    "float_literal",
+                    "string_literal",
+                    "char_literal",
+                    "boolean_literal",
+                } or (use.parent is not None and use.parent.type == "arguments")
+                inserted = value_text if atomic else f"({value_text})"
+                replacement = (
+                    following_text[:offset]
+                    + inserted
+                    + following_text[offset + len(name) :]
+                )
+                if (
+                    use.parent is not None
+                    and use.parent.type == "shorthand_field_initializer"
+                ):
+                    continue
+                if following.start_point[1] + len(replacement) > 88:
+                    continue
+                replacement_lines = replacement.splitlines()
+                if len(replacement_lines) > 1:
+                    prefix = " " * following.start_point[1]
+                    replacement = "\n".join(
+                        [replacement_lines[0]]
+                        + [line.removeprefix(prefix) for line in replacement_lines[1:]]
+                    )
+                out.append(
+                    (
+                        declaration.start_point[0] + 1,
+                        following.end_point[0] + 1,
+                        replacement,
+                        "inline-single-use-binding",
+                    )
+                )
+                return
+        for child in node.named_children:
+            visit(child)
+
+    visit(root)
+    return out
 
 
 def _try_interleave(src: bytes, block) -> tuple | None:
@@ -445,7 +556,7 @@ def _try_for_count(src: bytes, block):
     if _node_text(src, rhs.children[2]) != "1":
         return None
     iter_text = _node_text(src, iter_n)
-    return let_stmt, for_stmt, f"{iter_text}.count()"
+    return let_stmt, for_stmt, f"let {count_name} = {iter_text}.count();"
 
 
 def _try_fold_sum(src: bytes, block):
@@ -515,7 +626,7 @@ def _try_fold_sum(src: bytes, block):
     if fn_args_text != f"({x_name})" and fn_args_text != x_name:
         return None
     iter_text = _node_text(src, iter_n)
-    return let_stmt, for_stmt, f"{iter_text}.map({fn_name}).sum()"
+    return let_stmt, for_stmt, f"let {total_name} = {iter_text}.map({fn_name}).sum();"
 
 
 def _collect_for_count(src: bytes, root):
@@ -595,6 +706,7 @@ def _collect_interleaves(src: bytes, root):
 
 
 RULES = (
+    "inline-single-use-binding",
     "csv-interleave-to-join",
     "contains-check-loop",
     "for-count-to-method",
@@ -613,6 +725,8 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
         return source, []
 
     rewrites: list[tuple[int, int, str, str]] = []
+    if "inline-single-use-binding" in selected:
+        rewrites.extend(_collect_inline_single_use_bindings(src_bytes, tree.root_node))
     if "csv-interleave-to-join" in selected:
         rewrites.extend(_collect_interleaves(src_bytes, tree.root_node))
     if "contains-check-loop" in selected:
@@ -640,7 +754,7 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
         if start - 1 >= len(lines) or end - 1 >= len(lines):
             continue
         indent = len(lines[start - 1]) - len(lines[start - 1].lstrip())
-        pad = " " * indent
+        pad = lines[start - 1][:indent]
         new_block = [
             (pad + ln) if ln.strip() else "" for ln in replacement.splitlines()
         ]
@@ -654,7 +768,9 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
         new_source += "\n"
 
     try:
-        RS_PARSER.parse(new_source.encode("utf-8"))
+        parsed = RS_PARSER.parse(new_source.encode("utf-8"))
     except Exception:  # noqa: BLE001 - parser bindings may raise implementation errors
+        return source, []
+    if parsed.root_node.has_error:
         return source, []
     return new_source, applied

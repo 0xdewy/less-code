@@ -8,12 +8,12 @@
     "expansion": {
       "projects": 6,
       "valid": 6,
-      "reduction_pct": 1.15
+      "reduction_pct": 1.29
     },
     "original": {
       "projects": 6,
       "valid": 6,
-      "reduction_pct": 2.75
+      "reduction_pct": 2.89
     }
   },
   "metric": "weighted canonical code LOC; invalid attempts score zero reduction",
@@ -58,7 +58,7 @@
       "audit_baseline_ok": true,
       "audit_error": null,
       "baseline_measured": true,
-      "duration_s": 84.024,
+      "duration_s": 82.989,
       "layer_records": [
         {
           "layer": "external-static",
@@ -103,23 +103,23 @@
           "notes": [
             "cacheutils.py: rules {'conditional-assignment': 1, 'conditional-return': 3}",
             "debugutils.py: rules {'conditional-assignment': 2}",
-            "dictutils.py: rules {'conditional-assignment': 1, 'conditional-return': 3, 'bool-return': 1}",
+            "dictutils.py: rules {'conditional-assignment': 1, 'bool-return': 1, 'conditional-return': 3}",
             "ecoutils.py: rules {'conditional-assignment': 1}",
             "excutils.py: rules {'conditional-assignment': 1, 'conditional-return': 2}",
             "fileutils.py: rules {'conditional-return': 1}",
             "formatutils.py: rules {'append-loop-to-comprehension': 1}",
-            "funcutils.py: rules {'conditional-assignment': 3, 'drop-bare-reraise': 1}",
+            "funcutils.py: rules {'drop-bare-reraise': 1, 'conditional-assignment': 3}",
             "ioutils.py: rules {'conditional-return': 1}",
-            "iterutils.py: rules {'conditional-return': 1, 'sort-to-sorted': 1}",
+            "iterutils.py: rules {'sort-to-sorted': 1, 'conditional-return': 1}",
             "jsonutils.py: rules {'conditional-assignment': 1}",
             "listutils.py: rules {'merge-same-branch': 1, 'conditional-return': 1}",
             "mathutils.py: rules {'conditional-assignment': 2}",
             "setutils.py: rules {'merge-same-branch': 1, 'conditional-return': 8}",
             "socketutils.py: rules {'conditional-assignment': 3}",
-            "statsutils.py: rules {'conditional-assignment': 1, 'merge-same-branch': 1, 'conditional-return': 3, 'append-loop-to-comprehension': 1}",
-            "strutils.py: rules {'conditional-assignment': 3, 'merge-same-branch': 1, 'conditional-return': 8, 'bool-return': 1}",
+            "statsutils.py: rules {'conditional-assignment': 1, 'append-loop-to-comprehension': 1, 'merge-same-branch': 1, 'conditional-return': 3}",
+            "strutils.py: rules {'conditional-assignment': 3, 'merge-same-branch': 1, 'bool-return': 1, 'conditional-return': 8}",
             "timeutils.py: rules {'conditional-assignment': 1, 'conditional-return': 5}",
-            "urlutils.py: rules {'conditional-assignment': 2, 'boolean-loop-to-any-all': 1, 'conditional-return': 4, 'bool-return': 1}",
+            "urlutils.py: rules {'boolean-loop-to-any-all': 1, 'conditional-assignment': 2, 'bool-return': 1, 'conditional-return': 4}",
             "linkify_changelog.py: rules {'append-loop-to-comprehension': 1}",
             "table_html_app.py: rules {'conditional-return': 1, 'bool-return': 1}"
           ]
@@ -134,7 +134,7 @@
             "debugutils.py: outlined _check_events() from 5 sites (1 code lines saved)",
             "iterutils.py: outlined _check_src() from 4 sites (1 code lines saved)",
             "iterutils.py: outlined _check_visit() from 4 sites (1 code lines saved)",
-            "outline: reverted by the gate (tests failed: ========\nFAILED tests/test_debugutils_trace.py::test_trace_dict - NameError: name 'do_...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 18 passed in 0.21s\n)",
+            "outline: reverted by the gate (tests failed: ========\nFAILED tests/test_debugutils_trace.py::test_trace_dict - NameError: name 'do_...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 18 passed in 0.22s\n)",
             "combined outline failed; narrowing file by file",
             "debugutils.py: outlined _check_events() from 5 sites (1 code lines saved)",
             "outline:debugutils.py: reverted by the gate (tests failed: ========\nFAILED tests/test_debugutils_trace.py::test_trace_dict - NameError: name 'do_...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 18 passed in 0.26s\n)",
@@ -174,30 +174,30 @@
         "table_html_app.py: ruff --fix (unsafe tier)",
         "cacheutils.py: rules {'conditional-assignment': 1, 'conditional-return': 3}",
         "debugutils.py: rules {'conditional-assignment': 2}",
-        "dictutils.py: rules {'conditional-assignment': 1, 'conditional-return': 3, 'bool-return': 1}",
+        "dictutils.py: rules {'conditional-assignment': 1, 'bool-return': 1, 'conditional-return': 3}",
         "ecoutils.py: rules {'conditional-assignment': 1}",
         "excutils.py: rules {'conditional-assignment': 1, 'conditional-return': 2}",
         "fileutils.py: rules {'conditional-return': 1}",
         "formatutils.py: rules {'append-loop-to-comprehension': 1}",
-        "funcutils.py: rules {'conditional-assignment': 3, 'drop-bare-reraise': 1}",
+        "funcutils.py: rules {'drop-bare-reraise': 1, 'conditional-assignment': 3}",
         "ioutils.py: rules {'conditional-return': 1}",
-        "iterutils.py: rules {'conditional-return': 1, 'sort-to-sorted': 1}",
+        "iterutils.py: rules {'sort-to-sorted': 1, 'conditional-return': 1}",
         "jsonutils.py: rules {'conditional-assignment': 1}",
         "listutils.py: rules {'merge-same-branch': 1, 'conditional-return': 1}",
         "mathutils.py: rules {'conditional-assignment': 2}",
         "setutils.py: rules {'merge-same-branch': 1, 'conditional-return': 8}",
         "socketutils.py: rules {'conditional-assignment': 3}",
-        "statsutils.py: rules {'conditional-assignment': 1, 'merge-same-branch': 1, 'conditional-return': 3, 'append-loop-to-comprehension': 1}",
-        "strutils.py: rules {'conditional-assignment': 3, 'merge-same-branch': 1, 'conditional-return': 8, 'bool-return': 1}",
+        "statsutils.py: rules {'conditional-assignment': 1, 'append-loop-to-comprehension': 1, 'merge-same-branch': 1, 'conditional-return': 3}",
+        "strutils.py: rules {'conditional-assignment': 3, 'merge-same-branch': 1, 'bool-return': 1, 'conditional-return': 8}",
         "timeutils.py: rules {'conditional-assignment': 1, 'conditional-return': 5}",
-        "urlutils.py: rules {'conditional-assignment': 2, 'boolean-loop-to-any-all': 1, 'conditional-return': 4, 'bool-return': 1}",
+        "urlutils.py: rules {'boolean-loop-to-any-all': 1, 'conditional-assignment': 2, 'bool-return': 1, 'conditional-return': 4}",
         "linkify_changelog.py: rules {'append-loop-to-comprehension': 1}",
         "table_html_app.py: rules {'conditional-return': 1, 'bool-return': 1}",
         "fileutils.py: outlined _check_self() from 10 sites (7 code lines saved)",
         "debugutils.py: outlined _check_events() from 5 sites (1 code lines saved)",
         "iterutils.py: outlined _check_src() from 4 sites (1 code lines saved)",
         "iterutils.py: outlined _check_visit() from 4 sites (1 code lines saved)",
-        "outline: reverted by the gate (tests failed: ========\nFAILED tests/test_debugutils_trace.py::test_trace_dict - NameError: name 'do_...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 18 passed in 0.21s\n)",
+        "outline: reverted by the gate (tests failed: ========\nFAILED tests/test_debugutils_trace.py::test_trace_dict - NameError: name 'do_...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 18 passed in 0.22s\n)",
         "combined outline failed; narrowing file by file",
         "debugutils.py: outlined _check_events() from 5 sites (1 code lines saved)",
         "outline:debugutils.py: reverted by the gate (tests failed: ========\nFAILED tests/test_debugutils_trace.py::test_trace_dict - NameError: name 'do_...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 18 passed in 0.26s\n)",
@@ -233,7 +233,7 @@
       "audit_baseline_ok": null,
       "audit_error": null,
       "baseline_measured": true,
-      "duration_s": 164.962,
+      "duration_s": 163.745,
       "layer_records": [
         {
           "layer": "external-static",
@@ -251,14 +251,14 @@
           "loc_after": 2601,
           "committed": true,
           "notes": [
-            "more.py: rules {'else-after-terminator': 1, 'sort-to-sorted': 1, 'conditional-return': 8, 'append-loop-to-comprehension': 1, 'conditional-assignment': 4}",
+            "more.py: rules {'conditional-assignment': 4, 'append-loop-to-comprehension': 1, 'else-after-terminator': 1, 'sort-to-sorted': 1, 'conditional-return': 8}",
             "rules: reverted by the gate (tests failed: est_more.py::SampleTests::test_error_cases - UnboundLocalError:...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 381 passed, 3189 subtests passed in 1.10s\n)",
             "combined rules failed; narrowing rule by rule",
             "more.py: rules {'conditional-return': 8}",
             "more.py: rules {'conditional-assignment': 4}",
             "more.py: rules {'append-loop-to-comprehension': 1}",
-            "rules:append-loop-to-comprehension: reverted by the gate (tests failed: est_more.py::SampleTests::test_error_cases - UnboundLocalError:...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 381 passed, 3189 subtests passed in 1.09s\n)",
-            "rules:append-loop-to-comprehension subset: rejected more.py (tests failed: est_more.py::SampleTests::test_error_cases - UnboundLocalError:...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 381 passed, 3189 subtests passed in 1.09s\n)",
+            "rules:append-loop-to-comprehension: reverted by the gate (tests failed: est_more.py::SampleTests::test_error_cases - UnboundLocalError:...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 381 passed, 3189 subtests passed in 1.10s\n)",
+            "rules:append-loop-to-comprehension subset: rejected more.py (tests failed: est_more.py::SampleTests::test_error_cases - UnboundLocalError:...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 381 passed, 3189 subtests passed in 1.10s\n)",
             "more.py: rules {'sort-to-sorted': 1}",
             "more.py: rules {'else-after-terminator': 1}"
           ]
@@ -277,14 +277,14 @@
       "notes": [
         "more.py: ruff --fix (unsafe tier)",
         "recipes.py: ruff --fix (unsafe tier)",
-        "more.py: rules {'else-after-terminator': 1, 'sort-to-sorted': 1, 'conditional-return': 8, 'append-loop-to-comprehension': 1, 'conditional-assignment': 4}",
+        "more.py: rules {'conditional-assignment': 4, 'append-loop-to-comprehension': 1, 'else-after-terminator': 1, 'sort-to-sorted': 1, 'conditional-return': 8}",
         "rules: reverted by the gate (tests failed: est_more.py::SampleTests::test_error_cases - UnboundLocalError:...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 381 passed, 3189 subtests passed in 1.10s\n)",
         "combined rules failed; narrowing rule by rule",
         "more.py: rules {'conditional-return': 8}",
         "more.py: rules {'conditional-assignment': 4}",
         "more.py: rules {'append-loop-to-comprehension': 1}",
-        "rules:append-loop-to-comprehension: reverted by the gate (tests failed: est_more.py::SampleTests::test_error_cases - UnboundLocalError:...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 381 passed, 3189 subtests passed in 1.09s\n)",
-        "rules:append-loop-to-comprehension subset: rejected more.py (tests failed: est_more.py::SampleTests::test_error_cases - UnboundLocalError:...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 381 passed, 3189 subtests passed in 1.09s\n)",
+        "rules:append-loop-to-comprehension: reverted by the gate (tests failed: est_more.py::SampleTests::test_error_cases - UnboundLocalError:...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 381 passed, 3189 subtests passed in 1.10s\n)",
+        "rules:append-loop-to-comprehension subset: rejected more.py (tests failed: est_more.py::SampleTests::test_error_cases - UnboundLocalError:...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 381 passed, 3189 subtests passed in 1.10s\n)",
         "more.py: rules {'sort-to-sorted': 1}",
         "more.py: rules {'else-after-terminator': 1}",
         "more.py: outlined _check_n() from 11 sites (8 code lines saved)",
@@ -305,10 +305,10 @@
       "lang": "javascript",
       "valid": true,
       "loc_start": 64,
-      "loc_after_static": 64,
-      "loc_final": 64,
-      "raw_pct": 0.0,
-      "static_pct": 0.0,
+      "loc_after_static": 61,
+      "loc_final": 61,
+      "raw_pct": 4.69,
+      "static_pct": 4.69,
       "llm_extra_pct": 0.0,
       "tests_ok": true,
       "api_ok": true,
@@ -317,33 +317,25 @@
       "ml_stats": {},
       "ml_records": [],
       "audit_records": [],
-      "source_diff": "",
+      "source_diff": "--- a/index.js\n+++ b/index.js\n@@ -53,11 +53,7 @@\n \t}\n \n \tpeek() {\n-\t\tif (!this.#head) {\n-\t\t\treturn;\n-\t\t}\n-\n-\t\treturn this.#head.value;\n+\t\treturn this.#head ? this.#head.value : void 0;\n \n \t\t// TODO: Node.js 18.\n \t\t// return this.#head?.value;\n",
       "audit_ok": null,
       "audit_baseline_ok": null,
       "audit_error": null,
       "baseline_measured": true,
-      "duration_s": 17.134,
+      "duration_s": 18.892,
       "layer_records": [
         {
           "layer": "external-static",
           "loc_before": 64,
-          "loc_after": 64,
-          "committed": false,
+          "loc_after": 61,
+          "committed": true,
           "notes": [
-            "index.js: js-rules []",
-            "external-static: reverted by the gate (no canonical LOC reduction)",
-            "external-static subset: rejected index.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in index.js (no canonical LOC reduction)"
+            "index.js: js-rules ['conditional-return']"
           ]
         }
       ],
       "notes": [
-        "index.js: js-rules []",
-        "external-static: reverted by the gate (no canonical LOC reduction)",
-        "external-static subset: rejected index.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in index.js (no canonical LOC reduction)"
+        "index.js: js-rules ['conditional-return']"
       ]
     },
     {
@@ -360,10 +352,10 @@
       "lang": "javascript",
       "valid": true,
       "loc_start": 489,
-      "loc_after_static": 489,
-      "loc_final": 489,
-      "raw_pct": 0.0,
-      "static_pct": 0.0,
+      "loc_after_static": 480,
+      "loc_final": 480,
+      "raw_pct": 1.84,
+      "static_pct": 1.84,
       "llm_extra_pct": 0.0,
       "tests_ok": true,
       "api_ok": true,
@@ -372,119 +364,27 @@
       "ml_stats": {},
       "ml_records": [],
       "audit_records": [],
-      "source_diff": "",
+      "source_diff": "--- a/benchmark.js\n+++ b/benchmark.js\n@@ -126,12 +126,9 @@\n \t\t{name: 'Medium concurrency (concurrency: 8)', concurrency: 8},\n \t\t{name: 'High concurrency (concurrency: 16)', concurrency: 16},\n \t], async ({concurrency}) => {\n-\t\tconst cpuIntensiveTask = async id => {\n+\t\tconst cpuIntensiveTask = async id =>\n \t\t\t// Simulate CPU-heavy computation\n-\t\t\tconst hash = cpuWork(1000);\n-\t\t\treturn {id, hash: hash.slice(0, 16)};\n-\t\t};\n-\n+\t\t\t({id, hash: cpuWork(1000).slice(0, 16)});\n \t\tconst ioIntensiveTask = async id => {\n \t\t\t// Simulate multiple I/O operations\n \t\t\tawait randomSleep(20, 60); // Network request\n--- a/scripts/benchmarker.js\n+++ b/scripts/benchmarker.js\n@@ -15,18 +15,9 @@\n \t#totalStart = 0;\n \n \tconstructor() {\n-\t\tthis.formatDuration = ms => {\n-\t\t\tif (ms < 1000) {\n-\t\t\t\treturn `${Math.round(ms)}ms`;\n-\t\t\t}\n-\n-\t\t\treturn `${(ms / 1000).toFixed(2)}s`;\n-\t\t};\n-\n-\t\tthis.formatThroughput = (operationCount, timeMs) => {\n-\t\t\tconst operationsPerSecond = (operationCount / timeMs) * 1000;\n-\t\t\treturn `${Math.round(operationsPerSecond)} ops/s`;\n-\t\t};\n+\t\tthis.formatDuration = ms => ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(2)}s`;\n+\n+\t\tthis.formatThroughput = (operationCount, timeMs) => `${Math.round((operationCount / timeMs) * 1000)} ops/s`;\n \t}\n \n \t/**\n@@ -229,8 +220,7 @@\n Accepts a human-friendly `name` that becomes the directory prefix.\n */\n export function temporaryDirectory(name) {\n-\tconst base = nodePath.join(tmpdir(), `${name}-`);\n-\treturn fs.mkdtempDisposableSync(base);\n+\treturn fs.mkdtempDisposableSync(nodePath.join(tmpdir(), `${name}-`));\n }\n \n export default Benchmarker;\n",
       "audit_ok": null,
       "audit_baseline_ok": null,
       "audit_error": null,
       "baseline_measured": true,
-      "duration_s": 66.082,
+      "duration_s": 32.151,
       "layer_records": [
         {
           "layer": "external-static",
           "loc_before": 489,
-          "loc_after": 489,
-          "committed": false,
+          "loc_after": 480,
+          "committed": true,
           "notes": [
-            "benchmark.js: js-rules []",
-            "index.js: js-rules []",
-            "benchmarker.js: js-rules []",
-            "external-static: reverted by the gate (no canonical LOC reduction)",
-            "external-static subset: rejected benchmark.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmark.js (invalid syntax)",
-            "external-static subset: rejected hunk in benchmark.js (invalid syntax)",
-            "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmark.js (invalid syntax)",
-            "external-static subset: rejected hunk in benchmark.js (invalid syntax)",
-            "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmark.js (invalid syntax)",
-            "external-static subset: rejected index.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-            "external-static subset: rejected benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)"
+            "benchmark.js: js-rules ['inline-return-binding']",
+            "benchmarker.js: js-rules ['inline-return-binding', 'inline-return-binding', 'conditional-return', 'concise-arrow-return', 'concise-arrow-return']"
           ]
         }
       ],
       "notes": [
-        "benchmark.js: js-rules []",
-        "index.js: js-rules []",
-        "benchmarker.js: js-rules []",
-        "external-static: reverted by the gate (no canonical LOC reduction)",
-        "external-static subset: rejected benchmark.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmark.js (invalid syntax)",
-        "external-static subset: rejected hunk in benchmark.js (invalid syntax)",
-        "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmark.js (invalid syntax)",
-        "external-static subset: rejected hunk in benchmark.js (invalid syntax)",
-        "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmark.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmark.js (invalid syntax)",
-        "external-static subset: rejected index.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in index.js (no canonical LOC reduction)",
-        "external-static subset: rejected benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in benchmarker.js (no canonical LOC reduction)"
+        "benchmark.js: js-rules ['inline-return-binding']",
+        "benchmarker.js: js-rules ['inline-return-binding', 'inline-return-binding', 'conditional-return', 'concise-arrow-return', 'concise-arrow-return']"
       ]
     },
     {
@@ -501,10 +401,10 @@
       "lang": "rust",
       "valid": true,
       "loc_start": 414,
-      "loc_after_static": 414,
-      "loc_final": 414,
-      "raw_pct": 0.0,
-      "static_pct": 0.0,
+      "loc_after_static": 410,
+      "loc_final": 410,
+      "raw_pct": 0.97,
+      "static_pct": 0.97,
       "llm_extra_pct": 0.0,
       "tests_ok": true,
       "api_ok": true,
@@ -513,22 +413,30 @@
       "ml_stats": {},
       "ml_records": [],
       "audit_records": [],
-      "source_diff": "",
+      "source_diff": "--- a/benches/bench.rs\n+++ b/benches/bench.rs\n@@ -8,8 +8,7 @@\n     group.bench_function(\"itoa\", |b| {\n         let mut buf = itoa::Buffer::new();\n         b.iter(move || {\n-            let int = hint::black_box(int);\n-            let formatted = buf.format(int);\n+            let formatted = buf.format(hint::black_box(int));\n             hint::black_box(formatted);\n         });\n     });\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -395,8 +395,7 @@\n \n             // Either the compiler sees that remain < 10, or it prevents\n             // a boundary check up next.\n-            let last = remain as u8 & 15;\n-            buf[offset].write(b'0' + last);\n+            buf[offset].write(b'0' + (remain as u8 & 15));\n             // not used: remain = 0;\n         }\n         offset\n@@ -461,6 +460,5 @@\n \n     // n.widening_mul(M_HIGH).1 >> SH_POST\n     let quot = u128_ext::mulhi(n, M_HIGH) >> SH_POST;\n-    let rem = n - quot * D;\n-    (quot, rem as u64)\n-}\n+    (quot, (n - quot * D) as u64)\n+}\n--- a/src/u128_ext.rs\n+++ b/src/u128_ext.rs\n@@ -15,8 +15,7 @@\n     let m = u128::from(x_lo) * u128::from(y_hi) + carry;\n     let high1 = m >> 64;\n \n-    let m_lo = m as u64;\n-    let high2 = (u128::from(x_hi) * u128::from(y_lo) + u128::from(m_lo)) >> 64;\n+    let high2 = (u128::from(x_hi) * u128::from(y_lo) + u128::from(m as u64)) >> 64;\n \n     u128::from(x_hi) * u128::from(y_hi) + high1 + high2\n }\n",
       "audit_ok": null,
       "audit_baseline_ok": null,
       "audit_error": null,
       "baseline_measured": true,
-      "duration_s": 9.203,
+      "duration_s": 9.582,
       "layer_records": [
         {
           "layer": "external-static",
           "loc_before": 414,
-          "loc_after": 414,
-          "committed": false,
-          "notes": []
+          "loc_after": 410,
+          "committed": true,
+          "notes": [
+            "bench.rs: rust-rules ['inline-single-use-binding']",
+            "lib.rs: rust-rules ['inline-single-use-binding', 'inline-single-use-binding']",
+            "u128_ext.rs: rust-rules ['inline-single-use-binding']"
+          ]
         }
       ],
-      "notes": []
+      "notes": [
+        "bench.rs: rust-rules ['inline-single-use-binding']",
+        "lib.rs: rust-rules ['inline-single-use-binding', 'inline-single-use-binding']",
+        "u128_ext.rs: rust-rules ['inline-single-use-binding']"
+      ]
     },
     {
       "name": "humanize",
@@ -575,7 +483,7 @@
       "audit_baseline_ok": null,
       "audit_error": null,
       "baseline_measured": true,
-      "duration_s": 29.392,
+      "duration_s": 29.143,
       "layer_records": [
         {
           "layer": "external-static",
@@ -655,7 +563,7 @@
       "audit_baseline_ok": null,
       "audit_error": null,
       "baseline_measured": true,
-      "duration_s": 29.662,
+      "duration_s": 30.332,
       "layer_records": [
         {
           "layer": "external-static",
@@ -776,10 +684,10 @@
       "lang": "javascript",
       "valid": true,
       "loc_start": 378,
-      "loc_after_static": 378,
-      "loc_final": 378,
-      "raw_pct": 0.0,
-      "static_pct": 0.0,
+      "loc_after_static": 377,
+      "loc_final": 377,
+      "raw_pct": 0.26,
+      "static_pct": 0.26,
       "llm_extra_pct": 0.0,
       "tests_ok": true,
       "api_ok": true,
@@ -797,55 +705,25 @@
           "passed": true
         }
       ],
-      "source_diff": "",
+      "source_diff": "--- a/queue.js\n+++ b/queue.js\n@@ -325,7 +325,7 @@\n   }\n \n   function drained () {\n-    var p = new Promise(function (resolve) {\n+    return new Promise(function (resolve) {\n       process.nextTick(function () {\n         if (queue.idle()) {\n           resolve()\n@@ -339,8 +339,6 @@\n         }\n       })\n     })\n-\n-    return p\n   }\n }\n \n",
       "audit_ok": true,
       "audit_baseline_ok": true,
       "audit_error": null,
       "baseline_measured": true,
-      "duration_s": 25.267,
+      "duration_s": 15.435,
       "layer_records": [
         {
           "layer": "external-static",
           "loc_before": 378,
-          "loc_after": 378,
-          "committed": false,
+          "loc_after": 377,
+          "committed": true,
           "notes": [
-            "bench.js: js-rules []",
-            "eslint.config.js: js-rules []",
-            "example.js: js-rules []",
-            "queue.js: js-rules []",
-            "sync-version.js: js-rules []",
-            "external-static: reverted by the gate (no canonical LOC reduction)",
-            "external-static subset: rejected bench.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in bench.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in bench.js (no canonical LOC reduction)",
-            "external-static subset: rejected eslint.config.js (no canonical LOC reduction)",
-            "external-static subset: rejected example.js (no canonical LOC reduction)",
-            "external-static subset: rejected queue.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in queue.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in queue.js (no canonical LOC reduction)",
-            "external-static subset: rejected hunk in queue.js (no canonical LOC reduction)",
-            "external-static subset: rejected sync-version.js (no canonical LOC reduction)"
+            "queue.js: js-rules ['inline-return-binding']"
           ]
         }
       ],
       "notes": [
-        "bench.js: js-rules []",
-        "eslint.config.js: js-rules []",
-        "example.js: js-rules []",
-        "queue.js: js-rules []",
-        "sync-version.js: js-rules []",
-        "external-static: reverted by the gate (no canonical LOC reduction)",
-        "external-static subset: rejected bench.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in bench.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in bench.js (no canonical LOC reduction)",
-        "external-static subset: rejected eslint.config.js (no canonical LOC reduction)",
-        "external-static subset: rejected example.js (no canonical LOC reduction)",
-        "external-static subset: rejected queue.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in queue.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in queue.js (no canonical LOC reduction)",
-        "external-static subset: rejected hunk in queue.js (no canonical LOC reduction)",
-        "external-static subset: rejected sync-version.js (no canonical LOC reduction)"
+        "queue.js: js-rules ['inline-return-binding']"
       ]
     },
     {
@@ -866,10 +744,10 @@
       "lang": "javascript",
       "valid": true,
       "loc_start": 127,
-      "loc_after_static": 127,
-      "loc_final": 127,
-      "raw_pct": 0.0,
-      "static_pct": 0.0,
+      "loc_after_static": 119,
+      "loc_final": 119,
+      "raw_pct": 6.3,
+      "static_pct": 6.3,
       "llm_extra_pct": 0.0,
       "tests_ok": true,
       "api_ok": true,
@@ -878,22 +756,26 @@
       "ml_stats": {},
       "ml_records": [],
       "audit_records": [],
-      "source_diff": "",
+      "source_diff": "--- a/picocolors.js\n+++ b/picocolors.js\n@@ -9,15 +9,8 @@\n \t\treturn ~index ? open + replaceClose(string, close, replace, index) + close : open + string + close\n \t}\n \n-let replaceClose = (string, close, replace, index) => {\n-\tlet result = \"\", cursor = 0\n-\tdo {\n-\t\tresult += string.substring(cursor, index) + replace\n-\t\tcursor = index + close.length\n-\t\tindex = string.indexOf(close, cursor)\n-\t} while (~index)\n-\treturn result + string.substring(cursor)\n-}\n+let replaceClose = (string, close, replace, index) =>\n+\tstring.substring(0, index) + string.substring(index).split(close).join(replace)\n \n let createColors = (enabled = isColorSupported) => {\n \tlet f = enabled ? formatter : () => String\n",
       "audit_ok": null,
       "audit_baseline_ok": null,
       "audit_error": null,
       "baseline_measured": true,
-      "duration_s": 4.414,
+      "duration_s": 4.302,
       "layer_records": [
         {
           "layer": "external-static",
           "loc_before": 127,
-          "loc_after": 127,
-          "committed": false,
-          "notes": []
+          "loc_after": 119,
+          "committed": true,
+          "notes": [
+            "picocolors.js: js-rules ['substring-replace-loop']"
+          ]
         }
       ],
-      "notes": []
+      "notes": [
+        "picocolors.js: js-rules ['substring-replace-loop']"
+      ]
     },
     {
       "name": "humantime",
@@ -909,10 +791,10 @@
       "lang": "rust",
       "valid": true,
       "loc_start": 1517,
-      "loc_after_static": 1517,
-      "loc_final": 1517,
-      "raw_pct": 0.0,
-      "static_pct": 0.0,
+      "loc_after_static": 1516,
+      "loc_final": 1516,
+      "raw_pct": 0.07,
+      "static_pct": 0.07,
       "llm_extra_pct": 0.0,
       "tests_ok": true,
       "api_ok": true,
@@ -921,22 +803,26 @@
       "ml_stats": {},
       "ml_records": [],
       "audit_records": [],
-      "source_diff": "",
+      "source_diff": "--- a/src/date.rs\n+++ b/src/date.rs\n@@ -66,9 +66,7 @@\n fn two_digits(b1: u8, b2: u8) -> Result<u64, Error> {\n     fn two_digits_inner(a: char, b: char) -> Option<u64> {\n         let a = a.to_digit(10)?;\n-        let b = b.to_digit(10)?;\n-\n-        Some((a * 10 + b) as u64)\n+        Some((a * 10 + b.to_digit(10)?) as u64)\n     }\n \n     two_digits_inner(b1 as char, b2 as char).ok_or(Error::InvalidDigit)\n",
       "audit_ok": null,
       "audit_baseline_ok": null,
       "audit_error": null,
       "baseline_measured": true,
-      "duration_s": 6.269,
+      "duration_s": 6.182,
       "layer_records": [
         {
           "layer": "external-static",
           "loc_before": 1517,
-          "loc_after": 1517,
-          "committed": false,
-          "notes": []
+          "loc_after": 1516,
+          "committed": true,
+          "notes": [
+            "date.rs: rust-rules ['inline-single-use-binding']"
+          ]
         }
       ],
-      "notes": []
+      "notes": [
+        "date.rs: rust-rules ['inline-single-use-binding']"
+      ]
     },
     {
       "name": "shell-words",
@@ -952,10 +838,10 @@
       "lang": "rust",
       "valid": true,
       "loc_start": 353,
-      "loc_after_static": 353,
-      "loc_final": 353,
-      "raw_pct": 0.0,
-      "static_pct": 0.0,
+      "loc_after_static": 352,
+      "loc_final": 352,
+      "raw_pct": 0.28,
+      "static_pct": 0.28,
       "llm_extra_pct": 0.0,
       "tests_ok": true,
       "api_ok": true,
@@ -964,22 +850,26 @@
       "ml_stats": {},
       "ml_records": [],
       "audit_records": [],
-      "source_diff": "",
+      "source_diff": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -337,8 +337,7 @@\n     S: AsRef<str>,\n {\n     let mut line = words.into_iter().fold(String::new(), |mut line, word| {\n-        let quoted = quote(word.as_ref());\n-        line.push_str(quoted.as_ref());\n+        line.push_str(quote(word.as_ref()).as_ref());\n         line.push(' ');\n         line\n     });\n",
       "audit_ok": null,
       "audit_baseline_ok": null,
       "audit_error": null,
       "baseline_measured": true,
-      "duration_s": 1.646,
+      "duration_s": 1.776,
       "layer_records": [
         {
           "layer": "external-static",
           "loc_before": 353,
-          "loc_after": 353,
-          "committed": false,
-          "notes": []
+          "loc_after": 352,
+          "committed": true,
+          "notes": [
+            "lib.rs: rust-rules ['inline-single-use-binding']"
+          ]
         }
       ],
-      "notes": []
+      "notes": [
+        "lib.rs: rust-rules ['inline-single-use-binding']"
+      ]
     },
     {
       "name": "strsim-rs",
@@ -995,10 +885,10 @@
       "lang": "rust",
       "valid": true,
       "loc_start": 1062,
-      "loc_after_static": 1062,
-      "loc_final": 1062,
-      "raw_pct": 0.0,
-      "static_pct": 0.0,
+      "loc_after_static": 1059,
+      "loc_final": 1059,
+      "raw_pct": 0.28,
+      "static_pct": 0.28,
       "llm_extra_pct": 0.0,
       "tests_ok": true,
       "api_ok": true,
@@ -1007,35 +897,39 @@
       "ml_stats": {},
       "ml_records": [],
       "audit_records": [],
-      "source_diff": "",
+      "source_diff": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -243,8 +243,7 @@\n         let mut distance_b = i;\n \n         for (j, b_elem) in b.into_iter().enumerate() {\n-            let cost = usize::from(a_elem != b_elem);\n-            let distance_a = distance_b + cost;\n+            let distance_a = distance_b + usize::from(a_elem != b_elem);\n             distance_b = cache[j];\n             result = min(result + 1, min(distance_a, distance_b + 1));\n             cache[j] = result;\n@@ -503,8 +502,7 @@\n     /// lookup key inside the hashmap using a similar collision resolution\n     /// strategy to `CPython` and `Ruby`\n     fn lookup(&self, key: u32) -> usize {\n-        let hash = key;\n-        let mut i = hash as usize & self.mask as usize;\n+        let mut i = key as usize & self.mask as usize;\n \n         let map = self\n             .map\n@@ -633,8 +631,7 @@\n         for (j, ch2) in s2.clone().enumerate().map(|(j, ch2)| (j + 1, ch2)) {\n             let diag = r1[j] + isize::from(ch1 != ch2);\n             let left = r[j] + 1;\n-            let up = r1[j + 1] + 1;\n-            let mut temp = min(diag, min(left, up));\n+            let mut temp = min(diag, min(left, r1[j + 1] + 1));\n \n             if ch1 == ch2 {\n                 last_col_id = j as isize; // last occurence of s1_i\n",
       "audit_ok": null,
       "audit_baseline_ok": null,
       "audit_error": null,
       "baseline_measured": true,
-      "duration_s": 2.272,
+      "duration_s": 2.806,
       "layer_records": [
         {
           "layer": "external-static",
           "loc_before": 1062,
-          "loc_after": 1062,
-          "committed": false,
-          "notes": []
+          "loc_after": 1059,
+          "committed": true,
+          "notes": [
+            "lib.rs: rust-rules ['inline-single-use-binding', 'inline-single-use-binding', 'inline-single-use-binding']"
+          ]
         }
       ],
-      "notes": []
+      "notes": [
+        "lib.rs: rust-rules ['inline-single-use-binding', 'inline-single-use-binding', 'inline-single-use-binding']"
+      ]
     }
   ],
   "aggregate": {
     "projects": 12,
     "valid": 12,
-    "projects_reduced": 4,
-    "median_project_pct": 0.0,
+    "projects_reduced": 12,
+    "median_project_pct": 1.62,
     "unmeasured": 0,
     "loc_start": 21854,
-    "loc_after_static": 21384,
-    "loc_final": 21384,
-    "raw_pct": 2.15,
-    "static_pct": 2.15,
+    "loc_after_static": 21354,
+    "loc_final": 21354,
+    "raw_pct": 2.29,
+    "static_pct": 2.29,
     "llm_extra_pct": 0.0,
     "audit_performed": false,
     "audited_projects": 2
