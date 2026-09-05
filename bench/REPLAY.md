@@ -4,11 +4,11 @@ Experiment: historical unsafe proposal replay; not new inference.
 
 Coverage: 2/2 projects passed. Complete run.
 
-Weighted post-formatter code LOC: **9317 → 9054** (2.82% reduction)
+Weighted post-formatter code LOC: **9317 → 9002** (3.38% reduction)
 
 | Project | Language | LOC | static % | total % | Tests/API/docs |
 |---|---:|---:|---:|---:|---|
-| boltons | python | 8939 → 8676 | 2.94% | 2.94% | pass |
+| boltons | python | 8939 → 8624 | 3.52% | 3.52% | pass |
 | fastq | javascript | 378 → 378 | 0.0% | 0.0% | pass |
 
 Every revision is pinned in `corpus.toml`; percentages are weighted by code LOC. Passing tests is not proof of semantic equivalence.
