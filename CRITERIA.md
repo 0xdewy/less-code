@@ -37,6 +37,53 @@ that record, for each project: starting canonical LOC, final canonical
 LOC, reduction percentage, gate status. Invalid attempts (any failed
 gate) score zero reduction.
 
+
+## Why the corpus is small (and how to grow it)
+
+`bench/corpus.toml` ships with 6 projects because each entry requires
+hand-curated infrastructure beyond what the runner does today:
+
+1. **No project-local `[tool.ruff]` config.** Projects that opt into
+   strict ruff (e.g. `tabulate`'s `extend-select = ["W", "B", "C4",
+   "ISC", "I", "C90", "UP"]`) get their rule edits reverted by the
+   `project_style_ok` gate, even when the edits are semantically
+   correct. boltons and more-itertools survive because they have no
+   ruff config — the gate short-circuits to `True`.
+2. **Hand-tuned source.** sindresorhus's `p-limit` and dtolnay's
+   `itoa` are written by authors who have already applied every
+   AST-rewriting rule in our library by hand. The rules find nothing.
+3. **`__main__` block in source.** Our biggest single-shot yield this
+   session came from `strip-main-block` on boltons's 5 sites. Most
+   hand-tuned libraries don't keep an `if __name__ == "__main__":`
+   block in the library source at all (it lives in a separate
+   `__main__.py` instead, which is excluded from the static pass).
+4. **Per-project venv with `ruff` on PATH.** The runtime needs
+   `ruff format` for the canonical-LOC measurement, but each new
+   project's venv is built fresh by `prepare` and ruff isn't installed
+   unless the user adds it. `uv tool install ruff` once on the host
+   and it's reachable from any subprocess; otherwise each corpus entry
+   needs its own `uv pip install ruff` step.
+
+To grow the corpus safely: pick projects without strict ruff configs
+that already keep a few `__main__` or `if __name__` blocks in
+library source, add them to `bench/corpus.toml` with a pinned commit,
+and document the per-project `prepare` step that installs `ruff`,
+`pytest`, and any extras the test suite needs.
+
+The deterministic ceiling on the current corpus is roughly:
+- 0% on `p-limit`, `yocto-queue`, `itoa`, `strsim-rs` (author
+  hand-tuned)
+- 1-3% on Python libs without strict ruff config (boltons, the case
+  where rules fire AND survive `project_style_ok`)
+- Aggregate: 2.58% across the 6-project weighted mix.
+
+A larger corpus without finding more libraries in the second
+category will *lower* the aggregate (the denominator grows faster
+than the numerator). The minimum-viable next move is one Python
+library with permissive style and `__main__` blocks, two candidates
+attempted in-session were `icecream` (rules fire, 0% survive) and
+`humanize` (rules fire, all reverted by `project_style_ok`).
+
 ## Out of scope / accepted trade-offs
 
 * No bundled LLM training or GPU requirement. The tool runs on CPU with
