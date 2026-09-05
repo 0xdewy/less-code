@@ -24,6 +24,37 @@ RS_LANGUAGE = ts.Language(tsr.language())
 RS_PARSER = ts.Parser(RS_LANGUAGE)
 
 
+def test_spans(source: str) -> list[tuple[int, int]]:
+    """Byte ranges of inline test modules/functions, including their attributes."""
+    encoded = source.encode()
+    spans = []
+
+    def visit(node):
+        previous = node.prev_named_sibling
+        start = node.start_byte
+        attributes = b""
+        while previous is not None and previous.type == "attribute_item":
+            start = previous.start_byte
+            attributes += encoded[previous.start_byte : previous.end_byte]
+            previous = previous.prev_named_sibling
+        name = node.child_by_field_name("name")
+        named_tests = (
+            node.type == "mod_item"
+            and name is not None
+            and encoded[name.start_byte : name.end_byte] == b"tests"
+        )
+        if node.type in {"mod_item", "function_item"} and (
+            named_tests or re.search(rb"\b(?:test|bench)\b", attributes)
+        ):
+            spans.append((start, node.end_byte))
+            return
+        for child in node.named_children:
+            visit(child)
+
+    visit(RS_PARSER.parse(encoded).root_node)
+    return spans
+
+
 def _node_text(src: bytes, node) -> str:
     return src[node.start_byte : node.end_byte].decode("utf-8")
 
@@ -592,6 +623,16 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
         rewrites.extend(_collect_fold_sum(src_bytes, tree.root_node))
     if not rewrites:
         return source, []
+
+    frozen = [
+        (src_bytes[:start].count(b"\n") + 1, src_bytes[:end].count(b"\n") + 1)
+        for start, end in test_spans(source)
+    ]
+    rewrites = [
+        r
+        for r in rewrites
+        if not any(r[0] <= end and r[1] >= start for start, end in frozen)
+    ]
 
     lines = source.splitlines()
     applied: list[str] = []

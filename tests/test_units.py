@@ -475,11 +475,7 @@ def test_ml_extract_symbols_private_only_rust():
 def test_ml_extract_symbols_include_public_for_diagnostics():
     from less_code.ml_shrink import extract_symbols
 
-    source = (
-        "def public_fn(x):\n    return x\n"
-        "\n"
-        "def _private_fn(x):\n    return x\n"
-    )
+    source = "def public_fn(x):\n    return x\n\ndef _private_fn(x):\n    return x\n"
     public = extract_symbols(source, "python", private_only=False)
     names = [s["name"] for s in public]
     assert names == ["public_fn", "_private_fn"]
@@ -493,3 +489,210 @@ def test_ml_extract_symbols_max_per_file_caps():
     assert len(capped) == 5
     assert [s["name"] for s in capped] == [f"_f{i}" for i in range(5)]
 
+
+def test_model_ranking_context_and_declaration_contract(tmp_path):
+    from less_code.ml_shrink import (
+        declaration_preserved,
+        extract_symbols,
+        ranked_targets,
+        symbol_context,
+    )
+
+    small = tmp_path / "a.py"
+    large = tmp_path / "z.py"
+    sources = {
+        small: "def _tiny():\n    return 1\n",
+        large: "import math\ndef _large(value):\n    a = math.sqrt(value)\n    b = a + 1\n    return b\n",
+    }
+    assert ranked_targets(sources, "python")[0] == (large, "_large")
+    symbol = extract_symbols(sources[large], "python")[0]
+    context = symbol_context(
+        tmp_path,
+        large,
+        symbol,
+        sources,
+        {tmp_path / "test_a.py": "assert _large(4) == 3\n" * 3000},
+    )
+    assert sum(len(item["text"]) for item in context) <= 12000
+    assert any(item["kind"] == "imports" for item in context)
+    assert any(item["kind"] == "test reference" for item in context)
+    assert declaration_preserved(
+        "def _f(x=1):\n    return x\n", "def _f(x=1):\n    return 2\n", "python"
+    )
+    assert not declaration_preserved(
+        "@decorator\ndef _f(x=1):\n    return x\n",
+        "def _f(x=1):\n    return x\n",
+        "python",
+    )
+    assert not declaration_preserved(
+        "def _f(x=1):\n    return x\n", "def _f(x=2):\n    return x\n", "python"
+    )
+    assert not declaration_preserved(
+        "def _f(x):\n    return x\n",
+        "def _f(x):\n    return x\ndef added():\n    pass\n",
+        "python",
+    )
+
+
+def test_model_edit_rejects_stale_source():
+    import pytest
+
+    from less_code.ml_shrink import ProposedEdit, apply_edit, extract_symbols
+
+    source = "def _f():\n    return 1\n"
+    symbol = extract_symbols(source, "python")[0]
+    with pytest.raises(ValueError, match="source has changed"):
+        apply_edit(source.replace("1", "2"), symbol, ProposedEdit(symbol["id"], source))
+
+
+@pytest.mark.parametrize(
+    "before,after,lang,allowed",
+    [
+        (
+            "function f({x = 1}) { return x; }",
+            "function f({x = 2}) { return x; }",
+            "javascript",
+            False,
+        ),
+        (
+            "method(x) { const y = x; return y; }",
+            "method(x) { return x; }",
+            "javascript",
+            True,
+        ),
+        (
+            "fn f(x: i32) -> i32 { let y = x; y }",
+            "fn f(x: i32) -> i32 { x }",
+            "rust",
+            True,
+        ),
+        ("fn f(x: i32) -> i32 { x }", "fn f(x: i64) -> i64 { x }", "rust", False),
+    ],
+)
+def test_model_nonpython_declaration_contract(before, after, lang, allowed):
+    from less_code.ml_shrink import declaration_preserved
+
+    assert declaration_preserved(before, after, lang) is allowed
+
+
+@pytest.mark.parametrize(
+    "lang,before,after",
+    [
+        (
+            "javascript",
+            'function f(x = "a b") { return x; }',
+            'function f ( x = "a b" ){return x;}',
+        ),
+        ("rust", "fn f(x: i32) -> i32 { x }", "fn f ( x:i32 )->i32{x}"),
+    ],
+)
+def test_model_declaration_ignores_only_intertoken_whitespace(lang, before, after):
+    from less_code.ml_shrink import declaration_preserved
+
+    assert declaration_preserved(before, after, lang)
+    if lang == "javascript":
+        assert not declaration_preserved(before, after.replace("a b", "ab"), lang)
+
+
+def test_model_ranking_does_not_reward_long_docstrings(tmp_path):
+    from less_code.ml_shrink import ranked_targets
+
+    path = tmp_path / "module.py"
+    source = (
+        'def _documented():\n    """'
+        + "documentation\n" * 100
+        + '    """\n    return 1\n\n'
+        + "def _work(x):\n    a = x + 1\n    b = a * 2\n    return b\n"
+    )
+    assert ranked_targets({path: source}, "python")[0] == (path, "_work")
+
+
+def test_decorated_method_ranking_and_declaration(tmp_path):
+    from less_code.ml_shrink import (
+        declaration_preserved,
+        extract_symbols,
+        ranked_targets,
+    )
+
+    source = "class A:\n    @property\n    def _value(self):\n        return 1\n"
+    symbol = extract_symbols(source, "python")[0]
+    replacement = "@property\ndef _value(self):\n    return 2"
+    assert declaration_preserved(symbol["text"], replacement, "python")
+    assert ranked_targets({tmp_path / "a.py": source}, "python")
+    assert not declaration_preserved(
+        symbol["text"], replacement.replace("@property\n", ""), "python"
+    )
+
+
+@pytest.mark.parametrize(
+    "model,reasoning", [("qwen2.5-coder:7b", False), ("qwen3:8b", True)]
+)
+def test_ollama_adapter_has_explicit_reasoning_budget(
+    monkeypatch, capsys, model, reasoning
+):
+    import io
+    import json
+
+    from bench import ollama
+
+    monkeypatch.setattr(ollama.sys, "argv", ["ollama.py", model])
+    monkeypatch.setattr(
+        ollama.sys,
+        "stdin",
+        io.StringIO(json.dumps({"system": "contract", "source": "code"})),
+    )
+
+    def respond(request, timeout):
+        payload = json.loads(request.data)
+        assert payload.get("think", False) == reasoning
+        assert payload["options"]["num_predict"] == (4096 if reasoning else 2048)
+        assert timeout == (270 if reasoning else 90)
+        return io.StringIO(json.dumps({"response": "null"}))
+
+    monkeypatch.setattr(ollama.urllib.request, "urlopen", respond)
+    ollama.main()
+    assert capsys.readouterr().out.strip() == "null"
+
+
+def test_rust_inline_test_items_are_never_model_targets():
+    from less_code.ml_shrink import extract_symbols
+    from less_code.rust_rules import test_spans
+
+    source = (
+        "fn helper() {}\n#[test]\nfn regression() {}\n"
+        "#[cfg(test)]\nmod checks { fn helper_for_tests() {} }\n"
+        "mod tests { fn another_helper() {} }\n"
+    )
+    assert [s["name"] for s in extract_symbols(source, "rust")] == ["helper"]
+    assert len(test_spans(source)) == 3
+
+
+def test_rust_rules_leave_inline_test_helpers_unchanged():
+    from less_code.rust_rules import apply_rules
+
+    helper = (
+        "fn count(s: &str) -> usize {\n    let mut count = 0usize;\n"
+        "    for _ in s.chars() {\n        count = count + 1;\n    }\n    count\n}\n"
+    )
+    assert apply_rules(helper)[1]  # This fixture exercises an actual rule.
+    source = "#[cfg(test)]\nmod tests {\n" + helper + "}\n"
+    assert apply_rules(source) == (source, [])
+
+
+def test_cli_model_protocol_with_context_and_feedback():
+    import shlex
+    import sys
+
+    from less_code.ml_shrink import CliBackend, extract_symbols
+
+    symbol = extract_symbols("def _f(x):\n    return x\n", "python")[0]
+    symbol["context"] = [{"text": "CONTEXT"}]
+    symbol["feedback"] = {"reason": "tests failed"}
+    program = (
+        "import json,sys; p=json.load(sys.stdin); "
+        "assert p['context'][0]['text']=='CONTEXT'; "
+        "assert p['feedback']['reason']=='tests failed'; "
+        "print(json.dumps({'symbol_id':p['symbol_id'],'replacement':p['source']}))"
+    )
+    backend = CliBackend(f"{shlex.quote(sys.executable)} -c {shlex.quote(program)}")
+    assert backend.propose("python", symbol).replacement == symbol["text"]

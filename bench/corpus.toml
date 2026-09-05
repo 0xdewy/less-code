@@ -4,6 +4,7 @@ repo = "https://github.com/mahmoud/boltons.git"
 commit = "967864f89791509f9eb36b22b4579d36b72a6df2"
 lang = "python"
 test = [] # use the reducer's current Python interpreter
+audit = ["python", "{manifest_dir}/heldout.py", "boltons"]
 
 [[project]]
 name = "more-itertools"
@@ -33,6 +34,61 @@ name = "itoa"
 repo = "https://github.com/dtolnay/itoa.git"
 commit = "1577ed901354d0d7448ac162328f9dbf5183124c"
 lang = "rust"
+test = ["cargo", "test", "--quiet"]
+
+# Expansion frozen before measuring yield: a strict-style Python library, a
+# Python CLI/codemod, CommonJS concurrency, tiny terminal formatting, and Rust
+# duration/quoting parsers. Small hand-tuned libraries remain negative controls.
+[[project]]
+name = "humanize"
+repo = "https://github.com/python-humanize/humanize.git"
+commit = "3201e702ed7eae506f793fad0aec204f387aeb4c"
+lang = "python"
+cohort = "expansion"
+prepare = ["uv", "venv", ".venv"]
+test = ["uv", "run", "--no-project", "--with", "pytest>=9", "--with", "freezegun", "--with", "pytest-cov", "--with", "pytest-benchmark", "--with-editable", ".", "python", "-m", "pytest", "-xq"]
+
+[[project]]
+name = "pyupgrade"
+repo = "https://github.com/asottile/pyupgrade.git"
+commit = "fbad673bb8f149f3c6022a7dd9c616d39ad8a5e2"
+lang = "python"
+cohort = "expansion"
+test = ["uv", "run", "--no-project", "--with", "pytest", "--with-editable", ".", "python", "-m", "pytest", "-xq"]
+
+[[project]]
+name = "fastq"
+repo = "https://github.com/mcollina/fastq.git"
+commit = "fe2d23196a005810dfcbc4103b3c746cc5542430"
+lang = "javascript"
+cohort = "expansion"
+prepare = ["npm", "install", "--ignore-scripts"]
+test = ["npm", "test", "--silent"]
+audit = ["python", "{manifest_dir}/heldout.py", "fastq"]
+
+[[project]]
+name = "picocolors"
+repo = "https://github.com/alexeyraspopov/picocolors.git"
+commit = "0e7c4af2de299dd7bc5916f2bddd151fa2f66740"
+lang = "javascript"
+cohort = "expansion"
+prepare = ["npm", "install", "--ignore-scripts"]
+test = ["env", "-u", "NO_COLOR", "FORCE_COLOR=1", "npm", "test", "--silent"]
+
+[[project]]
+name = "humantime"
+repo = "https://github.com/tailhook/humantime.git"
+commit = "76c8929b4cc286f675322475a8e1841f35bafc57"
+lang = "rust"
+cohort = "expansion"
+test = ["cargo", "test", "--quiet"]
+
+[[project]]
+name = "shell-words"
+repo = "https://github.com/tmiasko/shell-words.git"
+commit = "8d2868b0edadbd5572acd7ed25b6be890c2781b7"
+lang = "rust"
+cohort = "expansion"
 test = ["cargo", "test", "--quiet"]
 
 [[project]]

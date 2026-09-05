@@ -11,9 +11,215 @@ from __future__ import annotations
 import pathlib
 import textwrap
 
+import pytest
+
 from less_code.ml_shrink import ProposedEdit, apply_edit, extract_symbols, syntax_ok
 from less_code.pipeline import shrink_project
 from less_code.static import StaticResult
+
+
+def test_within_file_salvage_keeps_savings_but_not_documentation_loss(
+    tmp_path, monkeypatch
+):
+    source = (
+        "def _first(x):\n    result = x + 1\n    return result\n\n"
+        "# Preserve this explanation\n\n"
+        "def _second(x):\n    result = x + 2\n    return result\n"
+    )
+    proposal = source.replace(
+        "    result = x + 1\n    return result", "    return x + 1"
+    )
+    proposal = proposal.replace("# Preserve this explanation\n", "")
+    proposal = proposal.replace(
+        "    result = x + 2\n    return result", "    return x + 2"
+    )
+    root = _ml_project(
+        tmp_path,
+        source,
+        "from library import _first, _second\ndef test_values():\n"
+        "    assert _first(1) == 2\n    assert _second(2) == 4\n",
+    )
+    monkeypatch.setattr(
+        "less_code.pipeline.static_pass",
+        lambda *_a, **_k: StaticResult(
+            changed_files={str(root / "library.py"): proposal}
+        ),
+    )
+    monkeypatch.setattr(
+        "less_code.pipeline._apply_rules", lambda sources: (sources, [])
+    )
+    monkeypatch.setattr(
+        "less_code.pipeline._apply_outline", lambda sources: (sources, [])
+    )
+    stats = shrink_project(root)
+    assert stats.tests_ok and stats.docs_ok and stats.api_ok
+    assert stats.loc_start - stats.loc_final == 2
+    assert "# Preserve this explanation" in (root / "library.py").read_text()
+    assert any("kept" in note and "hunk" in note for note in stats.static_notes)
+
+
+@pytest.mark.parametrize(
+    "failure", ["baseline", "static", "model", "exception", "none"]
+)
+def test_terminal_audit_restores_checkpoint_without_model_feedback(
+    tmp_path, monkeypatch, failure
+):
+    source = "def _helper(value):\n    result = value + 0\n    return result\n"
+    root = _ml_project(
+        tmp_path,
+        source,
+        "from library import _helper\ndef test_value():\n    assert _helper(3) == 3\n",
+    )
+    monkeypatch.setattr(
+        "less_code.pipeline.static_pass", lambda *_a, **_k: StaticResult()
+    )
+    monkeypatch.setattr(
+        "less_code.pipeline._apply_rules", lambda sources: (sources, [])
+    )
+    monkeypatch.setattr(
+        "less_code.pipeline._apply_outline", lambda sources: (sources, [])
+    )
+    calls = []
+
+    class Model:
+        def propose(self, lang, symbol):
+            calls.append(symbol)
+            assert "feedback" not in symbol
+            return ProposedEdit(symbol["id"], "def _helper(value):\n    return value\n")
+
+    audits = []
+
+    def audit():
+        stage = ["baseline", "static", "model"][len(audits)]
+        audits.append(stage)
+        if failure == "exception" and stage == "model":
+            raise RuntimeError("validator unavailable")
+        return stage != failure
+
+    if failure == "exception":
+        with pytest.raises(RuntimeError, match="validator unavailable"):
+            shrink_project(root, ml_backend=Model(), final_validator=audit)
+        assert (root / "library.py").read_text() == source
+        return
+    stats = shrink_project(root, ml_backend=Model(), final_validator=audit)
+    assert len(calls) == int(failure not in {"baseline", "static"})
+    assert stats.tests_ok and stats.api_ok and stats.docs_ok
+    assert (stats.loc_final < stats.loc_start) == (failure == "none")
+    if failure != "none":
+        assert (root / "library.py").read_text() == source
+    if failure == "model":
+        assert stats.ml_stats["rolled_back"] == 1
+        assert stats.ml_records[0]["accepted"]  # raw gate decision retained
+        assert stats.ml_records[0]["rolled_back"]
+        assert not stats.layer_records[-1]["committed"]
+
+
+def test_model_recovers_from_test_failure_with_context_and_fresh_spans(
+    tmp_path, monkeypatch
+):
+    source = (
+        "def _first(value):\n    result = value + 0\n    return result\n\n"
+        "def _second(value):\n    result = value + 0\n    return result\n"
+    )
+    root = _ml_project(
+        tmp_path,
+        source,
+        "from library import _first, _second\n\ndef test_values():\n"
+        "    assert _first(3) == 3\n    assert _second(4) == 4\n",
+    )
+    (root / "tests_hidden").mkdir()
+    (root / "tests_hidden" / "test_secret.py").write_text("HIDDEN_MARKER = '_first'\n")
+    monkeypatch.setattr(
+        "less_code.pipeline.static_pass", lambda *_a, **_k: StaticResult()
+    )
+    monkeypatch.setattr(
+        "less_code.pipeline._apply_rules", lambda sources: (sources, [])
+    )
+    monkeypatch.setattr(
+        "less_code.pipeline._apply_outline", lambda sources: (sources, [])
+    )
+
+    class Model:
+        name = "feedback-fixture"
+
+        def propose(self, lang, symbol):
+            assert "HIDDEN_MARKER" not in str(symbol)
+            assert any(item["kind"] == "test reference" for item in symbol["context"])
+            if symbol["name"] == "_first" and not symbol.get("feedback"):
+                return ProposedEdit(symbol["id"], "def _first(value):\n    return 0\n")
+            if symbol["name"] == "_first":
+                assert "tests failed" in symbol["feedback"]["reason"]
+            else:
+                current = (root / "library.py").read_bytes()
+                assert (
+                    current[symbol["start_byte"] : symbol["end_byte"]].decode()
+                    == symbol["text"]
+                )
+                assert b"return value\n" in current
+            return ProposedEdit(
+                symbol["id"], f"def {symbol['name']}(value):\n    return value\n"
+            )
+
+    stats = shrink_project(root, ml_backend=Model())
+    assert stats.tests_ok and stats.ml_stats["accepted"] == 2
+    assert stats.ml_stats["calls"] == 3
+    assert [r["category"] for r in stats.ml_records] == [
+        "tests",
+        "accepted",
+        "accepted",
+    ]
+    assert all(not r["independently_validated"] for r in stats.ml_records)
+    assert stats.ml_records[1]["prompt"]["feedback"]["previous_replacement"].endswith(
+        "return 0\n"
+    )
+
+
+def test_model_attempt_limit_and_duplicate_short_circuit(tmp_path, monkeypatch):
+    source = "def _helper(value):\n    result = value + 0\n    return result\n"
+    root = _ml_project(
+        tmp_path,
+        source,
+        "from library import _helper\ndef test_value():\n    assert _helper(3) == 3\n",
+    )
+    monkeypatch.setattr(
+        "less_code.pipeline.static_pass", lambda *_a, **_k: StaticResult()
+    )
+    monkeypatch.setattr(
+        "less_code.pipeline._apply_rules", lambda sources: (sources, [])
+    )
+    model = _Model({"_helper": "def _helper(value):\n    return 0\n"})
+    single = shrink_project(root, ml_backend=model, ml_attempts=1)
+    assert single.ml_stats["calls"] == 1
+    retries = shrink_project(root, ml_backend=model, ml_attempts=3)
+    assert retries.ml_stats["calls"] == 2
+    assert retries.ml_stats["rejected_tests"] == 1
+    assert retries.ml_stats["rejected_duplicate"] == 1
+    assert (root / "library.py").read_text() == source
+
+
+def test_candidates_use_project_format_and_read_only_lint(tmp_path, monkeypatch):
+    root = _ml_project(
+        tmp_path,
+        "def _helper():\n    result = 'hello'\n    return result\n",
+        "from library import _helper\ndef test_value():\n    assert _helper() == 'hello'\n",
+    )
+    (root / "pyproject.toml").write_text(
+        '[tool.ruff]\nfix = true\n[tool.ruff.lint]\nselect = ["Q"]\n'
+        '[tool.ruff.lint.flake8-quotes]\ninline-quotes = "single"\n'
+        '[tool.ruff.format]\nquote-style = "single"\n'
+    )
+    monkeypatch.setattr(
+        "less_code.pipeline.static_pass", lambda *_a, **_k: StaticResult()
+    )
+    monkeypatch.setattr(
+        "less_code.pipeline._apply_rules", lambda sources: (sources, [])
+    )
+    stats = shrink_project(
+        root, ml_backend=_Model({"_helper": 'def _helper():\n    return "hello"\n'})
+    )
+    assert stats.ml_stats["accepted"] == 1
+    assert "return 'hello'" in (root / "library.py").read_text()
+
 
 VERBOSE_MODULE = textwrap.dedent("""
     def sign(n):
@@ -273,10 +479,10 @@ def _ml_project(tmp_path, source, tests):
     return root
 
 
-def test_ml_public_symbols_are_not_proposed_on(tmp_path, monkeypatch):
-    """The private-only filter on extract_symbols means an LLM that
-    proposes on public names is silently ignored: nothing the model emits
-    matches a candidate symbol, so proposed=0 and nothing is accepted."""
+@pytest.mark.parametrize("preserve_signature", [False, True])
+def test_ml_public_bodies_are_eligible_but_signatures_are_frozen(
+    tmp_path, monkeypatch, preserve_signature
+):
     source = "def public(value):\n    result = value + 0\n    return result\n"
     root = _ml_project(
         tmp_path,
@@ -289,14 +495,18 @@ def test_ml_public_symbols_are_not_proposed_on(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "less_code.pipeline._apply_rules", lambda sources: (sources, [])
     )
-    model = _Model({"public": "def public(x):\n    return x\n"})
+    parameter = "value" if preserve_signature else "x"
+    replacement = f"def public({parameter}):\n    return {parameter}\n"
+    model = _Model({"public": replacement})
 
-    stats = shrink_project(root, ml_backend=model)
+    stats = shrink_project(root, ml_backend=model, ml_attempts=1)
 
     assert stats.tests_ok and stats.api_ok
-    assert (root / "library.py").read_text() == source
-    assert stats.ml_stats["proposed"] == 0
-    assert stats.ml_stats["accepted"] == 0
+    assert (root / "library.py").read_text() == (
+        replacement if preserve_signature else source
+    )
+    assert stats.ml_stats["proposed"] == 1
+    assert stats.ml_stats["accepted"] == int(preserve_signature)
 
 
 def test_ml_documentation_loss_is_reverted(tmp_path, monkeypatch):

@@ -3,7 +3,7 @@
 Layered pipeline, each layer verify-gated independently:
 
   L0  canonical formatter (not counted as reduction)
-  L1  external static tools: ruff / snapshot-isolated clippy
+  L1  Ruff and language-specific static passes
   L1b language rule libraries: semantic-preserving rewrites
   L1c guard-block outlining: project-wide repeated guards
 
@@ -16,11 +16,12 @@ takes another layer down with it.
 from __future__ import annotations
 
 import contextlib
+import difflib
 import json
 import shutil
 import signal
 import subprocess
-from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -49,6 +50,8 @@ class ShrinkStats:
     api_baseline: str = "original"
     static_removed_symbols: list[str] = field(default_factory=list)
     ml_stats: dict[str, int] = field(default_factory=dict)
+    ml_records: list[dict] = field(default_factory=list)
+    audit_records: list[dict] = field(default_factory=list)
 
     def to_json(self) -> dict:
         return {
@@ -69,6 +72,8 @@ class ShrinkStats:
             "static_notes": self.static_notes,
             "layer_records": self.layer_records,
             "ml_stats": self.ml_stats,
+            "ml_records": self.ml_records,
+            "audit_records": self.audit_records,
         }
 
 
@@ -131,56 +136,20 @@ def _apply_outline(
     return {path: changed.get(str(path), text) for path, text in sources.items()}, notes
 
 
-def _ml_proposals(
-    sources: dict[Path, str],
-    lang: str,
-    backend,
-    *,
-    max_symbols_per_file: int = 8,
-    max_symbols_total: int = 64,
-) -> tuple[list[tuple[Path, dict, object]], list[str], int]:
-    """Collect immutable-snapshot proposals, ordered bottom-up per file.
-
-    The host owns symbol selection: only `_`-prefixed python names and
-    non-`pub` rust items / non-`export`ed JS functions are eligible (see
-    `extract_symbols`). The per-file and total caps stop one large file
-    from monopolising the model's budget; the full gate stack still runs
-    on every proposal, so capping only affects how many symbols are
-    *considered*, not how many pass.
-    """
-    from .ml_shrink import ProposedEdit, extract_symbols
-
-    proposals = []
-    notes = []
-    considered = 0
-    for path, text in sources.items():
-        symbols = extract_symbols(
-            text, lang, max_per_file=max_symbols_per_file
-        )
-        for symbol in symbols:
-            if considered >= max_symbols_total:
-                break
-            considered += 1
-            try:
-                edit = backend.propose(lang, symbol)
-            except Exception as exc:  # noqa: BLE001 - third-party backend boundary
-                notes.append(f"{path.name}:{symbol['name']}: model error: {exc}")
-                continue
-            if isinstance(edit, ProposedEdit):
-                proposals.append((path, symbol, edit))
-        if considered >= max_symbols_total:
-            break
-    proposals.sort(key=lambda item: (str(item[0]), -item[1]["start_byte"]))
-    return proposals, notes, considered
-
-
 def shrink_project(
     root: Path,
     lang: str | None = None,
     test_timeout: int = 600,
     ml_backend: object | None = None,
     test_command: list[str] | None = None,
+    ml_attempts: int = 3,
+    ml_symbols: int = 64,
+    final_validator: Callable[[], bool] | None = None,
 ) -> ShrinkStats:
+    if not 1 <= ml_attempts <= 3:
+        raise ValueError("ml_attempts must be between 1 and 3")
+    if not 1 <= ml_symbols <= 64:
+        raise ValueError("ml_symbols must be between 1 and 64")
     project = map_project(root, lang)
     stats = ShrinkStats(
         lang=project.lang,
@@ -231,6 +200,15 @@ def shrink_project(
         )
         return stats
 
+    if final_validator is not None:
+        baseline_ok = final_validator()
+        stats.audit_records.append({"stage": "baseline", "passed": baseline_ok})
+        if not baseline_ok:
+            stats.loc_after_static = stats.loc_final = stats.loc_start
+            stats.api_ok = stats.docs_ok = True
+            stats.static_notes.append("baseline audit failed; no rewrites attempted")
+            return stats
+
     runner = lambda root_, lang_: run_tests(
         root_, lang_, timeout=test_timeout, command=test_command
     )
@@ -253,7 +231,8 @@ def shrink_project(
         if "[tool.ruff" not in text:
             return True
         relative = [str(path.relative_to(root)) for path in paths]
-        commands = [["ruff", "check", *relative]]
+        # A project may set fix=true. Verification must never mutate the tree.
+        commands = [["ruff", "check", "--no-fix", *relative]]
         if "[tool.ruff.format]" in text:
             commands.append(["ruff", "format", "--check", *relative])
         return all(
@@ -297,6 +276,34 @@ def shrink_project(
         changes = {
             str(p): t for p, t in proposed_sources.items() if t != current.get(p)
         }
+        config = root / "pyproject.toml"
+        if (
+            changes
+            and project.lang == "python"
+            and shutil.which("ruff")
+            and config.is_file()
+            and "[tool.ruff" in config.read_text(encoding="utf-8")
+        ):
+            # Render proposals in the target project's style before measuring
+            # and checking them. Canonical metric formatting remains in memory.
+            for path, text in changes.items():
+                formatted = subprocess.run(
+                    [
+                        "ruff",
+                        "format",
+                        "--stdin-filename",
+                        str(Path(path).relative_to(root)),
+                        "-",
+                    ],
+                    cwd=root,
+                    input=text,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=False,
+                )
+                if formatted.returncode == 0:
+                    changes[path] = formatted.stdout
         if not changes:
             return (
                 _tree_loc(project.source_files, project.lang),
@@ -330,6 +337,59 @@ def shrink_project(
             return pre_loc, layer_notes, False, reason
         return loc_after, list(notes), True, "accepted"
 
+    def _salvage_hunks(name: str, path: Path, proposed: str, api_baseline):
+        """Try bounded subsets of independent line edits, never weakening gates.
+
+        All offsets refer to this checkpoint; retained subsets are reconstructed
+        together so earlier accepted hunks cannot be lost through stale offsets.
+        The gate may format the composed proposal in the project's style.
+        """
+        original = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        from .ml_shrink import syntax_ok
+        revised = proposed.splitlines(keepends=True)
+        edits = [
+            (start, end, revised[new_start:new_end])
+            for tag, start, end, new_start, new_end in difflib.SequenceMatcher(
+                a=original, b=revised, autojunk=False
+            ).get_opcodes()
+            if tag != "equal"
+        ]
+        if len(edits) < 2:
+            return []
+        retained = []
+        calls = 0
+        notes = []
+
+        def visit(batch):
+            nonlocal calls
+            if not batch or calls >= 32:
+                return
+            trial = list(original)
+            for start, end, replacement in sorted(retained + batch, reverse=True):
+                trial[start:end] = replacement
+            calls += 1
+            candidate = "".join(trial)
+            if syntax_ok(candidate, project.lang):
+                _, _, kept, reason = _gate_layer(
+                    name, {path: candidate}, [], api_baseline
+                )
+            else:
+                kept, reason = False, "invalid syntax"
+            if kept:
+                retained.extend(batch)
+                notes.append(f"{name}: kept {len(batch)} hunk(s) in {path.name}")
+            elif len(batch) > 1:
+                middle = len(batch) // 2
+                visit(batch[:middle])
+                visit(batch[middle:])
+            else:
+                notes.append(f"{name}: rejected hunk in {path.name} ({reason})")
+
+        middle = len(edits) // 2
+        visit(edits[:middle])
+        visit(edits[middle:])
+        return notes
+
     def _salvage_file_batches(
         name: str,
         batches: list[list[tuple[Path, str]]],
@@ -349,6 +409,7 @@ def shrink_project(
                 salvage_notes.append(f"{name}: kept subset of {len(batch)} file(s)")
             elif len(batch) == 1:
                 salvage_notes.append(f"{name}: rejected {batch[0][0].name} ({reason})")
+                salvage_notes.extend(_salvage_hunks(name, *batch[0], api_baseline))
             else:
                 middle = len(batch) // 2
                 visit(batch[:middle])
@@ -468,56 +529,49 @@ def shrink_project(
     # always purported to do (its old value just stopped counting too early).
     stats.loc_after_static = _tree_loc(project.source_files, project.lang)
 
-    if ml_backend is not None:
-        pre_loc = _tree_loc(project.source_files, project.lang)
-        proposals, notes, considered = _ml_proposals(
-            _snapshot(project.source_files), project.lang, ml_backend
-        )
-        counters = Counter(
-            symbols_considered=considered,
-            proposed=len(proposals),
-            accepted=0,
-            accepted_loc=0,
-        )
-        from .ml_shrink import apply_edit, syntax_ok
-
-        for path, symbol, edit in proposals:
-            current = path.read_text(encoding="utf-8", errors="replace")
-            try:
-                candidate = apply_edit(current, symbol, edit)
-            except ValueError as exc:
-                counters["rejected_schema"] += 1
-                notes.append(f"{path.name}:{symbol['name']}: {exc}")
-                continue
-            if not syntax_ok(candidate, project.lang):
-                counters["rejected_syntax"] += 1
-                notes.append(f"{path.name}:{symbol['name']}: invalid syntax")
-                continue
-            before = _tree_loc(project.source_files, project.lang)
-            loc_after, candidate_notes, committed, reason = _gate_layer(
-                f"ml:{path.name}:{symbol['name']}",
-                {path: candidate},
-                [],
-                api_pre_layers,
+    # Regression validation is a terminal gate, never model retry feedback.
+    # Preserve the last audited checkpoint, not merely the last green suite.
+    if final_validator is not None:
+        try:
+            static_ok = final_validator()
+        except Exception:
+            _restore(pristine)
+            raise
+        stats.audit_records.append({"stage": "static", "passed": static_ok})
+        if not static_ok:
+            _restore(pristine)
+            stats.loc_after_static = stats.loc_start
+            stats.layer_records.append(
+                {
+                    "layer": "static-audit-rollback",
+                    "loc_after": stats.loc_start,
+                    "committed": False,
+                    "audit_rollback": True,
+                }
             )
-            notes += candidate_notes
-            if committed:
-                counters["accepted"] += 1
-                counters["accepted_loc"] += before - loc_after
-            else:
-                category = next(
-                    key
-                    for prefix, key in (
-                        ("no canonical", "loc"),
-                        ("project lint", "style"),
-                        ("documentation", "docs"),
-                        ("API", "api"),
-                        ("tests", "tests"),
-                    )
-                    if reason.startswith(prefix)
-                )
-                counters[f"rejected_{category}"] += 1
-        stats.ml_stats = dict(counters)
+            stats.static_notes.append(
+                "static audit failed; restored original; skipped model"
+            )
+            ml_backend = None
+    static_checkpoint = _snapshot(project.source_files)
+
+    if ml_backend is not None:
+        from .ml_shrink import search
+
+        pre_loc = _tree_loc(project.source_files, project.lang)
+        stats.ml_stats, stats.ml_records, notes = search(
+            root,
+            project.lang,
+            project.source_files,
+            project.test_files,
+            ml_backend,
+            lambda name, path, candidate: _gate_layer(
+                f"ml:{path.name}:{name}", {path: candidate}, [], api_pre_layers
+            ),
+            pre_loc,
+            attempts=ml_attempts,
+            max_symbols=ml_symbols,
+        )
         final_ml_loc = _tree_loc(project.source_files, project.lang)
         stats.static_notes += notes
         stats.layer_records.append(
@@ -530,7 +584,35 @@ def shrink_project(
             }
         )
 
+        if final_validator is not None:
+            try:
+                model_ok = final_validator()
+            except Exception:
+                _restore(static_checkpoint)
+                raise
+            stats.audit_records.append({"stage": "model", "passed": model_ok})
+            if not model_ok:
+                _restore(static_checkpoint)
+                stats.static_notes.append(
+                    "model audit failed; restored audited static checkpoint"
+                )
+                stats.ml_stats["rolled_back"] = stats.ml_stats.get("accepted", 0)
+                stats.ml_stats["retained_loc"] = 0
+                for record in stats.ml_records:
+                    if record["accepted"]:
+                        record["rolled_back"] = True
+                stats.layer_records[-1].update(
+                    committed=False,
+                    loc_after=stats.loc_after_static,
+                    audit_rollback=True,
+                )
+
     stats.loc_final = _tree_loc(project.source_files, project.lang)
+    if stats.ml_stats:
+        stats.ml_stats["retained_loc"] = stats.loc_after_static - stats.loc_final
+        stats.ml_stats["retained"] = sum(
+            r["accepted"] and not r.get("rolled_back", False) for r in stats.ml_records
+        )
 
     # ---- API check ----
     api_after = api_surface(project.source_files, project.lang)

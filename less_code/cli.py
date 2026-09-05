@@ -89,6 +89,8 @@ def cmd_shrink(args: argparse.Namespace) -> int:
         lang=args.lang,
         test_timeout=args.timeout,
         ml_backend=ml_backend,
+        ml_attempts=args.ml_attempts,
+        ml_symbols=args.ml_symbols,
     )
     write_report(stats, Path(args.out))
     payload = stats.to_json()
@@ -149,8 +151,16 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 def cmd_corpus(args: argparse.Namespace) -> int:
     from .corpus import run_corpus, write_corpus_report
+    from .ml_shrink import CliBackend
 
-    result = run_corpus(Path(args.manifest), args.timeout)
+    backend = CliBackend(args.ml_cli, args.ml_timeout) if args.ml_cli else None
+    result = run_corpus(
+        Path(args.manifest),
+        args.timeout,
+        ml_backend=backend,
+        ml_attempts=args.ml_attempts,
+        ml_symbols=args.ml_symbols,
+    )
     write_corpus_report(result, Path(args.out), Path(args.markdown))
     print(json.dumps(result["aggregate"], indent=2))
     return 0 if result["aggregate"]["valid"] == result["aggregate"]["projects"] else 1
@@ -194,6 +204,21 @@ def main(argv: list[str] | None = None) -> int:
         help="per-call timeout for the ML backend (seconds)",
     )
     p.set_defaults(func=cmd_shrink)
+    p.add_argument(
+        "--ml-symbols",
+        type=int,
+        choices=range(1, 65),
+        default=64,
+        metavar="1..64",
+        help="maximum symbols sent to the model",
+    )
+    p.add_argument(
+        "--ml-attempts",
+        type=int,
+        choices=(1, 2, 3),
+        default=3,
+        help="maximum proposals per symbol (default: 3)",
+    )
 
     p = sub.add_parser("report", help="markdown summary from shrink JSON")
     p.add_argument("--json", default="shrink-report.json")
@@ -205,6 +230,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="bench/baseline.json")
     p.add_argument("--markdown", default="bench/BASELINE.md")
     p.add_argument("--timeout", type=int, default=900)
+    p.add_argument(
+        "--ml-cli",
+        metavar="CMD",
+        help="benchmark a model command after static reduction",
+    )
+    p.add_argument("--ml-timeout", type=float, default=60.0)
+    p.add_argument("--ml-attempts", type=int, choices=(1, 2, 3), default=3)
+    p.add_argument(
+        "--ml-symbols", type=int, choices=range(1, 65), default=64, metavar="1..64"
+    )
     p.set_defaults(func=cmd_corpus)
 
     args = parser.parse_args(argv)
