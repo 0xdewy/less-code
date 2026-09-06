@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -84,6 +85,7 @@ def cmd_shrink(args: argparse.Namespace) -> int:
         from .ml_shrink import CliBackend
 
         ml_backend = CliBackend(args.ml_cli, timeout=getattr(args, "ml_timeout", 60.0))
+    test_command = shlex.split(args.test_command) if args.test_command else None
     stats = shrink_project(
         target,
         lang=args.lang,
@@ -91,6 +93,7 @@ def cmd_shrink(args: argparse.Namespace) -> int:
         ml_backend=ml_backend,
         ml_attempts=args.ml_attempts,
         ml_symbols=args.ml_symbols,
+        test_command=test_command,
     )
     write_report(stats, Path(args.out))
     payload = stats.to_json()
@@ -188,7 +191,18 @@ def main(argv: list[str] | None = None) -> int:
         "--copy-to",
         default=None,
         metavar="DIR",
-        help="copy the project to DIR and shrink the COPY",
+        help="copy the project to DIR and shrink the COPY, leaving path untouched",
+    )
+    p.add_argument(
+        "--test-command",
+        default=None,
+        metavar="CMD",
+        help=(
+            "override the frozen-suite command, shell-parsed (e.g. "
+            "'.venv/bin/python -m pytest -x -q' for a project with its own "
+            "venv, or 'npm --prefix js test --silent' for a JS package in a "
+            "monorepo). Default: the language's usual command run from path."
+        ),
     )
     p.add_argument("--out", default="shrink-report.json")
     p.add_argument(

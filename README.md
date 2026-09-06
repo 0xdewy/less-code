@@ -78,7 +78,11 @@ uv run lc --help
 uv run lc analyze path/to/code         # map + LOC baseline
 uv run lc shrink  path/to/code         # shrink in place
 uv run lc shrink  path/to/code \
-         --copy-to /tmp/work           # shrink a copy instead
+         --copy-to /tmp/work           # shrink a copy instead, original untouched
+uv run lc shrink  path/to/code --copy-to /tmp/work \
+         --test-command '.venv/bin/python -m pytest -x -q'   # a project's own venv
+uv run lc shrink  path/to/monorepo --copy-to /tmp/work \
+         --test-command 'npm --prefix js test --silent'      # a package inside one
 uv run lc report --json shrink-report.json
 uv run lc corpus                         # twelve pinned real projects
 uv run lc corpus --ml-cli 'your-model-command' # compare static + model yield
