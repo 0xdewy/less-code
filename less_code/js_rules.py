@@ -632,6 +632,179 @@ def _collect_boolean_chains(src: bytes, root):
     return out
 
 
+# ---- byte-level passes: run on a fresh parse after the line-based rewrites --
+
+_SIMPLE_STMTS = {
+    "return_statement",
+    "throw_statement",
+    "break_statement",
+    "continue_statement",
+    "expression_statement",
+}
+_ASI_HAZARD = set("([`+-/")
+
+
+def _has_comment(node) -> bool:
+    return any(c.type == "comment" for c in node.children)
+
+
+def _collect_unbrace(src: bytes, root):
+    """`if (c) { S }` -> `if (c) S` for one simple statement S.
+
+    Braces around a single return/throw/break/continue/expression statement
+    are syntax, not semantics: no binding is scoped by the block and none of
+    those statements can end in a brace-less `if` that would re-bind a
+    following `else`. Semicolon-free code is only unbraced when the next
+    token cannot continue the expression (ASI hazard).
+    """
+    edits = []
+
+    def unbrace(block):
+        if block is None or block.type != "statement_block" or _has_comment(block):
+            return
+        stmts = block.named_children
+        if len(stmts) != 1 or stmts[0].type not in _SIMPLE_STMTS:
+            return
+        stmt = stmts[0]
+        text = _node_text(src, stmt)
+        if not text.rstrip().endswith(";"):
+            after = src[block.end_byte :].lstrip()
+            if after[:1].decode("utf-8", "replace") in _ASI_HAZARD:
+                return
+            if after.startswith(b"else"):
+                # `S else` needs the newline for automatic semicolon insertion
+                line_start = src.rfind(b"\n", 0, block.parent.start_byte) + 1
+                indent = src[line_start : block.parent.start_byte]
+                text += "\n" + indent.decode("utf-8", "replace")
+        edits.append((block.start_byte, block.end_byte, text))
+
+    def visit(node):
+        if node.type == "if_statement":
+            unbrace(node.child_by_field_name("consequence"))
+            alternative = node.child_by_field_name("alternative")
+            if alternative is not None:
+                unbrace(next(iter(alternative.named_children), None))
+        elif node.type in {"for_statement", "for_in_statement", "while_statement"}:
+            unbrace(node.child_by_field_name("body"))
+        for child in node.named_children:
+            visit(child)
+
+    visit(root)
+    return edits
+
+
+def _leaf_blocks(node):
+    """Leaf branch blocks of an if/else-if/else chain, or None without else."""
+    blocks = []
+    while True:
+        consequence = node.child_by_field_name("consequence")
+        alternative = node.child_by_field_name("alternative")
+        if consequence is None or consequence.type != "statement_block":
+            return None
+        blocks.append(consequence)
+        if alternative is None:
+            return None
+        inner = next(iter(alternative.named_children), None)
+        if inner is None:
+            return None
+        if inner.type == "if_statement":
+            node = inner
+            continue
+        if inner.type != "statement_block":
+            return None
+        blocks.append(inner)
+        return blocks
+
+
+def _collect_hoist_common_tail(src: bytes, root):
+    """`if (c) { A; T } else { B; T }` -> `if (c) { A } else { B } T`.
+
+    Every branch ends with the same simple statement, so it runs exactly once
+    after whichever branch was taken. Declarations are refused: they are
+    scoped to their block.
+    """
+    edits = []
+
+    def visit(node):
+        if (
+            node.type == "if_statement"
+            and node.parent is not None
+            and node.parent.type != "else_clause"
+        ):
+            blocks = _leaf_blocks(node)
+            if blocks is not None and not any(_has_comment(b) for b in blocks):
+                tails = [
+                    b.named_children[-1] if b.named_children else None for b in blocks
+                ]
+                if all(
+                    t is not None and t.type in _SIMPLE_STMTS for t in tails
+                ) and all(len(b.named_children) >= 2 for b in blocks):
+                    # Formatting whitespace is normally canonical by this
+                    # stage, and whitespace *inside string/template literals*
+                    # is data. Compare source exactly apart from its edges.
+                    texts = {_node_text(src, t).strip() for t in tails}
+                    if len(texts) == 1:
+                        line_start = src.rfind(b"\n", 0, node.start_byte) + 1
+                        indent = src[line_start : node.start_byte].decode(
+                            "utf-8", "replace"
+                        )
+                        for tail in tails:
+                            previous = tail.prev_named_sibling
+                            edits.append((previous.end_byte, tail.end_byte, ""))
+                        edits.append(
+                            (
+                                node.end_byte,
+                                node.end_byte,
+                                "\n" + indent + _node_text(src, tails[0]),
+                            )
+                        )
+                        return
+        for child in node.named_children:
+            visit(child)
+
+    visit(root)
+    return edits
+
+
+def _apply_byte_edits(source: str, edits) -> tuple[str, int]:
+    """Apply non-overlapping edits back to front; nested ones wait for the
+    next round (their offsets would be stale after the enclosing edit)."""
+    data = source.encode("utf-8")
+    taken: list[tuple[int, int]] = []
+    count = 0
+    for start, end, text in sorted(edits, key=lambda e: (-e[0], -e[1])):
+        if any(start < hi and lo < end for lo, hi in taken):
+            continue
+        data = data[:start] + text.encode("utf-8") + data[end:]
+        taken.append((start, end))
+        count += 1
+    return data.decode("utf-8"), count
+
+
+def _byte_passes(source: str, selected: set[str]) -> tuple[str, list[str]]:
+    applied: list[str] = []
+    for name, collect in (
+        ("hoist-common-tail", _collect_hoist_common_tail),
+        ("unbrace-single-statement", _collect_unbrace),
+    ):
+        if name not in selected:
+            continue
+        for _ in range(8):
+            src = source.encode("utf-8")
+            tree = JS_PARSER.parse(src)
+            if tree.root_node.has_error:
+                break
+            edits = collect(src, tree.root_node)
+            if not edits:
+                break
+            candidate, count = _apply_byte_edits(source, edits)
+            if JS_PARSER.parse(candidate.encode("utf-8")).root_node.has_error:
+                break
+            source = candidate
+            applied += [name] * count
+    return source, applied
+
+
 # ---- public apply ----------------------------------------------------------
 
 RULES = (
@@ -653,6 +826,8 @@ RULES = (
     "undefined-default",
     "substring-replace-loop",
     "concise-arrow-return",
+    "hoist-common-tail",
+    "unbrace-single-statement",
 )
 
 
@@ -1342,6 +1517,8 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
         new_source += "\n"
     new_source, idioms = _apply_loop_idioms(new_source, selected)
     applied.extend(idioms)
+    new_source, structural = _byte_passes(new_source, selected)
+    applied.extend(structural)
 
     if not applied:
         return source, []

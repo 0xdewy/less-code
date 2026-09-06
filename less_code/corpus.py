@@ -216,6 +216,7 @@ def run_corpus(
                     "ml_stats": result.get("ml_stats", {}),
                     "ml_records": result.get("ml_records", []),
                     "audit_records": result.get("audit_records", []),
+                    "oracle": result.get("oracle", {}),
                     "source_diff": "".join(
                         "".join(
                             difflib.unified_diff(
@@ -329,15 +330,22 @@ def write_corpus_report(result: dict, json_path: Path, markdown_path: Path) -> N
             f"({aggregate['raw_pct']}% reduction)"
         ),
         "",
-        "| Project | Language | LOC | static % | total % | Tests/API/docs |",
-        "|---|---:|---:|---:|---:|---|",
+        "| Project | Language | LOC | static % | total % | Tests/API/docs | Shadow oracle |",
+        "|---|---:|---:|---:|---:|---|---|",
     ]
     for row in result["projects"]:
         gates = "pass" if row["valid"] else "fail (scored as 0%)"
+        oracle = row.get("oracle") or {}
+        shadow = (
+            f"{oracle.get('exercised', 0)}/{oracle.get('functions', 0)} fns, "
+            f"{oracle.get('verified_calls', 0)} calls"
+            if oracle.get("functions")
+            else "n/a"
+        )
         lines.append(
             f"| {row['name']} | {row['lang']} | "
             f"{row['loc_start']} → {row['loc_final']} | "
-            f"{row.get('static_pct', 0.0)}% | {row.get('raw_pct', 0.0)}% | {gates} |"
+            f"{row.get('static_pct', 0.0)}% | {row.get('raw_pct', 0.0)}% | {gates} | {shadow} |"
         )
     lines += [
         "",
@@ -347,6 +355,7 @@ def write_corpus_report(result: dict, json_path: Path, markdown_path: Path) -> N
         ),
         f"Projects with a final regression/validation audit: {aggregate.get('audited_projects', 0)}. Audit-based checkpoint selection is not independent held-out evaluation.",
         f"Unmeasured projects: {aggregate['unmeasured']}; their LOC is unknown and excluded from the denominator.",
+        "Shadow oracle (Python): rewritten functions whose original body ran alongside the rewrite on every suite call, with identical results, exceptions, iterator items and argument mutation. Functions the suite never calls are counted but unverified.",
     ]
     if result.get("experiment", {}).get("kind"):
         lines[2:2] = [f"Experiment: {result['experiment']['kind']}.", ""]

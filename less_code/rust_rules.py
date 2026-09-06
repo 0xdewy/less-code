@@ -15,6 +15,9 @@ Implemented rules:
   inline-single-use-binding  `let x = EXPR; USE(x)` -> `USE(EXPR)` when the
                              untyped, immutable binding has exactly one use,
                              in the immediately following statement.
+
+  unbrace-match-arm      `pat => { return x; }` -> `pat => return x,` for one
+                         diverging, assignment or value statement.
 """
 
 from __future__ import annotations
@@ -101,13 +104,7 @@ def _collect_inline_single_use_bindings(src: bytes, root):
                     continue
                 pattern = declaration.child_by_field_name("pattern")
                 value = declaration.child_by_field_name("value")
-                if (
-                    pattern is None
-                    or pattern.type != "identifier"
-                    or value is None
-                    or value.start_point[0] != value.end_point[0]
-                    or following.start_point[0] != following.end_point[0]
-                ):
+                if pattern is None or pattern.type != "identifier" or value is None:
                     continue
                 name = _node_text(src, pattern)
                 uses = _identifier_nodes(src, following, name)
@@ -119,6 +116,22 @@ def _collect_inline_single_use_bindings(src: bytes, root):
                 ):
                     continue
                 use = uses[0]
+                ancestor = use.parent
+                deferred_or_conditional = False
+                while ancestor is not None and ancestor != following:
+                    if ancestor.type in {
+                        "block",
+                        "closure_expression",
+                        "async_block",
+                        "match_arm",
+                        "while_expression",
+                        "loop_expression",
+                    }:
+                        deferred_or_conditional = True
+                        break
+                    ancestor = ancestor.parent
+                if deferred_or_conditional:
+                    continue
                 following_text = _node_text(src, following)
                 offset = use.start_byte - following.start_byte
                 value_text = _node_text(src, value)
@@ -145,7 +158,11 @@ def _collect_inline_single_use_bindings(src: bytes, root):
                     and use.parent.type == "shorthand_field_initializer"
                 ):
                     continue
-                if following.start_point[1] + len(replacement) > 88:
+                if (
+                    value.start_point[0] == value.end_point[0]
+                    and following.start_point[0] == following.end_point[0]
+                    and following.start_point[1] + len(replacement) > 88
+                ):
                     continue
                 replacement_lines = replacement.splitlines()
                 if len(replacement_lines) > 1:
@@ -705,12 +722,74 @@ def _collect_interleaves(src: bytes, root):
     return out
 
 
+_ARM_DIVERGING = {"return_expression", "break_expression", "continue_expression"}
+_ARM_UNIT = {"assignment_expression", "compound_assignment_expr"}
+
+
+def _collect_arm_unbrace(src: bytes, root):
+    """`pat => { S; }` -> `pat => S,` for one statement S.
+
+    Braces around a single arm statement are syntax: the block scopes no
+    binding. The arm keeps its type when S is diverging (`return`, `break`,
+    `continue`: type `!`), an assignment (type `()`, which is what the
+    block with a trailing semicolon evaluated to), or a final expression
+    without a semicolon (the block's value is exactly that expression).
+    Arms whose pattern spans lines, or whose block carries a comment, stay.
+    """
+    out = []
+
+    def visit(node):
+        if node.type == "match_arm":
+            block = node.child_by_field_name("value")
+            pattern_ok = (
+                block is not None
+                and block.type == "block"
+                and node.start_point[0] == block.start_point[0]
+                and not any(
+                    c.type in {"line_comment", "block_comment"} for c in block.children
+                )
+            )
+            if pattern_ok:
+                stmts = block.named_children
+                if len(stmts) == 1:
+                    stmt = stmts[0]
+                    text = _node_text(src, stmt).strip()
+                    inner = stmt
+                    if stmt.type == "expression_statement" and stmt.named_children:
+                        inner = stmt.named_children[0]
+                    ends_with_semicolon = text.endswith(";")
+                    keeps_type = (
+                        not ends_with_semicolon
+                        or inner.type in _ARM_DIVERGING
+                        or inner.type in _ARM_UNIT
+                    )
+                    single_line = stmt.start_point[0] == stmt.end_point[0]
+                    if keeps_type and single_line:
+                        head = src[node.start_byte : block.start_byte].decode("utf-8")
+                        replacement = head + text.rstrip(";") + ","
+                        out.append(
+                            (
+                                node.start_point[0] + 1,
+                                block.end_point[0] + 1,
+                                replacement,
+                                "unbrace-match-arm",
+                            )
+                        )
+                        return
+        for child in node.children:
+            visit(child)
+
+    visit(root)
+    return out
+
+
 RULES = (
     "inline-single-use-binding",
     "csv-interleave-to-join",
     "contains-check-loop",
     "for-count-to-method",
     "fold-add-to-sum",
+    "unbrace-match-arm",
 )
 
 
@@ -735,6 +814,8 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
         rewrites.extend(_collect_for_count(src_bytes, tree.root_node))
     if "fold-add-to-sum" in selected:
         rewrites.extend(_collect_fold_sum(src_bytes, tree.root_node))
+    if "unbrace-match-arm" in selected:
+        rewrites.extend(_collect_arm_unbrace(src_bytes, tree.root_node))
     if not rewrites:
         return source, []
 
@@ -758,7 +839,21 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
         new_block = [
             (pad + ln) if ln.strip() else "" for ln in replacement.splitlines()
         ]
-        lines[start - 1 : end] = new_block
+        candidate_lines = lines[: start - 1] + new_block + lines[end:]
+        # Removing a binding can make rustfmt wrap its use site onto more
+        # lines. Keep each candidate only when it independently lowers the
+        # canonical metric, so a wide inline cannot consume savings from the
+        # useful rewrites elsewhere in the same file.
+        from .loc import measure
+
+        before_text = "\n".join(lines) + ("\n" if source.endswith("\n") else "")
+        after_text = "\n".join(candidate_lines) + (
+            "\n" if source.endswith("\n") else ""
+        )
+        after_loc = measure(after_text, "rust")
+        if after_loc.code >= measure(before_text, "rust").code:
+            continue
+        lines = candidate_lines
         applied.append(rule_name)
 
     if not applied:

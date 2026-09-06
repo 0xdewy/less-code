@@ -25,6 +25,7 @@ Public API:
 from __future__ import annotations
 
 import ast
+import builtins
 import io
 import re
 import tokenize
@@ -34,9 +35,15 @@ RULES = (
     "bool-return",
     "merge-same-branch",
     "flatten-nested-if",
+    "guard-call",
     "conditional-return",
     "conditional-assignment",
+    "self-default-assignment",
     "inline-return-temp",
+    "inline-single-use-temp",
+    "merge-imports",
+    "merge-from-imports",
+    "hoist-common-tail",
     "dict-build-to-literal",
     "boolean-loop-to-any-all",
     "append-loop-to-comprehension",
@@ -45,6 +52,8 @@ RULES = (
     "drop-bare-reraise",
     "threshold-ladder-to-scan",
     "max-loop-to-max",
+    "merge-del",
+    "pack-assignments",
     "else-after-terminator",
 )
 
@@ -61,6 +70,7 @@ class Rewrite:
     stmts: list[ast.stmt]
     col: int
     end_col: int = 0
+    text: list[str] | None = None  # pre-rendered lines (unindented) if set
 
 
 # ---- helpers ---------------------------------------------------------------
@@ -96,16 +106,145 @@ def _target_names(target: ast.expr) -> set[str]:
     return {n.id for n in ast.walk(target) if isinstance(n, ast.Name)}
 
 
-def scope_name_lines(scope: ast.AST) -> dict[str, list[int]]:
-    """Every `Name` occurrence in a scope, as name -> line numbers."""
+_BUILTIN_NAMES = frozenset(dir(builtins))
+
+
+def _binding_names(stmt: ast.stmt) -> set[str]:
+    """Names a *direct* statement binds when it completes normally.
+
+    Only unconditional bindings count: an assignment, an import, a def or a
+    class, a `with ... as name`. Loop targets and branch-local writes may
+    leave the name unbound, so they are not included.
+    """
+    names: set[str] = set()
+    if isinstance(stmt, ast.Assign):
+        for target in stmt.targets:
+            names |= _target_names(target)
+    elif (isinstance(stmt, ast.AnnAssign) and stmt.value is not None) or isinstance(
+        stmt, ast.AugAssign
+    ):
+        names |= _target_names(stmt.target)
+    elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+        names |= {
+            (alias.asname or alias.name.split(".")[0])
+            for alias in stmt.names
+            if alias.name != "*"
+        }
+    elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        names.add(stmt.name)
+    elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+        for item in stmt.items:
+            if item.optional_vars is not None:
+                names |= _target_names(item.optional_vars)
+    return names
+
+
+def scope_name_lines(
+    scope: ast.AST, bound: set[str] | None = None
+) -> dict[str, list[int]]:
+    """Every `Name` occurrence in a scope, as name -> line numbers.
+
+    Bookkeeping keys (never valid identifiers) carry facts the rules need:
+
+      !module           the scope is the module body
+      !declared:<n>     `global`/`nonlocal` declaration of <n>
+      !bound:<n>        <n> is bound before the scope's body runs: a module
+                        top-level binding, a parameter, or an inherited one
+      !stored:<n>       <n> is (re)bound somewhere inside this scope
+      !deleted:<n>      <n> is deleted somewhere inside this scope
+      !closure:<n>      <n> is read from a nested function or lambda
+      !guarded          lines inside a `try` or `with` (exceptions there can
+                        be caught, so exception *order* is observable)
+    """
     out: dict[str, list[int]] = {}
+    if isinstance(scope, ast.Module):
+        out["!module"] = []
+        for stmt in scope.body:
+            for name in _binding_names(stmt):
+                out.setdefault(f"!bound:{name}", [])
+            if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                for name in _binding_names(stmt):
+                    out.setdefault(f"!import:{name}", [])
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        args = scope.args
+        params = [*args.posonlyargs, *args.args, *args.kwonlyargs]
+        params += [arg for arg in (args.vararg, args.kwarg) if arg is not None]
+        for arg in params:
+            out.setdefault(f"!bound:{arg.arg}", [])
+    for name in bound or ():
+        if name.startswith("!import:"):
+            out.setdefault(name, [])
+        else:
+            out.setdefault(f"!bound:{name}", [])
+    guarded: set[int] = set()
     for node in ast.walk(scope):
         if isinstance(node, ast.Name):
             out.setdefault(node.id, []).append(node.lineno)
+            if isinstance(node.ctx, ast.Store):
+                out.setdefault(f"!stored:{node.id}", []).append(node.lineno)
+            elif isinstance(node.ctx, ast.Del):
+                out.setdefault(f"!deleted:{node.id}", []).append(node.lineno)
         elif isinstance(node, (ast.Global, ast.Nonlocal)):
             for name in node.names:
                 out.setdefault(f"!declared:{name}", []).append(node.lineno)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                name = alias.asname or alias.name.split(".")[0]
+                out.setdefault(f"!stored:{name}", []).append(node.lineno)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            out.setdefault(f"!stored:{node.name}", []).append(node.lineno)
+        elif isinstance(node, (ast.Try, ast.TryStar, ast.With, ast.AsyncWith)):
+            guarded.update(range(node.lineno, node.end_lineno + 1))
+        if node is scope:
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.setdefault(f"!stored:{node.name}", []).append(node.lineno)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Load):
+                    out.setdefault(f"!closure:{inner.id}", []).append(inner.lineno)
+    out["!guarded"] = sorted(guarded)
     return out
+
+
+def _bound_at(body: list[ast.stmt], i: int, scope_lines: dict) -> set[str]:
+    """Names that are certainly bound when `body[i]` starts executing."""
+    earlier: set[str] = set()
+    for stmt in body[:i]:
+        earlier |= _binding_names(stmt)
+    return earlier
+
+
+def _guarded(scope_lines: dict, *nodes: ast.stmt) -> bool:
+    """Do the statements sit inside a `try` or `with` of this scope?
+
+    A rewrite that folds `x = <init>` + <loop writing x> into one statement
+    leaves `x` unbound instead of partially built when the loop raises. That
+    is observable only where the exception can be caught before the scope
+    ends, i.e. inside a `try` or a `with` (context managers may suppress).
+    """
+    guarded = scope_lines.get("!guarded", ())
+    if not guarded:
+        return False
+    lines = set(guarded)
+    return any(
+        line in lines
+        for node in nodes
+        for line in range(node.lineno, node.end_lineno + 1)
+    )
+
+
+def _provably_bound(name: str, earlier: set[str], scope_lines: dict) -> bool:
+    """A plain load of `name` cannot raise: it is bound by an earlier
+    statement of this block, or it is a parameter / module-level name /
+    builtin that nothing in this scope rebinds or deletes."""
+    if f"!deleted:{name}" in scope_lines or f"!declared:{name}" in scope_lines:
+        return False
+    if name in earlier:
+        return True
+    if f"!stored:{name}" in scope_lines:
+        return False
+    return f"!bound:{name}" in scope_lines or name in _BUILTIN_NAMES
 
 
 def _leaks(
@@ -507,6 +646,40 @@ def _rule_flatten_nested_if(
     )
 
 
+def _rule_guard_call(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """``if condition: call()`` -> ``condition and call()``.
+
+    A boolean ``and`` statement has precisely the control flow of a one-arm
+    call guard: it truth-tests the condition once and evaluates the call only
+    when that test succeeds. The expression's value is discarded in both
+    forms. Limiting the body to a call keeps this as a familiar guard idiom
+    rather than turning arbitrary side effects into boolean expressions.
+    """
+    stmt = body[i]
+    if not (
+        isinstance(stmt, ast.If)
+        and not stmt.orelse
+        and len(stmt.body) == 1
+        and isinstance(stmt.body[0], ast.Expr)
+        and isinstance(stmt.body[0].value, ast.Call)
+    ):
+        return None
+    expression = ast.Expr(
+        value=ast.BoolOp(op=ast.And(), values=[stmt.test, stmt.body[0].value])
+    )
+    start, end = _span([stmt])
+    return Rewrite(
+        "guard-call",
+        start,
+        end,
+        [expression],
+        stmt.col_offset,
+        _end_col([stmt], end),
+    )
+
+
 def _rule_conditional_return(
     body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
 ) -> Rewrite | None:
@@ -522,6 +695,7 @@ def _rule_conditional_return(
         and len(stmt.body) == 1
         and isinstance(stmt.body[0], ast.Return)
         and stmt.body[0].value is not None
+        and "!module" not in scope_lines
     ):
         return None
     if len(stmt.orelse) == 1 and isinstance(stmt.orelse[0], ast.Return):
@@ -530,9 +704,9 @@ def _rule_conditional_return(
         second, covered = body[i + 1], [stmt, body[i + 1]]
     else:
         return None
-    if second.value is None:
-        return None
-    value = ast.IfExp(test=stmt.test, body=stmt.body[0].value, orelse=second.value)
+    # a bare `return` is `return None`
+    fallback = second.value or ast.Constant(value=None)
+    value = ast.IfExp(test=stmt.test, body=stmt.body[0].value, orelse=fallback)
     start, end = _span(covered)
     return Rewrite(
         "conditional-return",
@@ -608,6 +782,49 @@ def _rule_conditional_assignment(
     )
 
 
+def _rule_self_default_assignment(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """``if test(x): x = value`` -> ``x = value if test(x) else x``.
+
+    This is restricted to ordinary function locals whose first evaluated
+    name in the test is the target. That proves the old value exists before
+    the branch and preserves test/RHS order. Module, class, global, and
+    nonlocal assignments are excluded because an otherwise redundant write
+    can be observable through a custom namespace or another thread.
+    """
+    stmt = body[i]
+    if not (
+        not class_body
+        and "!module" not in scope_lines
+        and isinstance(stmt, ast.If)
+        and not stmt.orelse
+        and len(stmt.body) == 1
+        and isinstance(stmt.body[0], ast.Assign)
+        and len(stmt.body[0].targets) == 1
+        and _is_name(stmt.body[0].targets[0])
+    ):
+        return None
+    assignment = stmt.body[0]
+    name = assignment.targets[0].id
+    if _first_evaluated_name(stmt.test) != name or f"!declared:{name}" in scope_lines:
+        return None
+    value = ast.IfExp(
+        test=stmt.test,
+        body=assignment.value,
+        orelse=ast.Name(id=name, ctx=ast.Load()),
+    )
+    start, end = _span([stmt])
+    return Rewrite(
+        "self-default-assignment",
+        start,
+        end,
+        [ast.Assign(targets=assignment.targets, value=value)],
+        stmt.col_offset,
+        _end_col([stmt], end),
+    )
+
+
 def _rule_dict_build_literal(
     body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
 ) -> Rewrite | None:
@@ -622,6 +839,8 @@ def _rule_dict_build_literal(
     ):
         return None
     name = assign.targets[0].id
+    if _guarded(scope_lines, assign):
+        return None
     keys: list[ast.expr] = []
     values: list[ast.expr] = []
     end = i + 1
@@ -738,6 +957,8 @@ def _rule_append_loop(
     if not isinstance(loop, ast.For) or loop.orelse or not loop.body:
         return None
     name = assign.targets[0].id
+    if _guarded(scope_lines, assign, loop):
+        return None
     flat = _collapse_loop_body(loop.body, class_body)
     if flat is None:
         return None
@@ -811,6 +1032,8 @@ def _rule_accumulate_sum(
     if not isinstance(loop, ast.For) or loop.orelse or not loop.body:
         return None
     name = assign.targets[0].id
+    if _guarded(scope_lines, assign, loop):
+        return None
     flat = _collapse_loop_body(loop.body, class_body)
     if flat is None:
         return None
@@ -878,6 +1101,8 @@ def _rule_sort_to_sorted(
         return None
     call = call_stmt.value
     name = assign.targets[0].id
+    if _guarded(scope_lines, assign, call_stmt):
+        return None
     if not isinstance(call.func, ast.Attribute) or call.func.attr != "sort":
         return None
     if not _is_name(call.func.value, name) or call.args:
@@ -1123,7 +1348,7 @@ def _rule_max_loop(
         isinstance(first, ast.Assign)
         and len(first.targets) == 1
         and _is_name(first.targets[0])
-    ):
+    ) or _guarded(scope_lines, first, loop):
         return None
     if not (
         isinstance(second, ast.Assign)
@@ -1225,6 +1450,642 @@ def _rule_max_loop(
         first.col_offset,
         _end_col(covered, end),
     )
+
+
+# ---- inline a single-use temporary into the statement that reads it ---------
+
+
+_BARRIER = object()
+
+
+def _static_attribute(node: ast.AST, bases: frozenset[str]) -> bool:
+    """`name.attr(.attr...)` on a provably bound name, or `"literal".method`.
+
+    Attribute *reads* are treated as effect-free, the same stance `_pure`
+    takes for comprehension guards: a property or `__getattr__` whose side
+    effects interact with the inlined expression is not a realistic concern,
+    and the frozen suite still gates the result. The base name must be
+    provably bound so the lookup itself cannot fail before the inlined
+    expression runs.
+    """
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    if isinstance(node, ast.Constant):
+        return True
+    return isinstance(node, ast.Name) and node.id in bases
+
+
+def _eval_order(node: ast.AST, imports: frozenset[str] = frozenset()):
+    """Yield leaves in Python evaluation order; `_BARRIER` marks a point after
+    which evaluation is conditional, deferred, or interleaved with side effects
+    of an operation (attribute/subscript/call/operator), so an inlined
+    expression placed later could observe or miss those effects."""
+    if isinstance(node, (ast.Name, ast.Constant)):
+        yield node
+    elif isinstance(node, ast.Attribute) and _static_attribute(node, imports):
+        yield from _eval_order(node.value, imports)
+    elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        for elt in node.elts:
+            yield from _eval_order(elt, imports)
+    elif isinstance(node, ast.Dict):
+        for key, value in zip(node.keys, node.values):
+            if key is not None:
+                yield from _eval_order(key, imports)
+            yield from _eval_order(value, imports)
+    elif isinstance(node, (ast.Starred, ast.keyword)):
+        yield from _eval_order(node.value, imports)
+    elif isinstance(node, ast.JoinedStr):
+        for value in node.values:
+            yield from _eval_order(value, imports)
+    elif isinstance(node, ast.FormattedValue):
+        yield from _eval_order(node.value, imports)
+        yield _BARRIER  # __format__ runs
+    elif isinstance(node, ast.UnaryOp):
+        yield from _eval_order(node.operand, imports)
+        yield _BARRIER
+    elif isinstance(node, ast.BinOp):
+        yield from _eval_order(node.left, imports)
+        yield from _eval_order(node.right, imports)
+        yield _BARRIER
+    elif isinstance(node, ast.Compare):
+        yield from _eval_order(node.left, imports)
+        yield from _eval_order(node.comparators[0], imports)
+        yield _BARRIER
+    elif isinstance(node, ast.BoolOp):
+        yield from _eval_order(node.values[0], imports)
+        yield _BARRIER
+    elif isinstance(node, ast.IfExp):
+        yield from _eval_order(node.test, imports)
+        yield _BARRIER
+    elif isinstance(node, ast.Call):
+        yield from _eval_order(node.func, imports)
+        for arg in node.args:
+            yield from _eval_order(arg, imports)
+        for kw in node.keywords:
+            yield from _eval_order(kw, imports)
+        yield _BARRIER
+    elif isinstance(node, ast.Attribute):
+        yield from _eval_order(node.value, imports)
+        yield _BARRIER
+    elif isinstance(node, ast.Subscript):
+        yield from _eval_order(node.value, imports)
+        yield from _eval_order(node.slice, imports)
+        yield _BARRIER
+    elif isinstance(node, ast.Slice):
+        for part in (node.lower, node.upper, node.step):
+            if part is not None:
+                yield from _eval_order(part, imports)
+    elif isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+        yield from _eval_order(node.generators[0].iter, imports)
+        yield _BARRIER
+    elif isinstance(node, (ast.Await, ast.Yield, ast.YieldFrom)):
+        if node.value is not None:
+            yield from _eval_order(node.value, imports)
+        yield _BARRIER
+    else:
+        yield _BARRIER  # lambda, walrus, anything unknown
+
+
+def _statement_eval_order(stmt: ast.stmt, imports: frozenset[str] = frozenset()):
+    """Evaluation order of a statement's expressions (header only for
+    compound statements: the body runs after the header, so it is a barrier)."""
+    if isinstance(stmt, (ast.Expr, ast.Return)):
+        if stmt.value is not None:
+            yield from _eval_order(stmt.value, imports)
+    elif isinstance(stmt, ast.Assign):
+        yield from _eval_order(stmt.value, imports)
+        for target in stmt.targets:
+            yield from _eval_order(target, imports)
+    elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+        yield from _eval_order(stmt.value, imports)
+        yield from _eval_order(stmt.target, imports)
+    elif isinstance(stmt, ast.AugAssign):
+        yield from _eval_order(stmt.target, imports)
+        yield _BARRIER
+    elif isinstance(stmt, ast.Raise):
+        if stmt.exc is not None:
+            yield from _eval_order(stmt.exc, imports)
+        yield _BARRIER
+    elif isinstance(stmt, ast.If):
+        yield from _eval_order(stmt.test, imports)
+    elif isinstance(stmt, (ast.For, ast.AsyncFor)):
+        yield from _eval_order(stmt.iter, imports)
+    elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+        yield from _eval_order(stmt.items[0].context_expr, imports)
+    yield _BARRIER
+
+
+_HEADER_STMTS = (ast.If, ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)
+_SIMPLE_USE_STMTS = (
+    ast.Expr,
+    ast.Return,
+    ast.Assign,
+    ast.AnnAssign,
+    ast.AugAssign,
+    ast.Raise,
+)
+
+
+def _rule_inline_single_use_temp(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """`t = <expr>` + `<stmt reading t once>` -> `<stmt reading <expr>>`.
+
+    The temp must be a function local mentioned exactly twice in its whole
+    scope (the binding and this one read), so nothing else can observe it.
+    Order is preserved by construction: every leaf evaluated before the read
+    is a constant, and no name lookup, short-circuit, deferred scope, await or
+    operator side effect sits between the start of the statement and the read
+    (`_eval_order`). Only the header of a compound statement is touched, so
+    comments and code inside its body survive verbatim; `while` is refused
+    because its test is re-evaluated.
+    """
+    if class_body or "!module" in scope_lines or i + 1 >= len(body):
+        return None
+    assign, use = body[i], body[i + 1]
+    if not (
+        isinstance(assign, ast.Assign)
+        and len(assign.targets) == 1
+        and _is_name(assign.targets[0])
+        and assign.type_comment is None
+    ):
+        return None
+    name = assign.targets[0].id
+    if f"!declared:{name}" in scope_lines:
+        return None
+    # `t = A` + `t = B(t)`: the intermediate value is never observed by any
+    # other statement, so the mention count does not matter - unless a
+    # closure or an exception handler (`_guarded`) could see it.
+    rebinding = (
+        isinstance(use, ast.Assign)
+        and len(use.targets) == 1
+        and _is_name(use.targets[0], name)
+        and use.type_comment is None
+        and f"!closure:{name}" not in scope_lines
+        and not _guarded(scope_lines, assign, use)
+    )
+    if not rebinding and len(scope_lines.get(name, ())) != 2:
+        return None
+    if any(f in scope_lines for f in ("locals", "vars", "eval", "exec", "globals")):
+        return None
+    if isinstance(use, _HEADER_STMTS):
+        header_end = use.body[0].lineno - 1
+        if header_end < use.lineno:
+            return None  # body starts on the header line
+    elif isinstance(use, _SIMPLE_USE_STMTS):
+        header_end = use.end_lineno
+    else:
+        return None
+    if isinstance(use, ast.Return) and _is_name(use.value, name):
+        return None  # inline-return-temp owns this shape
+    found = False
+    earlier = _bound_at(body, i, scope_lines)
+    imports = frozenset(
+        key[len("!import:") :]
+        for key in scope_lines
+        if key.startswith("!import:")
+        and not any(
+            f"!{fact}:{key[len('!import:') :]}" in scope_lines
+            for fact in ("stored", "deleted", "declared")
+        )
+    )
+    bases = imports | {
+        n.id
+        for n in ast.walk(use)
+        if isinstance(n, ast.Name) and _provably_bound(n.id, earlier, scope_lines)
+    }
+    for leaf in _statement_eval_order(use, bases):
+        if leaf is _BARRIER:
+            break
+        if isinstance(leaf, ast.Name) and leaf.id == name:
+            found = isinstance(leaf.ctx, ast.Load)
+            break
+        if isinstance(leaf, ast.Name):
+            # The assignment RHS originally runs before the whole following
+            # statement. A plain name lookup has no effect unless it fails,
+            # so crossing one is order-preserving exactly when the name is
+            # provably bound: a parameter, a module-level binding or builtin
+            # nothing in this scope rebinds, or an earlier statement's target.
+            if _provably_bound(leaf.id, earlier, scope_lines):
+                continue
+            break
+    if not found:
+        return None
+    if _load_count([use], name) != 1:
+        return None
+    import copy
+
+    replaced = _Substitute(name, assign.value).visit(copy.deepcopy(use))
+    if isinstance(replaced, _HEADER_STMTS):
+        header = copy.copy(replaced)
+        header.body = [ast.Pass()]
+        header.orelse = []
+        module = ast.Module(body=[header], type_ignores=[])
+        ast.fix_missing_locations(module)
+        lines = ast.unparse(module).splitlines()
+        text = lines[:-1]  # drop the `pass`
+        if not text or not text[-1].rstrip().endswith(":"):
+            return None
+        return Rewrite(
+            "inline-single-use-temp",
+            assign.lineno,
+            header_end,
+            [],
+            assign.col_offset,
+            -1,  # the header owns its whole last line
+            text=text,
+        )
+    covered = [assign, use]
+    start, end = _span(covered)
+    return Rewrite(
+        "inline-single-use-temp",
+        start,
+        end,
+        [replaced],
+        assign.col_offset,
+        _end_col(covered, end),
+    )
+
+
+# ---- merge consecutive imports --------------------------------------------
+
+
+def _rule_merge_imports(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """Pack adjacent plain imports while retaining their exact order.
+
+    ``import a`` followed by ``import b as c`` executes the same IMPORT_NAME
+    operations, in the same order, as ``import a, b as c``. Greedy chunks
+    stop at the canonical width so formatting cannot erase the saving.
+    """
+    first = body[i]
+    if not isinstance(first, ast.Import):
+        return None
+    run = [first]
+    j = i + 1
+    while j < len(body) and isinstance(body[j], ast.Import):
+        run.append(body[j])
+        j += 1
+    if len(run) < 2:
+        return None
+    aliases = [alias for stmt in run for alias in stmt.names]
+    width = 88 - first.col_offset
+    chunks: list[list[ast.alias]] = []
+    for alias in aliases:
+        if chunks and len(ast.unparse(ast.Import(names=chunks[-1] + [alias]))) <= width:
+            chunks[-1].append(alias)
+        else:
+            chunks.append([alias])
+    if len(chunks) >= len(run):
+        return None
+    statements = [ast.Import(names=chunk) for chunk in chunks]
+    start, end = _span(run)
+    return Rewrite(
+        "merge-imports",
+        start,
+        end,
+        statements,
+        first.col_offset,
+        _end_col(run, end),
+    )
+
+
+# ---- merge consecutive `from M import a` / `from M import b` ---------------
+
+
+def _rule_merge_from_imports(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """Consecutive imports from one module become one statement per 88 columns.
+
+    The module is imported (executed) once either way and its attributes are
+    looked up in the same order, so the semantics are identical. Names are
+    packed greedily so every emitted line fits the canonical width; a merge
+    the formatter would explode again is never proposed.
+    """
+    first = body[i]
+    if not isinstance(first, ast.ImportFrom) or any(a.name == "*" for a in first.names):
+        return None
+    run = [first]
+    j = i + 1
+    while j < len(body):
+        nxt = body[j]
+        if not (
+            isinstance(nxt, ast.ImportFrom)
+            and nxt.module == first.module
+            and nxt.level == first.level
+            and not any(a.name == "*" for a in nxt.names)
+        ):
+            break
+        run.append(nxt)
+        j += 1
+    if len(run) < 2:
+        return None
+    aliases = [alias for stmt in run for alias in stmt.names]
+    width = 88 - first.col_offset
+    chunks: list[list[ast.alias]] = []
+    for alias in aliases:
+        if chunks:
+            trial = ast.ImportFrom(
+                module=first.module, names=chunks[-1] + [alias], level=first.level
+            )
+            if len(ast.unparse(trial)) <= width:
+                chunks[-1].append(alias)
+                continue
+        chunks.append([alias])
+    if len(chunks) >= len(run):
+        return None
+    stmts = [
+        ast.ImportFrom(module=first.module, names=chunk, level=first.level)
+        for chunk in chunks
+    ]
+    start, end = _span(run)
+    return Rewrite(
+        "merge-from-imports",
+        start,
+        end,
+        stmts,
+        first.col_offset,
+        _end_col(run, end),
+    )
+
+
+# ---- hoist a statement shared by every branch of an if/else ---------------
+
+
+def _branch_bodies(stmt: ast.If) -> list[list[ast.stmt]] | None:
+    """All leaf branch bodies of an if/elif/else chain, or None without else."""
+    bodies = [stmt.body]
+    node = stmt
+    while True:
+        if not node.orelse:
+            return None
+        if len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If):
+            node = node.orelse[0]
+            bodies.append(node.body)
+            continue
+        bodies.append(node.orelse)
+        return bodies
+
+
+def _rule_hoist_common_tail(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """`if c: A; T else: B; T` -> `if c: A else: B` + `T`.
+
+    The last statement of every branch is the same statement, so it runs
+    exactly once after whichever branch was taken - which is what placing it
+    after the whole `if` does. Every branch keeps at least one statement.
+    """
+    stmt = body[i]
+    if not isinstance(stmt, ast.If):
+        return None
+    bodies = _branch_bodies(stmt)
+    if bodies is None or any(len(b) < 2 for b in bodies):
+        return None
+    tails = [b[-1] for b in bodies]
+    dump = ast.dump(tails[0], include_attributes=False)
+    if any(ast.dump(t, include_attributes=False) != dump for t in tails[1:]):
+        return None
+    import copy
+
+    new_if = copy.deepcopy(stmt)
+    for b in _branch_bodies(new_if):
+        b.pop()
+    start, end = _span([stmt])
+    return Rewrite(
+        "hoist-common-tail",
+        start,
+        end,
+        [new_if, tails[0]],
+        stmt.col_offset,
+        _end_col([stmt], end),
+    )
+
+
+def _unparse_stmt(stmt: ast.stmt) -> str:
+    module = ast.Module(body=[stmt], type_ignores=[])
+    ast.fix_missing_locations(module)
+    return ast.unparse(module)
+
+
+# ---- merge consecutive `del` statements ------------------------------------
+
+
+def _rule_merge_del(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """`del a` + `del b` -> `del a, b`: the deletions run in the same order."""
+    first = body[i]
+    if not isinstance(first, ast.Delete):
+        return None
+    run = [first]
+    j = i + 1
+    while j < len(body) and isinstance(body[j], ast.Delete):
+        run.append(body[j])
+        j += 1
+    if len(run) < 2:
+        return None
+    targets = [target for stmt in run for target in stmt.targets]
+    merged = ast.Delete(targets=targets)
+    if first.col_offset + len(_unparse_stmt(merged)) > 88:
+        return None
+    start, end = _span(run)
+    return Rewrite(
+        "merge-del", start, end, [merged], first.col_offset, _end_col(run, end)
+    )
+
+
+# ---- pack consecutive assignments into one tuple assignment ---------------
+
+
+def _simple_value(node: ast.expr) -> bool:
+    """Names, constants and containers/arithmetic of those: evaluating one
+    cannot run user code, so nothing an earlier store does can change it."""
+    return all(
+        isinstance(
+            n,
+            (
+                ast.Name,
+                ast.Constant,
+                ast.Tuple,
+                ast.List,
+                ast.Set,
+                ast.UnaryOp,
+                ast.BinOp,
+                ast.operator,
+                ast.unaryop,
+                ast.expr_context,
+            ),
+        )
+        for n in ast.walk(node)
+    )
+
+
+def _pack_target(target: ast.expr) -> tuple[str, bool] | None:
+    """`(key, simple_only)` for a packable target, or None.
+
+    A plain name packs with any right-hand side. `obj.attr` and `obj[key]`
+    stores may run user code (a property setter, `__setitem__`), so they
+    pack only when every later right-hand side is `_simple_value`.
+    """
+    if isinstance(target, ast.Name):
+        return target.id, False
+    if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name):
+        return f"{target.value.id}.{target.attr}", True
+    if (
+        isinstance(target, ast.Subscript)
+        and isinstance(target.value, ast.Name)
+        and isinstance(target.slice, (ast.Name, ast.Constant))
+    ):
+        return f"{target.value.id}[{ast.unparse(target.slice)}]", True
+    return None
+
+
+_PACK_UNSAFE = (ast.Yield, ast.YieldFrom, ast.Await, ast.NamedExpr, ast.Starred)
+
+
+def _pack_pairs(stmt: ast.stmt) -> list[tuple[str, bool, ast.expr, ast.expr]] | None:
+    """`[(key, simple_only, target, value)]` for a packable assignment.
+
+    A plain `a = x` is one pair; an existing `a, b = x, y` contributes its
+    pairs as a group (they must stay in one statement, e.g. a swap).
+    """
+    if not (
+        isinstance(stmt, ast.Assign)
+        and len(stmt.targets) == 1
+        and stmt.type_comment is None
+        and not any(isinstance(n, _PACK_UNSAFE) for n in ast.walk(stmt))
+    ):
+        return None
+    target, value = stmt.targets[0], stmt.value
+    if isinstance(target, ast.Tuple):
+        if not (
+            isinstance(value, ast.Tuple)
+            and len(target.elts) == len(value.elts)
+            and len(target.elts) > 1
+        ):
+            return None
+        targets, values = target.elts, value.elts
+    else:
+        targets, values = [target], [value]
+    pairs = []
+    for t, v in zip(targets, values, strict=True):
+        packable = _pack_target(t)
+        if packable is None:
+            return None
+        pairs.append((packable[0], packable[1], t, v))
+    return pairs
+
+
+def _rule_pack_assignments(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """`a = x` + `b = y` -> `a, b = x, y` when the order of effects is kept.
+
+    Python evaluates every right-hand side of a tuple assignment before the
+    first store, so the rewrite reorders only "store a" against "evaluate
+    y". That is unobservable when `y` does not read `a` (checked on every
+    later right-hand side against every earlier target), `a` is not shared
+    with a closure, global or nonlocal that a call inside `y` could reach,
+    and no exception raised by `y` can be caught while `a` is still expected
+    to be bound (the statements are outside any `try`/`with` in the scope,
+    or every right-hand side is a name or constant). Attribute and subscript
+    targets additionally require every later right-hand side to be free of
+    calls and lookups, since their stores can run user code.
+
+    Statements are packed greedily into the longest prefix that fits the
+    canonical width (a wider line would be exploded by the formatter into
+    more lines than it replaces); the chunk starting at `body[i]` is emitted
+    and later chunks are picked up by the next pass.
+    """
+    guarded = set(scope_lines.get("!guarded", ()))
+    chunk: list[ast.Assign] = []
+    chunk_pairs: list[tuple[str, bool, ast.expr, ast.expr]] = []
+    j = i
+    while j < len(body):
+        stmt = body[j]
+        pairs = _pack_pairs(stmt)
+        if pairs is None:
+            break
+        values = [v for _, _, _, v in pairs]
+        bases = [key.split(".")[0].split("[")[0] for key, _, _, _ in pairs]
+        read = {n.id for v in values for n in ast.walk(v) if isinstance(n, ast.Name)}
+        simple = all(_simple_value(v) for v in values)
+        cannot_join = (
+            any(f"!declared:{base}" in scope_lines for base in bases)
+            or any(key in {k for k, _, _, _ in chunk_pairs} for key, _, _, _ in pairs)
+            or any(
+                key.split(".")[0].split("[")[0] in read for key, _, _, _ in chunk_pairs
+            )
+            or (not simple and any(only for _, only, _, _ in chunk_pairs))
+            or (
+                not simple
+                and any(
+                    f"!closure:{key.split('.')[0].split('[')[0]}" in scope_lines
+                    for key, _, _, _ in chunk_pairs
+                )
+            )
+        )
+        if chunk and not cannot_join:
+            in_try = any(
+                line in guarded
+                for s in chunk + [stmt]
+                for line in range(s.lineno, s.end_lineno + 1)
+            )
+            if in_try and not all(
+                isinstance(v, (ast.Name, ast.Constant))
+                for _, _, _, v in chunk_pairs + pairs
+            ):
+                cannot_join = True
+        if chunk and not cannot_join:
+            text = _pack_text(chunk_pairs + pairs)
+            if body[i].col_offset + len(text) > 88:
+                cannot_join = True
+        if chunk and cannot_join:
+            break
+        if (
+            not chunk
+            and cannot_join
+            and any(f"!declared:{base}" in scope_lines for base in bases)
+        ):
+            return None
+        chunk.append(stmt)
+        chunk_pairs += pairs
+        j += 1
+    if len(chunk) < 2:
+        return None
+    # Leave the last assignment to any rule that consumes `x = ...` plus the
+    # statement after it (loop folds, `return x`, single-use temps): those
+    # save at least as much, and packing first would hide the shape.
+    if j < len(body) and isinstance(chunk[-1].targets[0], ast.Name):
+        for rule, fn in _RULE_FNS.items():
+            if rule != "pack-assignments" and fn(body, j - 1, scope_lines, class_body):
+                chunk.pop()
+                break
+        if len(chunk) < 2:
+            return None
+        chunk_pairs = [pair for stmt in chunk for pair in _pack_pairs(stmt)]
+    text = _pack_text(chunk_pairs)
+    start, end = _span(chunk)
+    return Rewrite(
+        "pack-assignments",
+        start,
+        end,
+        [],
+        chunk[0].col_offset,
+        _end_col(chunk, end),
+        text=[text],
+    )
+
+
+def _pack_text(pairs: list[tuple[str, bool, ast.expr, ast.expr]]) -> str:
+    values = [
+        f"({ast.unparse(v)})" if isinstance(v, ast.Lambda) else ast.unparse(v)
+        for _, _, _, v in pairs
+    ]
+    return ", ".join(ast.unparse(t) for _, _, t, _ in pairs) + " = " + ", ".join(values)
 
 
 # ---- else-after-terminator (textual: the else body must survive verbatim) --
@@ -1340,9 +2201,15 @@ _RULE_FNS = {
     "bool-return": _rule_bool_return,
     "merge-same-branch": _rule_merge_same_branch,
     "flatten-nested-if": _rule_flatten_nested_if,
+    "guard-call": _rule_guard_call,
     "conditional-return": _rule_conditional_return,
     "conditional-assignment": _rule_conditional_assignment,
+    "self-default-assignment": _rule_self_default_assignment,
     "inline-return-temp": _rule_inline_return_temp,
+    "inline-single-use-temp": _rule_inline_single_use_temp,
+    "merge-imports": _rule_merge_imports,
+    "merge-from-imports": _rule_merge_from_imports,
+    "hoist-common-tail": _rule_hoist_common_tail,
     "dict-build-to-literal": _rule_dict_build_literal,
     "boolean-loop-to-any-all": _rule_boolean_loop,
     "append-loop-to-comprehension": _rule_append_loop,
@@ -1351,6 +2218,8 @@ _RULE_FNS = {
     "drop-bare-reraise": _rule_bare_reraise,
     "threshold-ladder-to-scan": _rule_threshold_ladder,
     "max-loop-to-max": _rule_max_loop,
+    "merge-del": _rule_merge_del,
+    "pack-assignments": _rule_pack_assignments,
 }
 
 
@@ -1375,7 +2244,25 @@ def _collect(
     rule has to decline up front.
     """
     if isinstance(node, SCOPES):
-        scope_lines = scope_name_lines(node)
+        # Module-level stores *are* the module's bindings; inside a function a
+        # store makes the name a local that may still be unbound when a nested
+        # scope runs, so such names are not passed down.
+        inherited = {
+            key[len("!bound:") :]
+            for key in scope_lines
+            if key.startswith("!bound:")
+            and f"!deleted:{key[len('!bound:') :]}" not in scope_lines
+            and (
+                "!module" in scope_lines
+                or f"!stored:{key[len('!bound:') :]}" not in scope_lines
+            )
+        }
+        inherited |= {
+            key
+            for key in scope_lines
+            if key.startswith("!import:") and key[len("!import:") :] in inherited
+        }
+        scope_lines = scope_name_lines(node, inherited)
         class_body = False
     if isinstance(node, ast.ClassDef):
         class_body = True
@@ -1409,6 +2296,8 @@ def _collect(
 
 def _render(rw: Rewrite) -> list[str]:
     pad = " " * rw.col
+    if rw.text is not None:
+        return [(pad + line) if line.strip() else "" for line in rw.text]
     module = ast.Module(body=rw.stmts, type_ignores=[])
     ast.fix_missing_locations(module)
     text = ast.unparse(module)
@@ -1422,7 +2311,7 @@ def _line_aligned(lines: list[str], rw: Rewrite) -> bool:
         return False
     if lines[rw.start - 1][: rw.col].strip():
         return False
-    trailer = lines[rw.end - 1][rw.end_col :].strip()
+    trailer = "" if rw.end_col < 0 else lines[rw.end - 1][rw.end_col :].strip()
     return trailer == "" or trailer.startswith("#")
 
 
@@ -1451,6 +2340,14 @@ def _one_pass(source: str, only: set[str]) -> tuple[str, list[str]]:
             "conditional-assignment",
             "merge-same-branch",
             "flatten-nested-if",
+            "guard-call",
+            "self-default-assignment",
+            "inline-single-use-temp",
+            "merge-imports",
+            "merge-from-imports",
+            "hoist-common-tail",
+            "merge-del",
+            "pack-assignments",
         } and all(
             not re.match(
                 r"#\s*(?:noqa\b|type:\s*ignore\b|pyright:|mypy:|ruff:|"
@@ -1479,6 +2376,13 @@ def _one_pass(source: str, only: set[str]) -> tuple[str, list[str]]:
             "conditional-assignment",
             "merge-same-branch",
             "flatten-nested-if",
+            "guard-call",
+            "self-default-assignment",
+            "inline-single-use-temp",
+            "merge-imports",
+            "merge-from-imports",
+            "hoist-common-tail",
+            "pack-assignments",
         }:
             from .loc import measure
 

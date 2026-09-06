@@ -4,6 +4,7 @@ This file stays outside cloned target repositories and model prompts.
 """
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -35,6 +36,22 @@ setImmediate(() => assert.deepEqual(observed, []));
     )
 
 
+def js_function(source, name):
+    """Extract one top-level function without importing the reducer package.
+
+    The probe runs from a freshly cloned JavaScript project, where the host
+    package is not necessarily importable. Top-level declarations delimit the
+    benchmark functions cleanly; the returned slice includes the declaration
+    and stops before the next one (or end of file).
+    """
+    match = re.search(rf"(?m)^function\s+{re.escape(name)}\s*\(", source)
+    if match is None:
+        raise ValueError(f"function not found: {name}")
+    following = re.search(r"(?m)^function\s+\w+\s*\(", source[match.end() :])
+    end = match.end() + following.start() if following is not None else len(source)
+    return source[match.start() : end].rstrip()
+
+
 if __name__ == "__main__":
     if sys.argv[1] == "boltons":
         sys.path.insert(0, str(Path.cwd()))
@@ -42,15 +59,8 @@ if __name__ == "__main__":
 
         check_table(Table)
     elif sys.argv[1] == "fastq":
-        from less_code.ml_shrink import extract_symbols
-
         source = Path("bench.js").read_text()
-        symbol = next(
-            s
-            for s in extract_symbols(source, "javascript")
-            if s["name"] == "benchFastQPromise"
-        )
-        result = check_fastq(symbol["text"])
+        result = check_fastq(js_function(source, "benchFastQPromise"))
         if result.returncode:
             print(result.stderr, file=sys.stderr)
             raise SystemExit(result.returncode)

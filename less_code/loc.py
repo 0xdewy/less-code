@@ -135,22 +135,34 @@ def canonical_format(source: str, lang: str) -> tuple[str, bool]:
 
 
 def count_python(source: str) -> Loc:
-    """Count via tokenize: docstring = triple-quoted STRING starting a statement."""
+    """Count Python code while excluding actual docstring statement lines."""
     doc_lines: set[int] = set()
     code_lines: set[int] = set()
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     except (tokenize.TokenError, IndentationError, SyntaxError):
         tokens = []
-    boundary = {
-        None,
-        tokenize.NEWLINE,
-        tokenize.INDENT,
-        tokenize.DEDENT,
-        tokenize.NL,
-        tokenize.SEMI,
-    }
-    prev_significant = None
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        tree = None
+    if tree is not None:
+        for node in ast.walk(tree):
+            if (
+                not isinstance(
+                    node,
+                    (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
+                )
+                or not node.body
+            ):
+                continue
+            first = node.body[0]
+            if (
+                isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)
+            ):
+                doc_lines.update(range(first.lineno, first.end_lineno + 1))
     skipped_types = {
         tokenize.COMMENT,
         tokenize.NL,
@@ -163,18 +175,9 @@ def count_python(source: str) -> Loc:
         if tok.type in skipped_types:
             continue
         if tok.type == tokenize.NEWLINE:
-            prev_significant = tok.type
-            continue
-        if (
-            tok.type == tokenize.STRING
-            and ('"""' in tok.string or "'''" in tok.string)
-            and prev_significant in boundary
-        ):
-            doc_lines.update(range(tok.start[0], tok.end[0] + 1))
-            prev_significant = tok.type
             continue
         code_lines.update(range(tok.start[0], tok.end[0] + 1))
-        prev_significant = tok.type
+    code_lines.difference_update(doc_lines)
     code = blank = comment = 0
     for n, line in enumerate(source.splitlines(), 1):
         s = line.strip()

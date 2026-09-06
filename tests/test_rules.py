@@ -191,9 +191,7 @@ def test_merge_same_branch_preserves_comment_multiset():
     original, candidate = {}, {}
     exec(source, original)  # noqa: S102 - fixed differential fixture
     exec(proposed, candidate)  # noqa: S102 - fixed differential fixture
-    assert [original["f"](v) for v in range(4)] == [
-        candidate["f"](v) for v in range(4)
-    ]
+    assert [original["f"](v) for v in range(4)] == [candidate["f"](v) for v in range(4)]
 
 
 def test_merge_same_branch_preserves_inline_comments():
@@ -222,9 +220,7 @@ def test_conditional_return_preserves_explanatory_comments():
     original, candidate = {}, {}
     exec(source, original)  # noqa: S102 - fixed differential fixture
     exec(proposed, candidate)  # noqa: S102 - fixed differential fixture
-    assert [original["f"](v) for v in (0, 1)] == [
-        candidate["f"](v) for v in (0, 1)
-    ]
+    assert [original["f"](v) for v in (0, 1)] == [candidate["f"](v) for v in (0, 1)]
 
 
 @pytest.mark.parametrize(
@@ -232,8 +228,7 @@ def test_conditional_return_preserves_explanatory_comments():
 )
 def test_comment_directives_are_never_moved(directive):
     source = (
-        f"def f(value):\n    if value:  {directive}\n"
-        "        return 1\n    return 2\n"
+        f"def f(value):\n    if value:  {directive}\n        return 1\n    return 2\n"
     )
     assert apply_rules(source, {"conditional-return"}) == (source, [])
 
@@ -1053,9 +1048,15 @@ def test_every_rule_name_is_reachable():
         "bool-return",
         "merge-same-branch",
         "flatten-nested-if",
+        "guard-call",
         "conditional-return",
         "conditional-assignment",
+        "self-default-assignment",
         "inline-return-temp",
+        "inline-single-use-temp",
+        "merge-imports",
+        "merge-from-imports",
+        "hoist-common-tail",
         "dict-build-to-literal",
         "boolean-loop-to-any-all",
         "append-loop-to-comprehension",
@@ -1064,6 +1065,8 @@ def test_every_rule_name_is_reachable():
         "drop-bare-reraise",
         "threshold-ladder-to-scan",
         "max-loop-to-max",
+        "merge-del",
+        "pack-assignments",
         "else-after-terminator",
     }
 
@@ -1214,8 +1217,9 @@ def test_else_after_terminator_the_click_misfire_is_impossible():
         """
     )
     out, applied = apply_rules(src)
-    assert applied == []
-    assert out == src
+    assert "else-after-terminator" not in applied
+    assert 'else:\n        raise RuntimeError("not installed")' in out
+    assert apply_rules(src, {"else-after-terminator"}) == (src, [])
 
 
 # ---- loop-dict-to-update ---------------------------------------------------
@@ -1564,3 +1568,340 @@ def test_the_new_rules_fire_on_the_py_fixture():
     _out, applied = apply_rules(source)
     assert "if-ladder-to-dict" not in applied
     assert "threshold-ladder-to-scan" in applied
+
+
+def test_inline_single_use_temp_preserves_evaluation_order():
+    safe = "def f(build):\n    value = build()\n    return value + 1\n"
+    reduced, applied = apply_rules(safe, {"inline-single-use-temp"})
+    assert applied == ["inline-single-use-temp"]
+    assert "return build() + 1" in reduced
+
+    unsafe = (
+        "def f(events):\n    value = events.append('rhs')\n    return missing + value\n"
+    )
+    assert apply_rules(unsafe, {"inline-single-use-temp"}) == (unsafe, [])
+
+    optimized_away = "def f(build):\n    value = build()\n    assert value\n"
+    assert apply_rules(optimized_away, {"inline-single-use-temp"}) == (
+        optimized_away,
+        [],
+    )
+
+
+def test_inline_single_use_temp_can_rewrite_a_compound_header():
+    source = (
+        "def f(items):\n"
+        "    values = list(items)\n"
+        "    for value in values:\n"
+        "        yield value\n"
+    )
+    reduced, applied = apply_rules(source, {"inline-single-use-temp"})
+    assert applied == ["inline-single-use-temp"]
+    assert "for value in list(items):" in reduced
+
+
+def test_merge_consecutive_from_imports_only_for_the_same_module():
+    source = "from pkg import first\nfrom pkg import second as other\nfrom elsewhere import third\n"
+    reduced, applied = apply_rules(source, {"merge-from-imports"})
+    assert applied == ["merge-from-imports"]
+    assert (
+        reduced
+        == "from pkg import first, second as other\nfrom elsewhere import third\n"
+    )
+
+
+def test_merge_consecutive_plain_imports_preserves_order_and_aliases():
+    source = "import first\nimport second as other\nfrom elsewhere import third\n"
+    reduced, applied = apply_rules(source, {"merge-imports"})
+    assert applied == ["merge-imports"]
+    assert reduced == "import first, second as other\nfrom elsewhere import third\n"
+
+
+def test_guard_call_preserves_short_circuit_and_call_result_is_discarded():
+    source = "def f(condition, action):\n    if condition():\n        action()\n"
+    reduced, applied = apply_rules(source, {"guard-call"})
+    assert applied == ["guard-call"]
+    assert "condition() and action()" in reduced
+    for truth in (False, True):
+        observed = []
+        for code in (source, reduced):
+            events = []
+            namespace = {}
+            exec(code, namespace)  # noqa: S102 - fixed differential fixture
+            namespace["f"](
+                lambda events=events, truth=truth: events.append("condition") or truth,
+                lambda events=events: events.append("action") or object(),
+            )
+            observed.append(events)
+        assert observed[0] == observed[1]
+
+
+def test_self_default_assignment_is_local_and_preserves_test_order():
+    source = (
+        "def f(value, events):\n"
+        "    if value is None:\n"
+        "        value = events.append('default') or 3\n"
+        "    return value\n"
+    )
+    reduced, applied = apply_rules(source, {"self-default-assignment"})
+    assert applied == ["self-default-assignment"]
+    assert (
+        "value = events.append('default') or 3 if value is None else value" in reduced
+    )
+    for value in (None, 7):
+        assert _behaves_the_same(source, reduced, "f", [value, []])
+
+    module_assignment = "if value is None:\n    value = 3\n"
+    assert apply_rules(module_assignment, {"self-default-assignment"}) == (
+        module_assignment,
+        [],
+    )
+
+
+def test_hoist_common_tail_requires_every_branch_to_match():
+    source = (
+        "def f(value, emit):\n"
+        "    if value:\n"
+        "        emit('yes')\n"
+        "        emit('done')\n"
+        "    else:\n"
+        "        emit('no')\n"
+        "        emit('done')\n"
+    )
+    reduced, applied = apply_rules(source, {"hoist-common-tail"})
+    assert applied == ["hoist-common-tail"]
+    assert reduced.count("emit('done')") == 1
+
+    different = source.replace("        emit('done')\n", "        emit('other')\n", 1)
+    assert apply_rules(different, {"hoist-common-tail"}) == (different, [])
+
+
+# ---- pack-assignments / merge-del / provably-bound name lookups ------------
+
+
+def test_pack_assignments_packs_independent_locals():
+    src = "def f(build, other):\n    a = build()\n    b = other(1)\n    return a, b, a, b\n"
+    reduced, applied = apply_rules(src, {"pack-assignments"})
+    assert applied == ["pack-assignments"]
+    assert reduced == (
+        "def f(build, other):\n    a, b = build(), other(1)\n    return a, b, a, b\n"
+    )
+
+
+def test_pack_assignments_keeps_reads_of_an_earlier_target():
+    src = "def f(build):\n    a = build()\n    b = a + 1\n    return a, b\n"
+    assert apply_rules(src, {"pack-assignments"}) == (src, [])
+
+
+def test_pack_assignments_declines_inside_try_unless_rhs_cannot_raise():
+    guarded = norm(
+        """
+        def f(build):
+            try:
+                a = build()
+                b = build()
+            except ValueError:
+                return a
+            return b
+        """
+    )
+    assert apply_rules(guarded, {"pack-assignments"}) == (guarded, [])
+    harmless = norm(
+        """
+        def f(x):
+            try:
+                a = x
+                b = 2
+            except ValueError:
+                return a
+            return a, b
+        """
+    )
+    reduced, applied = apply_rules(harmless, {"pack-assignments"})
+    assert applied == ["pack-assignments"]
+    assert "a, b = x, 2" in reduced
+
+
+def test_pack_assignments_attribute_targets_need_effect_free_values():
+    plain = "def f(self, x, y):\n    self.x = x\n    self.y = y\n"
+    reduced, applied = apply_rules(plain, {"pack-assignments"})
+    assert applied == ["pack-assignments"]
+    assert "self.x, self.y = x, y" in reduced
+    # `self.x = ...` may be a property setter that `compute()` observes.
+    calls = "def f(self, x):\n    self.x = x\n    self.y = self.compute()\n"
+    assert apply_rules(calls, {"pack-assignments"}) == (calls, [])
+
+
+def test_pack_assignments_leaves_the_last_temp_to_the_loop_and_inline_rules():
+    src = norm(
+        """
+        def f(items):
+            a = 1
+            b = 2
+            total = 0
+            for item in items:
+                total += item
+            return a, b, total
+        """
+    )
+    reduced, applied = apply_rules(src)
+    assert "a, b = 1, 2" in reduced
+    assert "accumulate-to-sum" in applied
+    assert "sum(" in reduced
+
+
+def test_pack_assignments_declines_closure_shared_targets_and_wide_lines():
+    closure = norm(
+        """
+        def f(build):
+            a = build()
+            b = build(lambda: a)
+            return b
+        """
+    )
+    assert apply_rules(closure, {"pack-assignments"}) == (closure, [])
+    x, y = "x" * 40, "y" * 40
+    wide = (
+        "def f(build):\n"
+        f"    alpha = build('{x}')\n    beta = build('{y}')\n    return alpha, beta\n"
+    )
+    assert apply_rules(wide, {"pack-assignments"}) == (wide, [])
+
+
+def test_merge_del_joins_adjacent_deletes_in_order():
+    src = "def f(a, b):\n    del a\n    del b\n"
+    assert apply_rules(src, {"merge-del"}) == (
+        "def f(a, b):\n    del a, b\n",
+        ["merge-del"],
+    )
+
+
+def test_single_use_temp_crosses_provably_bound_names_only():
+    param = "def f(build, wrap):\n    value = build()\n    return wrap(value)\n"
+    reduced, applied = apply_rules(param, {"inline-single-use-temp"})
+    assert (reduced, applied) == (
+        "def f(build, wrap):\n    return wrap(build())\n",
+        ["inline-single-use-temp"],
+    )
+    # attribute lookups on an imported module cannot run user code
+    module_level = "import json\n\ndef f(build):\n    value = build()\n    return json.dumps(value)\n"
+    reduced, _ = apply_rules(module_level, {"inline-single-use-temp"})
+    assert "return json.dumps(build())" in reduced
+    # attribute reads on a bound name are effect-free (the `_pure` stance)
+    method = "def f(self, build):\n    value = build()\n    return self.emit(value)\n"
+    reduced, _ = apply_rules(method, {"inline-single-use-temp"})
+    assert "return self.emit(build())" in reduced
+    # ... but a call result is not: `self.get()` may run anything
+    chained = (
+        "def f(self, build):\n    value = build()\n    return self.get().emit(value)\n"
+    )
+    assert apply_rules(chained, {"inline-single-use-temp"}) == (chained, [])
+    module_name = "def helper(x):\n    return x\n\ndef f(build):\n    value = build()\n    return helper(value)\n"
+    reduced, _ = apply_rules(module_name, {"inline-single-use-temp"})
+    assert "return helper(build())" in reduced
+    builtin = "def f(build):\n    value = build()\n    return len(value)\n"
+    reduced, _ = apply_rules(builtin, {"inline-single-use-temp"})
+    assert "return len(build())" in reduced
+    # `missing` is unbound: the lookup fails, so the RHS must still run first.
+    unbound = "def f(build):\n    value = build()\n    return missing(value)\n"
+    assert apply_rules(unbound, {"inline-single-use-temp"}) == (unbound, [])
+    # a name this function rebinds later is a local for the whole body
+    shadowed = (
+        "def f(build):\n    value = build()\n    out = len(value)\n"
+        "    len = 1\n    return out, len\n"
+    )
+    assert apply_rules(shadowed, {"inline-single-use-temp"}) == (shadowed, [])
+
+
+def test_loop_folds_decline_inside_try_or_with():
+    """A comprehension leaves the name unbound when the loop raises midway;
+    that is observable wherever the exception can be caught."""
+    src = norm(
+        """
+        def f(feed, k):
+            with suppress(StopIteration):
+                reservoir = []
+                for _ in range(k):
+                    reservoir.append(feed(0))
+            return reservoir
+        """
+    )
+    assert apply_rules(src, {"append-loop-to-comprehension"}) == (src, [])
+    plain = norm(
+        """
+        def f(feed, k):
+            reservoir = []
+            for _ in range(k):
+                reservoir.append(feed(0))
+            return reservoir
+        """
+    )
+    _, applied = apply_rules(plain, {"append-loop-to-comprehension"})
+    assert applied == ["append-loop-to-comprehension"]
+
+
+def test_conditional_return_accepts_a_bare_return():
+    src = "def f(x):\n    if x:\n        return x + 1\n    return\n"
+    reduced, applied = apply_rules(src, {"conditional-return"})
+    assert applied == ["conditional-return"]
+    assert reduced == "def f(x):\n    return x + 1 if x else None\n"
+
+
+def test_pack_assignments_packs_the_widest_prefix_that_fits():
+    src = norm(
+        """
+        def f(tb):
+            func_name = tb.tb_frame.f_code.co_name
+            lineno = tb.tb_lineno
+            lasti = tb.tb_lasti
+            module_name = tb.tb_frame.f_globals.get('__name__', '')
+            module_path = tb.tb_frame.f_code.co_filename
+            return func_name, lineno, lasti, module_name, module_path, lineno
+        """
+    )
+    reduced, applied = apply_rules(src, {"pack-assignments"})
+    assert applied == ["pack-assignments"]
+    assert (
+        "func_name, lineno, lasti = tb.tb_frame.f_code.co_name, tb.tb_lineno, tb.tb_lasti"
+        in reduced
+    )
+    assert "module_name = tb.tb_frame.f_globals.get('__name__', '')" in reduced
+    assert all(len(line) <= 88 for line in reduced.splitlines())
+
+
+def test_pack_assignments_absorbs_an_existing_tuple_assignment():
+    src = "def f(x, y):\n    a = 1\n    b, c = x, y\n    return a, b, c, a\n"
+    reduced, applied = apply_rules(src, {"pack-assignments"})
+    assert applied == ["pack-assignments"]
+    assert "a, b, c = 1, x, y" in reduced
+    # a swap reads its own targets: it packs as one group but never splits
+    swap = "def f(a, b):\n    c = 1\n    a, b = b, a\n    return a, b, c, c\n"
+    reduced, applied = apply_rules(swap, {"pack-assignments"})
+    assert "c, a, b = 1, b, a" in reduced
+
+
+def test_reassignment_of_the_same_name_is_folded():
+    src = norm(
+        """
+        def f(filename, lineno):
+            line = linecache.getline(filename, lineno)
+            line = line.rstrip()
+            cache[lineno] = line
+            return line
+        """
+    )
+    reduced, applied = apply_rules(src, {"inline-single-use-temp"})
+    assert applied == ["inline-single-use-temp"]
+    assert "line = linecache.getline(filename, lineno).rstrip()" in reduced
+    guarded = norm(
+        """
+        def f(filename, lineno):
+            try:
+                line = linecache.getline(filename, lineno)
+                line = line.rstrip()
+            except KeyError:
+                return line
+            return line
+        """
+    )
+    assert apply_rules(guarded, {"inline-single-use-temp"}) == (guarded, [])

@@ -98,6 +98,20 @@ def test_ruff_select_includes_the_loc_reducing_families():
     assert "else" not in _ruff_fix(src, "m.py")
 
 
+@ruff_only
+def test_ruff_tier_removes_a_loop_else_without_break():
+    source = (
+        "def f(items):\n"
+        "    for item in items:\n"
+        "        consume(item)\n"
+        "    else:\n"
+        "        finish()\n"
+    )
+    fixed = _ruff_fix(source, "m.py", unsafe=True)
+    assert "    else:" not in fixed
+    assert "    finish()" in fixed
+
+
 def test_ruff_fix_returns_the_input_unchanged_when_ruff_is_missing(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda _name: None)
     src = "import os\n"

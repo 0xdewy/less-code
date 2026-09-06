@@ -6,6 +6,7 @@ Layered pipeline, each layer verify-gated independently:
   L1  Ruff and language-specific static passes
   L1b language rule libraries: semantic-preserving rewrites
   L1c guard-block outlining: project-wide repeated guards
+  L1d ruff and the rule library again, over the rewritten tree
 
 Each layer's edit set is applied, the frozen suite is run, and the edits
 are kept iff the suite stays green AND code-LOC shrinks. A layer that
@@ -18,9 +19,11 @@ from __future__ import annotations
 import contextlib
 import difflib
 import json
+import os
 import shutil
 import signal
 import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +32,7 @@ from .api_check import api_surface, api_violations
 from .documentation import documentation_layout
 from .langdetect import map_project
 from .loc import measure
+from .shadow import changed_functions, run_shadow
 from .static import static_pass
 from .testrunners import run_tests, shadowed_imports
 
@@ -52,6 +56,7 @@ class ShrinkStats:
     ml_stats: dict[str, int] = field(default_factory=dict)
     ml_records: list[dict] = field(default_factory=list)
     audit_records: list[dict] = field(default_factory=list)
+    oracle: dict = field(default_factory=dict)
 
     def to_json(self) -> dict:
         return {
@@ -74,6 +79,7 @@ class ShrinkStats:
             "ml_stats": self.ml_stats,
             "ml_records": self.ml_records,
             "audit_records": self.audit_records,
+            "oracle": self.oracle,
         }
 
 
@@ -134,6 +140,22 @@ def _apply_outline(
 
     changed, notes = outline_guards({str(path): text for path, text in sources.items()})
     return {path: changed.get(str(path), text) for path, text in sources.items()}, notes
+
+
+def _apply_ruff_again(
+    sources: dict[Path, str],
+) -> tuple[dict[Path, str], list[str]]:
+    """The rule layers expose shapes ruff fixes (superfluous else after a
+    return, a now-useless trailing return, an assignment before return)."""
+    from .static import _ruff_fix
+
+    out, notes = dict(sources), []
+    for path, text in sources.items():
+        new_text = _ruff_fix(text, path.name, unsafe=True)
+        if new_text != text:
+            out[path] = new_text
+            notes.append(f"{path.name}: ruff --fix after rules")
+    return out, notes
 
 
 def shrink_project(
@@ -331,6 +353,28 @@ def shrink_project(
             check = runner(root, project.lang)
             if not check.ok:
                 reason = f"tests failed: {check.output_tail[-200:]}"
+        if not reason and project.lang == "python":
+            # Differential oracle: every rewritten function's original body
+            # runs alongside it for the whole suite. Cumulative against the
+            # pristine tree, so each layer is verified on top of the last.
+            spec = changed_functions(pristine, _snapshot(project.source_files))
+            if spec:
+                report = run_shadow(root, spec, test_command, test_timeout)
+                if not report.tests_ok:
+                    reason = f"shadow run failed: {report.output_tail[-200:]}"
+                elif report.mismatches:
+                    first = report.mismatches[0]
+                    reason = (
+                        f"shadow oracle mismatch in {first['file']}:{first['function']}"
+                        f" ({first['examples'][0]['kind'] if first['examples'] else 'n/a'})"
+                    )
+        if os.environ.get("LC_TRACE"):
+            print(
+                f"[gate] {name}: {len(changes)} file(s) {pre_loc}->{loc_after}"
+                f" {reason or 'accepted'}"[:300],
+                file=sys.stderr,
+                flush=True,
+            )
         if reason:
             _restore(current)
             layer_notes = list(notes) + [f"{name}: reverted by the gate ({reason})"]
@@ -346,6 +390,7 @@ def shrink_project(
         """
         original = path.read_text(encoding="utf-8").splitlines(keepends=True)
         from .ml_shrink import syntax_ok
+
         revised = proposed.splitlines(keepends=True)
         edits = [
             (start, end, revised[new_start:new_end])
@@ -469,13 +514,21 @@ def shrink_project(
     )
 
     if project.lang == "python":
-        for name, transform in (("rules", _apply_rules), ("outline", _apply_outline)):
+        rewritten = False  # did rules/outline change anything ruff has not seen?
+        for name, transform in (
+            ("rules", _apply_rules),
+            ("outline", _apply_outline),
+            ("ruff-again", _apply_ruff_again),
+            ("rules-again", _apply_rules),
+        ):
+            if name.endswith("-again") and not rewritten:
+                continue  # ruff already saw this exact tree in the static layer
             pre_loc = _tree_loc(project.source_files, project.lang)
             proposed, notes = transform(_snapshot(project.source_files))
             loc_after, notes, committed, _ = _gate_layer(
                 name, proposed, notes, api_pre_layers
             )
-            if name == "rules" and not committed:
+            if name in ("rules", "rules-again") and not committed:
                 from .rules import RULES
 
                 notes.append("combined rules failed; narrowing rule by rule")
@@ -511,6 +564,7 @@ def shrink_project(
                     )
                     notes += narrowed_notes
             stats.static_notes += notes
+            rewritten = rewritten or loc_after < pre_loc
             stats.layer_records.append(
                 {
                     "layer": name,
@@ -608,6 +662,11 @@ def shrink_project(
                 )
 
     stats.loc_final = _tree_loc(project.source_files, project.lang)
+    if project.lang == "python":
+        final_spec = changed_functions(pristine, _snapshot(project.source_files))
+        stats.oracle = run_shadow(
+            root, final_spec, test_command, test_timeout
+        ).to_json()
     if stats.ml_stats:
         stats.ml_stats["retained_loc"] = stats.loc_after_static - stats.loc_final
         stats.ml_stats["retained"] = sum(

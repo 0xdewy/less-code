@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from bench.heldout import js_function
 from less_code.api_check import api_violations, js_api, python_api, rust_api
 from less_code.langdetect import map_project
 from less_code.loc import count_source
@@ -143,6 +144,16 @@ class TestLoc:
     def test_python_multiline_string_in_expr_is_code(self):
         src = "x = ('a'\n     'b')\n"
         assert count_source(src, "python").code == 2
+
+    def test_python_single_quoted_docstrings_are_not_code(self):
+        src = "'module docs'\ndef f():\n    'function docs'\n    return 1\n"
+        loc = count_source(src, "python")
+        assert loc.code == 2
+
+    def test_python_bare_string_after_first_statement_is_code(self):
+        src = "def f():\n    value = 1\n    'runtime expression'\n    return value\n"
+        loc = count_source(src, "python")
+        assert loc.code == 4
 
     def test_js_comments(self):
         src = "// hi\nconst a = 1;\n/* block\nstill block */\nlet b = 2;\n"
@@ -706,6 +717,38 @@ def test_rust_inline_single_use_binding_keeps_types_and_later_uses():
     assert apply_rules(reused, {"inline-single-use-binding"}) == (reused, [])
 
 
+def test_rust_inline_single_use_binding_supports_multiline_expressions():
+    from less_code.rust_rules import apply_rules
+
+    source = """fn f(value: u64) -> bool {
+    let upper = value
+        .checked_add(10)
+        .unwrap();
+    value < upper
+}
+"""
+    reduced, applied = apply_rules(source, {"inline-single-use-binding"})
+    assert applied == ["inline-single-use-binding"]
+    assert "let upper" not in reduced
+    assert "value < value" in reduced
+
+
+def test_rust_inline_binding_does_not_move_evaluation_into_control_flow():
+    from less_code.rust_rules import apply_rules
+
+    source = """fn f(items: &mut Items) -> Result<(), Error> {
+    let original_offset = items.offset();
+    for item in items {
+        if item.invalid() {
+            return Err(Error::At(original_offset));
+        }
+    }
+    Ok(())
+}
+"""
+    assert apply_rules(source, {"inline-single-use-binding"}) == (source, [])
+
+
 def test_cli_model_protocol_with_context_and_feedback():
     import shlex
     import sys
@@ -723,3 +766,50 @@ def test_cli_model_protocol_with_context_and_feedback():
     )
     backend = CliBackend(f"{shlex.quote(sys.executable)} -c {shlex.quote(program)}")
     assert backend.propose("python", symbol).replacement == symbol["text"]
+
+
+def test_fastq_probe_extracts_a_top_level_function_without_host_imports():
+    source = (
+        "function before () { return 1 }\n\n"
+        "function target (done) {\n  done()\n}\n\n"
+        "function after () { return 2 }\n"
+    )
+    assert js_function(source, "target") == "function target (done) {\n  done()\n}"
+
+
+def test_rust_unbrace_match_arm_keeps_arm_types():
+    from less_code.rust_rules import apply_rules
+
+    source = (
+        "fn f(c: char, out: &mut u64) -> Result<u64, ()> {\n"
+        "    loop {\n"
+        "        match c {\n"
+        "            'a' => {\n"
+        "                break;\n"
+        "            }\n"
+        "            'b' => {\n"
+        "                return Err(());\n"
+        "            }\n"
+        "            'c' => {\n"
+        "                *out = 1;\n"
+        "            }\n"
+        "            'd' => {\n"
+        "                // keep: a comment lives here\n"
+        "                continue;\n"
+        "            }\n"
+        "            _ => {\n"
+        "                helper(c);\n"
+        "            }\n"
+        "        }\n"
+        "    }\n"
+        "    Ok(*out)\n"
+        "}\n"
+    )
+    reduced, applied = apply_rules(source, {"unbrace-match-arm"})
+    assert applied == ["unbrace-match-arm"] * 3
+    assert "'a' => break," in reduced
+    assert "'b' => return Err(())," in reduced
+    assert "'c' => *out = 1," in reduced
+    # a commented arm and a `()`-by-semicolon call whose value would change stay
+    assert "// keep: a comment lives here" in reduced
+    assert "helper(c);" in reduced

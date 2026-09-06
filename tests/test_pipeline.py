@@ -447,6 +447,7 @@ def test_rule_gate_salvages_good_files_from_rejected_batch(tmp_path, monkeypatch
     monkeypatch.setattr(pipeline, "static_pass", lambda *_a, **_k: StaticResult())
     monkeypatch.setattr(pipeline, "_apply_rules", scripted)
     monkeypatch.setattr(pipeline, "_apply_outline", lambda sources: (sources, []))
+    monkeypatch.setattr(pipeline, "_apply_ruff_again", lambda sources: (sources, []))
     monkeypatch.setattr(rules, "RULES", ("scripted",))
 
     stats = shrink_project(root)

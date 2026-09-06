@@ -15,8 +15,9 @@ This module does that merge deterministically.
 A *window* is a run of consecutive statements at the top level of a function
 body where every statement is either
 
-* an `if <test>: raise <exc>` (single-statement body, no `else`), or
-* a plain `name = <expr>` assignment.
+* an `if <test>: raise <exc>` (single-statement body, no `else`),
+* a plain `name = <expr>` assignment, or
+* a call statement `f(...)` (binds nothing; runs the same inside the helper).
 
 Windows that are identical after **alpha-renaming** (free names, bound names)
 and **constant abstraction** form a group. A group with >= 3 occurrences and a
@@ -172,8 +173,15 @@ def _is_simple_assign(stmt: ast.stmt) -> bool:
     )
 
 
+def _is_call_statement(stmt: ast.stmt) -> bool:
+    """`f(...)` / `obj.method(...)` as a statement: it binds nothing, so the
+    helper only needs its free names, and a call runs identically inside a
+    helper called at the same point."""
+    return isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+
+
 def _eligible(stmt: ast.stmt) -> bool:
-    if not (_is_guard(stmt) or _is_simple_assign(stmt)):
+    if not (_is_guard(stmt) or _is_simple_assign(stmt) or _is_call_statement(stmt)):
         return False
     for node in ast.walk(stmt):
         if isinstance(node, (_ESCAPES, _SCOPE_TRICKS)):

@@ -65,6 +65,58 @@ incomplete. Its 2.43% partial aggregate is not comparable to the old six-project
 2.58%. Dependency versions and environment capacity remain reproducibility
 limitations; pinning source commits alone is insufficient.
 
+## Where the remaining lines are (2026-09-05)
+
+Measured on the reduced Python trees after the assignment-packing, single-use
+temp, second-ruff-pass and call-window outlining changes. Percentages are of
+the canonical code LOC that remains.
+
+- Continuation lines of statements the formatter has to wrap (long `if`
+  conditions, calls, literals): 20-45% per project. Nothing semantic shortens
+  them; pyupgrade alone keeps 451 lines only because magic trailing commas
+  pin its signatures and literals exploded. Stripping those commas is a
+  formatting change and is deliberately not a rule, even though the metric
+  would count it.
+- `def` headers, `if` headers and `return` statements: about a third. Early
+  returns (`if c: return x` followed by more code; 267 sites) have no
+  one-line form.
+- Assignments: a quarter. Packing already takes every run whose packed line
+  fits 88 columns and whose later right-hand sides do not read earlier
+  targets; the width limit, not safety, declines most of the rest.
+- Levers measured and declined as golf rather than simplification: joining
+  consecutive call statements into a tuple expression (93 lines), a generic
+  deferred-raise helper for two-line guards (about 90), deleting string
+  statements used as developer notes (118), joining implicitly concatenated
+  literals (55).
+- Levers measured and found too small to build: inlining single-call private
+  helpers (16 lines under safe conditions), dead private constants (2, both
+  compatibility aliases), `append` runs on fresh lists (3), Clippy `--fix`
+  on the Rust crates (0).
+
+Peephole rules therefore plateau around 8% weighted on this corpus; the
+verdict above stands.
+
+## The shadow oracle (2026-09-06)
+
+Built after the ceiling analysis, as the first step of the "strengthen the
+verifier before the proposer" plan. Every Python gate now re-runs the suite
+with each rewritten function's original body executing alongside the
+rewrite in the same module namespace (`less_code/shadow.py`). On boltons it
+found no wrong rewrite among 263 rewritten functions (103 exercised, 7618
+compared calls), and every mismatch it raised while being built was an
+artifact of copying arguments: `datetime.now`, freezegun retyping copies,
+bare `object()` sentinels compared by identity, `list`/`dict` subclasses with
+instance state that `__reduce_ex__` restores twice, and a `lambda:
+self.cache` closure reaching the real object. Each became a rule for what the
+oracle refuses to judge. Two consequences for the model plan:
+
+- Model proposals can be verified per function against recorded calls, not
+  only against assertions, so the acceptance rate becomes a measure of the
+  model rather than of test coverage.
+- Roughly 40% of rewritten functions are exercised by the suites; the rest
+  need generated inputs, which is the narrow, low-risk job proposed for a
+  local model.
+
 ## Tactics worth adopting
 
 | Priority | Change | Existing tool / evidence | Acceptance experiment |

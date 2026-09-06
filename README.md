@@ -9,6 +9,7 @@ L0  canonical formatter (not counted as reduction)
 L1  static tools and language rules: ruff / JavaScript / Rust rewrites
 L1b rule library: AST semantic-preserving rewrites
 L1c guard-block outlining: project-wide repeated guards -> helper
+L1d ruff and the rule library once more over the rewritten tree
 L2  optional per-symbol LLM rewrites
 ```
 
@@ -33,11 +34,40 @@ own yield.
   supply JavaScript and Rust candidates. These still require verification.
 - The rule library covers candidate rewrites no general tool covers
   (accumulator -> `sum()`, append loops -> comprehensions, manual max ->
-  `max(key=..., default=None)` with sentinel refusal, etc.).
-- Guard-block outlining factors repeated `if X: raise` patterns into
-  one shared `_check` helper across an entire project.
+  `max(key=..., default=None)` with sentinel refusal, one-call guards ->
+  short-circuit calls, local self-defaults -> conditional assignments,
+  adjacent import packing with execution order retained, consecutive
+  independent assignments packed into one tuple assignment up to the
+  canonical width, and single-use temps inlined across provably bound
+  name and attribute lookups). Ruff runs a second time after the rule
+  layers, since their output exposes shapes it fixes (superfluous else,
+  useless trailing return).
+- Guard-block outlining factors repeated `if X: raise`, assignment and
+  call-statement windows into one shared `_`-prefixed helper across an
+  entire project.
 - An optional LLM backend handles residual per-symbol simplifications; every
   proposal passes the same formatter, tests, API, and documentation gates.
+
+## Shadow oracle (Python)
+
+Tests check assertions, not functions, so a rewrite can be wrong and stay
+green. For Python the gate therefore runs the suite a second time with every
+rewritten function *shadowed*: its original body is compiled into the
+rewritten module's own namespace and runs alongside the rewrite on every
+call the suite makes (iterator arguments are tee'd, everything else is deep
+copied). Return values, exceptions, the items of returned iterators (lazily)
+and argument mutation must agree, else the layer is reverted. The oracle only
+ever makes the gate stricter: whatever it cannot judge is reported as
+unverified, never as a mismatch. That covers nondeterministic functions (the
+original disagrees with itself on a spare copy of the input), functions with
+external effects (file, process, clock and random APIs are excluded up front;
+anything else whose double execution breaks the suite is bisected out),
+calls whose arguments have no faithful deep copy (weak references, closures
+and bound methods over shared state, container subclasses with instance
+state, very large containers), and calls beyond a per-function budget. It
+roughly multiplies gate time by ten on a large project. `bench/BASELINE.md`
+shows, per project, how many rewritten functions the suite actually
+exercised under the oracle. See `less_code/shadow.py`.
 
 ## Install & quickstart
 
@@ -159,7 +189,9 @@ External tools are picked up automatically if installed:
    the static pass and the external tools).
 2. **Mechanical simplifications** — `if c: return True/return False`
    -> `return c`, sorted/append/sum loops -> `sum()`/`sorted()`/
-   comprehensions, manual max/min -> `max(key=..., default=None)`
+   comprehensions, single-use temporary inlining, same-module import merging,
+   common branch-tail hoisting, JavaScript single-statement unbracing, and
+   manual max/min -> `max(key=..., default=None)`
    (numeric sentinels declined because `-1` is not provably equivalent
    to `default=None`).
 3. **Repeated guards** — three or more identical `if X: raise ...` blocks

@@ -275,12 +275,15 @@ def test_inline_return_binding_preserves_multiline_expression_indent():
 """
     new, applied = apply_rules(source, {"inline-return-binding"})
     assert applied == ["inline-return-binding"]
-    assert new == """function drained() {
+    assert (
+        new
+        == """function drained() {
 \treturn new Promise(resolve => {
 \t\tcomplete = resolve;
 \t});
 }
 """
+    )
 
 
 def test_concise_arrow_return():
@@ -310,3 +313,23 @@ let replaceClose = (string, close, replace, index) => {
     assert applied == ["substring-replace-loop"]
     assert ".substring(index).split(close).join(replace)" in new
     assert "do {" not in new
+
+
+def test_unbrace_single_statement_preserves_else_and_asi_hazards():
+    source = "if (ready) { run(); } else { wait(); }\n"
+    reduced, applied = apply_rules(source, {"unbrace-single-statement"})
+    assert len(applied) == 2
+    assert reduced == "if (ready) run(); else wait();\n"
+
+    hazard = "while (ready) { value() }\n[1].forEach(run)\n"
+    assert apply_rules(hazard, {"unbrace-single-statement"}) == (hazard, [])
+
+
+def test_js_hoist_common_tail_does_not_normalize_literal_contents():
+    source = 'if (ready) { first(); emit("a b"); } else { second(); emit("a  b"); }\n'
+    assert apply_rules(source, {"hoist-common-tail"}) == (source, [])
+
+    matching = source.replace('emit("a  b")', 'emit("a b")')
+    reduced, applied = apply_rules(matching, {"hoist-common-tail"})
+    assert applied
+    assert reduced.count('emit("a b")') == 1
