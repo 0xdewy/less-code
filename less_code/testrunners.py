@@ -31,11 +31,19 @@ class TestResult:
     cached: bool = False
 
 
-def _run(cmd: list[str], cwd: Path, timeout: int) -> TestResult:
+def _run(
+    cmd: list[str], cwd: Path, timeout: int, env: dict[str, str] | None = None
+) -> TestResult:
     start = time.monotonic()
     try:
         proc = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=env,
         )
         tail = (proc.stdout + proc.stderr)[-4000:]
         return TestResult(
@@ -172,11 +180,13 @@ def run_tests(
     quiet: bool = False,
     use_cache: bool = True,
     command: list[str] | None = None,
+    env: dict[str, str] | None = None,
 ) -> TestResult:
-    """Run the frozen suite. `use_cache=False` bypasses the content-hash cache."""
+    """Run the frozen suite. `use_cache=False` bypasses the content-hash cache;
+    a custom `env` (the shadow oracle) always does, since the tree is the same."""
     cmd = command or gate_command(root, lang)
-    if not use_cache:
-        return _run(cmd, root, timeout)
+    if not use_cache or env is not None:
+        return _run(cmd, root, timeout, env)
     key = f"{lang}:{root}:{json.dumps(cmd)}:{tree_hash(root, lang)}"
     hit = _CACHE.get(key)
     if hit is not None:
