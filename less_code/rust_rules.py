@@ -116,20 +116,29 @@ def _collect_inline_single_use_bindings(src: bytes, root):
                 ):
                     continue
                 use = uses[0]
-                ancestor = use.parent
                 deferred_or_conditional = False
-                while ancestor is not None and ancestor != following:
-                    if ancestor.type in {
-                        "block",
-                        "closure_expression",
-                        "async_block",
-                        "match_arm",
-                        "while_expression",
-                        "loop_expression",
-                    }:
-                        deferred_or_conditional = True
-                        break
-                    ancestor = ancestor.parent
+                # `use is following` when the following statement is nothing
+                # but a bare tail expression (`x` with no semicolon): the
+                # walk below starts at `use.parent`, which is then the
+                # *enclosing* block, not a block wrapping the use inside
+                # `following` - the very case this walk exists to catch. No
+                # ancestor walk is needed at all here: there is nothing
+                # between the declaration and the use for a block, closure,
+                # or loop to hide behind.
+                if use is not following:
+                    ancestor = use.parent
+                    while ancestor is not None and ancestor != following:
+                        if ancestor.type in {
+                            "block",
+                            "closure_expression",
+                            "async_block",
+                            "match_arm",
+                            "while_expression",
+                            "loop_expression",
+                        }:
+                            deferred_or_conditional = True
+                            break
+                        ancestor = ancestor.parent
                 if deferred_or_conditional:
                     continue
                 following_text = _node_text(src, following)

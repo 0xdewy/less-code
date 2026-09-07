@@ -813,3 +813,28 @@ def test_rust_unbrace_match_arm_keeps_arm_types():
     # a commented arm and a `()`-by-semicolon call whose value would change stay
     assert "// keep: a comment lives here" in reduced
     assert "helper(c);" in reduced
+
+
+def test_rust_inline_single_use_binding_fires_on_a_bare_tail_expression():
+    """`let result = a + b; result` (no `return`, no wrapping expression) is
+    the idiomatic Rust shape this rule exists for. The ancestor walk that
+    guards against substituting into a closure/loop/match arm used to start
+    at `use.parent` unconditionally; when the following statement IS the use
+    itself (nothing wraps it), that parent is the *enclosing* block, which
+    trivially matched the walk's own "block" exclusion and declined every
+    such case. Confirmed against the same shape written as `return result;`,
+    which already worked and must keep working."""
+    from less_code.rust_rules import apply_rules
+
+    bare_tail = (
+        "fn add(a: i32, b: i32) -> i32 {\n    let result = a + b;\n    result\n}\n"
+    )
+    reduced, applied = apply_rules(bare_tail, {"inline-single-use-binding"})
+    assert applied == ["inline-single-use-binding"]
+    assert "let result" not in reduced
+    assert "(a + b)" in reduced
+
+    explicit_return = "fn add(a: i32, b: i32) -> i32 {\n    let result = a + b;\n    return result;\n}\n"
+    reduced, applied = apply_rules(explicit_return, {"inline-single-use-binding"})
+    assert applied == ["inline-single-use-binding"]
+    assert "return (a + b);" in reduced
