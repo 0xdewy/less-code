@@ -239,3 +239,108 @@ rejects most proposals for style or documentation, fix editing fidelity first;
 if tests fail, improve context and transformation preconditions; if there are
 no opportunities, change the product's target workload rather than selecting
 benchmarks to flatter the score.
+
+## Comma collapse, consented deletion, and an oracle false-positive class (2026-09-13)
+
+The 2026-09-11 audit measured where the remaining lines are: dead code by
+reference scan is ~0 everywhere; duplicates ~250 LOC (boltons only); magic
+trailing commas 519 LOC on the Python corpus (pyupgrade 454, humanize 35,
+more-itertools 19, boltons 11); and ~30% headers / ~20% jump+import /
+15-25% wrapped continuations are structurally irreducible. Deterministic
+rewriting plateaus near 9-10% with commas; per-symbol micro-rewrite search
+had added 26 lines on 21,854 LOC. The response shipped in two tracks.
+
+**Track A — comma collapse.** Removing a magic trailing comma is a
+semantically null source edit that lets the canonical formatter collapse the
+block. It is its own tokenizer-based layer, gated like any rewrite and
+reported separately (`comma_collapse_loc`), never inside the semantic
+figure. The 2026-09-13 re-baseline lands the audited commas almost exactly:
+pyupgrade 8.2% -> 17.13% (+454 LOC), humanize 7.1% -> 11.61% (+35), boltons
+7.29% -> 7.42% (+11). Weighted corpus: **21872 -> 20010 = 8.51%** (was
+6.17%), 12/12 valid.
+
+**The oracle bug the comma layer exposed.** Two full runs reverted
+more-itertools' comma layer with "shadow oracle mismatch in more.py:
+gray_product (iterator-item)" while the same comparison passed at end of
+run. Diagnosis, from evidence: `test_vs_product` feeds gray_product a set
+literal; `deepcopy` re-inserts elements in iteration order, which lands in a
+different hash-table layout, so the copy ITERATES differently (verified per
+hash seed: 5 of 24 seeds diverge for the fixture's set); the rewrite
+consumes the live set while the shadowed original consumes the copy, and the
+lazy iterator comparison is order-sensitive — the recorded payload shows
+tuples differing only at the set's position (`[3] ('j' vs 'i')`). Set
+iteration order is not part of a value's meaning, so the fix is a soundness
+preserving narrowing: set copies are now order-faithful (`set.copy()`
+duplicates the table), an order-unfaithful copy is refused like any
+unfaithful copy, iterator mismatches get the eager path's
+second-original-run nondeterminism check, and mismatch diagnostics sort
+set/frozenset element reprs. Post-fix: the comma-gate loop on the pinned
+clone ran clean 7/7; the re-measured row commits the comma layer (2642 ->
+2480, 6.13%). The same lottery had been silently perturbing the rules
+layers (2493 vs 2494 finals across runs) — it will not miss real users.
+
+**Track B — consented deletion.** `lc propose` mines reference-closed
+groups behind nine never-propose rails (each unit-tested, including the
+pyupgrade plugin-registry pattern that must yield zero), and nothing is
+deleted without explicit group ids; every group is verified with the shrink
+gate's primitives and reverted on any red, and proposals.json appends runs
+as the audit trail. Recorded demonstration: boltons @ 967864f, library
+mode — 8 groups (24 LOC, 0.27%) consented via `--apply all`, all gates
+green, final suite 472 passed. Module promotion did not surface the audit's
+~268 LOC of misc dev-tool modules: their symbols are public (ineligible in
+library mode), and the one file with private candidates
+(`misc/bench_omd.py`) dispatches them via `globals()['_do_' + action]` —
+a string-dispatch shape rail 2's pre-decided shortcut (method drops plus
+6+-character-prefix collisions) does not cover. That blind spot is recorded
+here rather than papered over: the shortcut should eventually also refuse
+names producible by prefix+literal concatenation feeding `globals()`.
+
+The negative case is recorded too: financial_planner (single module under
+`scripts/`, everything referenced from its `__main__` guard, tests and
+docs) proposes zero groups in `--app` mode — and so does the same repo at
+its HEAD revision, where 11 app-mode candidates all die on name-level
+references from duplicated engines, tests, and implementation notes. Rails
+win over targets: a zero is a result, not a failure to be tuned away.
+
+## LOC-accounting honesty and the applier offset bug (2026-09-13, same day)
+
+Three defects surfaced when the numbers were audited against the disk, and
+all three are fixed with tests; the corpus rows were re-measured afterwards.
+
+**The comma layer's gate measured under the wrong formatter config.** The
+gate rendered proposals with the project's ruff config only when
+`pyproject.toml` carried `[tool.ruff]`; a project configuring ruff via
+`ruff.toml`/`.ruff.toml` fell through to the canonical-88 render, and joins
+the project's own formatter would re-split were silently counted. The gate
+now discovers ruff config in ruff's own precedence order and rejects such
+joins before commit (reject, don't count) — unit-tested with a width-60
+project whose collapsed call joins at 88 but not at 60.
+
+**`loc_final` could disagree with the tree it reports.** Repro: shrink a
+fresh humanize copy; the report claimed 775 -> 685 while `_tree_loc` of the
+resulting tree said 703. Root cause: humanize's frozen test command
+(`uv run --with-editable .`) makes hatch-vcs generate `src/humanize/_version.py`
+(+18 LOC) during the baseline gate run — a file the start-time file list
+never counted, so no in-run measurement could ever see it. (The comma layer
+was exonerated: ruff format re-adds trailing commas to width-exploded
+blocks, so its post-format measurement could not count a join that later
+re-split; the 35 comma LOC it claimed for humanize are on disk.) Fix:
+`loc_final` is re-measured over a freshly mapped tree after the last write
+or clean-out pass, and report time asserts reported == disk, failing loud.
+First honest corpus number: 21,872 -> 20,028 = **8.43%** — below the 8.5%
+Track A target, and recorded as-is: the bar is truth, not the target. The
+comma layer's own stat survives the audit unchanged (its joins were real);
+what fell was humanize's total: 775 -> 703, 9.29%.
+
+**The Track B applier did not recompute line offsets between sequential
+group applications.** The boltons consented-apply run reverted 3 of 8 groups
+with syntax errors at consecutive lines (76/80/84): each group was applied
+against its propose-time line numbers, so an earlier group's deletion
+shifted a later group's span into unrelated code. The applier now tracks the
+propose-time lines each kept group removed and remaps every later span
+through them before verifying the recorded text — any consent order applies,
+a reverted group leaves no offset debt, and a span that genuinely moved
+still fails loud as stale. Unit tests cover consecutive adjacent deletions
+and a group spanning a region another group deleted. Demo re-run: 8/8
+groups applied in one invocation, gates green, 8,967 -> 8,943 canonical LOC
+= 0.27% deleted; group-claimed LOC now equals disk LOC exactly.

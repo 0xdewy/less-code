@@ -5,8 +5,7 @@ Layered pipeline, each layer verify-gated independently:
   L0  canonical formatter (not counted as reduction)
   L1  Ruff and language-specific static passes
   L1b language rule libraries: semantic-preserving rewrites
-  L1c guard-block outlining: project-wide repeated guards
-  L1d ruff and the rule library again, over the rewritten tree
+  L1c ruff and the rule library again, over the rewritten tree
 
 Each layer's edit set is applied, the frozen suite is run, and the edits
 are kept iff the suite stays green AND code-LOC shrinks. A layer that
@@ -16,6 +15,7 @@ takes another layer down with it.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import difflib
 import json
@@ -29,9 +29,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .api_check import api_surface, api_violations
+from .comma import collapse_magic_commas
 from .documentation import documentation_layout
 from .langdetect import map_project
-from .loc import measure
+from .loc import canonical_format, measure
 from .shadow import changed_functions, run_shadow
 from .static import static_pass
 from .testrunners import run_tests, shadowed_imports
@@ -53,10 +54,13 @@ class ShrinkStats:
     reduction_pct: float = 0.0
     api_baseline: str = "original"
     static_removed_symbols: list[str] = field(default_factory=list)
+    comma_collapse_loc: int = 0
     ml_stats: dict[str, int] = field(default_factory=dict)
     ml_records: list[dict] = field(default_factory=list)
     audit_records: list[dict] = field(default_factory=list)
     oracle: dict = field(default_factory=dict)
+    gate_tests_run: int | None = None
+    root: Path | None = None  # not serialized: lets report time re-measure disk
 
     def to_json(self) -> dict:
         return {
@@ -74,12 +78,14 @@ class ShrinkStats:
             "docs_ok": self.docs_ok,
             "api_baseline": self.api_baseline,
             "static_removed_symbols": self.static_removed_symbols,
+            "comma_collapse_loc": self.comma_collapse_loc,
             "static_notes": self.static_notes,
             "layer_records": self.layer_records,
             "ml_stats": self.ml_stats,
             "ml_records": self.ml_records,
             "audit_records": self.audit_records,
             "oracle": self.oracle,
+            "gate_tests_run": self.gate_tests_run,
         }
 
 
@@ -92,6 +98,31 @@ def _tree_loc(files: list[Path], lang: str) -> int:
     for f in files:
         total += measure(f.read_text(encoding="utf-8", errors="replace"), lang).code
     return total
+
+
+def _project_ruff_config(root: Path) -> Path | None:
+    """The project's ruff config in ruff's own discovery order: ruff.toml and
+    .ruff.toml override pyproject.toml. Evaluating a proposal under any other
+    width counts line joins the project's own formatter re-splits — the comma
+    layer's numbers would inflate by exactly those joins."""
+    for name in ("ruff.toml", ".ruff.toml"):
+        config = root / name
+        if config.is_file():
+            return config
+    config = root / "pyproject.toml"
+    if config.is_file() and "[tool.ruff" in config.read_text(
+        encoding="utf-8", errors="replace"
+    ):
+        return config
+    return None
+
+
+def _disk_loc(root: Path, lang: str) -> tuple[int, list[Path]]:
+    """LOC of the tree as it exists on disk right now, freshly mapped —
+    the file set is NOT frozen at shrink start, so files the build or test
+    commands create mid-run are counted (they sit on the disk we ship)."""
+    fresh = map_project(root, lang)
+    return _tree_loc(fresh.source_files, lang), fresh.source_files
 
 
 def _snapshot(files: list[Path]) -> dict[Path, str]:
@@ -133,15 +164,6 @@ def _apply_rules(
     return out, notes
 
 
-def _apply_outline(
-    sources: dict[Path, str],
-) -> tuple[dict[Path, str], list[str]]:
-    from .outline import outline_guards
-
-    changed, notes = outline_guards({str(path): text for path, text in sources.items()})
-    return {path: changed.get(str(path), text) for path, text in sources.items()}, notes
-
-
 def _apply_ruff_again(
     sources: dict[Path, str],
 ) -> tuple[dict[Path, str], list[str]]:
@@ -155,6 +177,22 @@ def _apply_ruff_again(
         if new_text != text:
             out[path] = new_text
             notes.append(f"{path.name}: ruff --fix after rules")
+    return out, notes
+
+
+def _apply_comma_collapse(
+    sources: dict[Path, str],
+) -> tuple[dict[Path, str], list[str]]:
+    out, notes = dict(sources), []
+    for path, text in sources.items():
+        new_text, removed = collapse_magic_commas(text)
+        if removed and new_text != text:
+            try:
+                ast.parse(new_text)
+            except SyntaxError:
+                continue
+            out[path] = new_text
+            notes.append(f"{path.name}: collapsed {removed} magic trailing comma(s)")
     return out, notes
 
 
@@ -177,6 +215,10 @@ def shrink_project(
         lang=project.lang,
         files_considered=len(project.source_files),
     )
+    stats.root = root
+    stats.static_notes += project.notes
+    # Measured before any early return so a failed baseline still reports LOC.
+    stats.loc_start = _tree_loc(project.source_files, project.lang)
     if project.lang == "python":
         shadowed = shadowed_imports(root)
         if shadowed:
@@ -190,16 +232,45 @@ def shrink_project(
             return stats
 
     baseline = run_tests(root, project.lang, timeout=test_timeout, command=test_command)
+    stats.gate_tests_run = baseline.tests_run
+    if baseline.tests_run == 0:
+        stats.static_notes.append(
+            "WARNING: the gate ran 0 tests; reductions are backed by the "
+            "API and documentation checks only"
+        )
     if not baseline.ok:
         stats.tests_ok = False
-        stats.static_notes = [f"baseline tests failed: {baseline.output_tail[-300:]}"]
+        stats.static_notes.append(
+            f"baseline tests failed: {baseline.output_tail[-300:]}"
+        )
+        stats.loc_final, _ = _disk_loc(root, project.lang)
         return stats
     stats.tests_ok = True
+
+    # The baseline run can materialize files (editable installs, codegen).
+    # Start and end must share one file universe, so re-base the start
+    # measurement here or the reduction counts phantom lines.
+    fresh = map_project(root, project.lang)
+    if set(fresh.source_files) != set(project.source_files):
+        added = sorted(set(fresh.source_files) - set(project.source_files))
+        removed = sorted(set(project.source_files) - set(fresh.source_files))
+        stats.loc_start = _tree_loc(fresh.source_files, fresh.lang)
+        stats.files_considered = len(fresh.source_files)
+        stats.static_notes.append(
+            "baseline re-based: the test command materialized "
+            f"{len(added)} file(s) (+{_tree_loc(added, fresh.lang)} LOC)"
+            + (f"; {len(removed)} file(s) vanished" if removed else "")
+        )
+        project = fresh
 
     # Formatting is a measurement normalization, not a source rewrite. Every
     # `_tree_loc` call canonicalizes in memory; writing a foreign project's
     # formatter output can make its own style gate fail before reduction.
     pristine = _snapshot(project.source_files)
+    canonical_in = {
+        path: canonical_format(text, project.lang)[0] == text
+        for path, text in pristine.items()
+    }
     docs_baseline = {
         path: documentation_layout(text, project.lang)
         for path, text in pristine.items()
@@ -207,7 +278,6 @@ def shrink_project(
     api_original = api_surface(project.source_files, project.lang)
     _install_signal_restore(pristine)
 
-    stats.loc_start = _tree_loc(project.source_files, project.lang)
     stats.formatted_loc = bool(project.source_files) and all(
         measure(text, project.lang).formatted for text in pristine.values()
     )
@@ -220,6 +290,7 @@ def shrink_project(
             "canonical formatter unavailable or rejected a source file; "
             "refusing to measure a reduction"
         )
+        stats.loc_final, _ = _disk_loc(root, project.lang)
         return stats
 
     if final_validator is not None:
@@ -229,6 +300,7 @@ def shrink_project(
             stats.loc_after_static = stats.loc_final = stats.loc_start
             stats.api_ok = stats.docs_ok = True
             stats.static_notes.append("baseline audit failed; no rewrites attempted")
+            stats.loc_final, _ = _disk_loc(root, project.lang)
             return stats
 
     runner = lambda root_, lang_: run_tests(
@@ -246,16 +318,16 @@ def shrink_project(
         """Run configured format/lint checks on the files a layer changed."""
         if project.lang != "python" or shutil.which("ruff") is None:
             return True
-        config = root / "pyproject.toml"
-        if not config.is_file():
+        config = _project_ruff_config(root)
+        if config is None:
             return True
         text = config.read_text(encoding="utf-8", errors="replace")
-        if "[tool.ruff" not in text:
-            return True
         relative = [str(path.relative_to(root)) for path in paths]
         # A project may set fix=true. Verification must never mutate the tree.
         commands = [["ruff", "check", "--no-fix", *relative]]
-        if "[tool.ruff.format]" in text:
+        if "[tool.ruff.format]" in text or (
+            config.name != "pyproject.toml" and "[format]" in text
+        ):
             commands.append(["ruff", "format", "--check", *relative])
         return all(
             subprocess.run(
@@ -298,13 +370,12 @@ def shrink_project(
         changes = {
             str(p): t for p, t in proposed_sources.items() if t != current.get(p)
         }
-        config = root / "pyproject.toml"
+        config = _project_ruff_config(root)
         if (
             changes
             and project.lang == "python"
             and shutil.which("ruff")
-            and config.is_file()
-            and "[tool.ruff" in config.read_text(encoding="utf-8")
+            and config is not None
         ):
             # Render proposals in the target project's style before measuring
             # and checking them. Canonical metric formatting remains in memory.
@@ -326,6 +397,15 @@ def shrink_project(
                 )
                 if formatted.returncode == 0:
                     changes[path] = formatted.stdout
+        elif changes:
+            # Clean in, clean out: a file that already matched its canonical
+            # formatter is written back canonical, so the artifact matches the
+            # metric and no rewrite ships formatter-churn noise.
+            for path, text in changes.items():
+                if canonical_in.get(Path(path)):
+                    new_text, ok = canonical_format(text, project.lang)
+                    if ok:
+                        changes[path] = new_text
         if not changes:
             return (
                 _tree_loc(project.source_files, project.lang),
@@ -514,12 +594,12 @@ def shrink_project(
     )
 
     if project.lang == "python":
-        rewritten = False  # did rules/outline change anything ruff has not seen?
+        rewritten = False  # did rules change anything ruff has not seen?
         for name, transform in (
             ("rules", _apply_rules),
-            ("outline", _apply_outline),
             ("ruff-again", _apply_ruff_again),
             ("rules-again", _apply_rules),
+            ("comma-collapse", _apply_comma_collapse),
         ):
             if name.endswith("-again") and not rewritten:
                 continue  # ruff already saw this exact tree in the static layer
@@ -555,14 +635,6 @@ def shrink_project(
                         )
                         notes += salvage_notes
                         loc_after = _tree_loc(project.source_files, project.lang)
-            elif name == "outline" and not committed:
-                notes.append("combined outline failed; narrowing file by file")
-                for path, text in _snapshot(project.source_files).items():
-                    trial, trial_notes = _apply_outline({path: text})
-                    loc_after, narrowed_notes, _, _ = _gate_layer(
-                        f"outline:{path.name}", trial, trial_notes, api_pre_layers
-                    )
-                    notes += narrowed_notes
             stats.static_notes += notes
             rewritten = rewritten or loc_after < pre_loc
             stats.layer_records.append(
@@ -575,8 +647,21 @@ def shrink_project(
                 }
             )
 
+        comma_record = next(
+            (
+                record
+                for record in stats.layer_records
+                if record["layer"] == "comma-collapse"
+            ),
+            None,
+        )
+        if comma_record and comma_record["committed"]:
+            stats.comma_collapse_loc = (
+                comma_record["loc_before"] - comma_record["loc_after"]
+            )
+
     # `loc_after_static` now means "after every deterministic rewrite":
-    # external-static + rules + outline all reduce without external state.
+    # external-static + rules both reduce without external state.
     # The ML layer below is the only non-deterministic step, and `loc_final`
     # is set AFTER it - so when an ML backend is wired, `loc_after_static <
     # loc_final` measures its contribution, which is what the field has
@@ -667,11 +752,6 @@ def shrink_project(
         stats.oracle = run_shadow(
             root, final_spec, test_command, test_timeout
         ).to_json()
-    if stats.ml_stats:
-        stats.ml_stats["retained_loc"] = stats.loc_after_static - stats.loc_final
-        stats.ml_stats["retained"] = sum(
-            r["accepted"] and not r.get("rolled_back", False) for r in stats.ml_records
-        )
 
     # ---- API check ----
     api_after = api_surface(project.source_files, project.lang)
@@ -685,10 +765,33 @@ def shrink_project(
     )
     stats.tests_ok = final_check.ok
     stats.docs_ok = docs_preserved(_snapshot(project.source_files))
+    stats.loc_final, final_files = _disk_loc(root, project.lang)
+    if set(final_files) != set(project.source_files):
+        grew = sorted(set(final_files) - set(project.source_files))
+        add_loc = _tree_loc(grew, project.lang) if grew else 0
+        raise ValueError(
+            "file universe drifted during reduction: the baseline and final"
+            f" measurements must cover the same files, but {len(grew)}"
+            f" file(s) appeared (+{add_loc} LOC)"
+            " - materialize generated files before measuring"
+        )
+    if stats.ml_stats:
+        stats.ml_stats["retained_loc"] = stats.loc_after_static - stats.loc_final
+        stats.ml_stats["retained"] = sum(
+            r["accepted"] and not r.get("rolled_back", False) for r in stats.ml_records
+        )
     return stats
 
 
 def write_report(stats: ShrinkStats, out: Path) -> Path:
+    if stats.root is not None:
+        disk, _ = _disk_loc(stats.root, stats.lang)
+        if disk != stats.loc_final:
+            raise ValueError(
+                f"report-time disk truth ({disk} code LOC) does not match the"
+                f" reported loc_final ({stats.loc_final}); the tree changed"
+                " after measurement - re-run lc shrink"
+            )
     payload = {"reduce": stats.to_json()}
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2), encoding="utf-8")

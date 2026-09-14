@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import time
@@ -29,6 +30,32 @@ class TestResult:
     duration_s: float
     output_tail: str
     cached: bool = False
+    tests_run: int | None = None
+
+
+def _parse_tests_run(output: str) -> int | None:
+    """Best-effort count of executed tests, so a vacuous gate can be visible.
+
+    None means "could not tell" (an unknown runner format), which is reported
+    as unknown — never confused with a counted zero.
+    """
+    if re.search(r"no tests ran", output):
+        return 0
+    cargo = re.findall(r"test result: \w+\.\s*(\d+) passed(?:.*?(\d+) failed)?", output)
+    if cargo:
+        return sum(int(p) + int(f or 0) for p, f in cargo)
+    node = re.findall(r"\u2139 tests\s+(\d+)", output)  # node --test summary
+    if node:
+        return int(node[-1])
+    jest = re.findall(r"(?:^|\n)\s*Tests:\s*(\d+)", output)  # jest / vitest
+    if jest:
+        return int(jest[-1])
+    pytest_counts = re.findall(r"(\d+) passed", output) + re.findall(
+        r"(\d+) failed", output
+    )
+    if pytest_counts:
+        return sum(map(int, pytest_counts))  # a failed test still ran
+    return None
 
 
 def _run(
@@ -45,9 +72,14 @@ def _run(
             check=False,
             env=env,
         )
-        tail = (proc.stdout + proc.stderr)[-4000:]
+        output = proc.stdout + proc.stderr
+        tail = output[-4000:]
         return TestResult(
-            proc.returncode == 0, proc.returncode, time.monotonic() - start, tail
+            proc.returncode == 0,
+            proc.returncode,
+            time.monotonic() - start,
+            tail,
+            tests_run=_parse_tests_run(output),
         )
     except subprocess.TimeoutExpired as exc:
         tail = ((exc.stdout or b"") + (exc.stderr or b""))[-4000:]
@@ -192,7 +224,12 @@ def run_tests(
     if hit is not None:
         STATS["hits"] += 1
         return TestResult(
-            hit.ok, hit.exit_code, hit.duration_s, hit.output_tail, cached=True
+            hit.ok,
+            hit.exit_code,
+            hit.duration_s,
+            hit.output_tail,
+            cached=True,
+            tests_run=hit.tests_run,
         )
     STATS["misses"] += 1
     result = _run(cmd, root, timeout)

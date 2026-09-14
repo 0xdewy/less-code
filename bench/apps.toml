@@ -1,0 +1,34 @@
+# Application-style targets for Track B: `lc propose --app`. These are local
+# working trees, not pinned git repos — each entry records the path and the
+# tree hash at manifest time (testrunners.tree_hash). When a tree changes,
+# re-run `lc propose`; a proposals file older than the tree is rejected.
+
+[[app]]
+name = "financial_planner"
+path = "/home/user/code/financial_planner"
+lang = "python"
+# the project's own offline venv: requirements.txt (yfinance, pandas) + pytest
+test = ["/data/codex-scratch/user/opencode/fp-venv/bin/python", "-m", "pytest", "-x", "-q"]
+tree_hash = "cdccc1fb8caf8b991b4ced5fa29b53ec8d93691ea722015a853b4772d8bd8aa4"
+notes = """
+Single-module app: scripts/snapshot.py (629 canonical LOC) driven by an agent
+via SKILL.md. Rail 5 (files under scripts/ are entry points) and the
+repo-wide reference scan both keep every top-level symbol live: main() is
+invoked by the __main__ guard and every helper is reachable from main, the
+tests, or the docs — `lc propose --app` proposes nothing on this tree
+(verified 2026-09-12). Track B yield here is 0%, not the audit's 15%: the
+deletable content (alpha-finder, energy-markets, the duplicated engines under
+scripts/) was already deleted from the working tree before this plan ran;
+those trees are git-history only and their tests do not run under this venv.
+"""
+
+[[app]]
+name = "abi_reconstructor"
+path = "/home/user/code/abi_reconstructor"
+lang = "python"
+# needs pycryptodome + pandas + network-scraped data fixtures; the recorded
+# venv currently fails tests/eval (missing Crypto) — baseline gate refuses,
+# by design, until the env is repaired
+test = ["/data/codex-scratch/user/opencode/abi-venv/bin/python", "-m", "pytest", "-x", "-q"]
+tree_hash = "de67cf9a112ad0a7a5031dee83e1c0f5dd7732f5d4c1753fd72dada7b3b877d7"
+notes = "Library-packaged ([project]); --app degrades to private-only here."

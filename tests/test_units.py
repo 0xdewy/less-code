@@ -838,3 +838,65 @@ def test_rust_inline_single_use_binding_fires_on_a_bare_tail_expression():
     reduced, applied = apply_rules(explicit_return, {"inline-single-use-binding"})
     assert applied == ["inline-single-use-binding"]
     assert "return (a + b);" in reduced
+
+
+class TestParseTestsRun:
+    """Gate-strength reporting: the report must distinguish '0 tests ran'
+    from 'an unknown runner' from 'N tests ran'."""
+
+    def test_pytest_summary(self):
+        from less_code.testrunners import _parse_tests_run
+
+        assert _parse_tests_run("..........\n10 passed in 0.01s\n") == 10
+
+    def test_pytest_no_tests_ran_is_zero(self):
+        from less_code.testrunners import _parse_tests_run
+
+        assert _parse_tests_run("no tests ran in 0.01s\n") == 0
+
+    def test_cargo_sums_every_target(self):
+        from less_code.testrunners import _parse_tests_run
+
+        out = (
+            "running 3 tests\ntest result: ok. 3 passed. 0 failed\n"
+            "running 2 tests\ntest result: ok. 2 passed. 0 failed\n"
+        )
+        assert _parse_tests_run(out) == 5
+
+    def test_node_test_runner_summary(self):
+        from less_code.testrunners import _parse_tests_run
+
+        assert (
+            _parse_tests_run("... more tests\n\u2139 tests 12\n\u2139 pass 12\n") == 12
+        )
+
+    def test_jest_style_summary(self):
+        from less_code.testrunners import _parse_tests_run
+
+        assert _parse_tests_run("Time: 0.5s\nTests: 7 skipped: 0\n") == 7
+
+    def test_unknown_output_is_none_not_zero(self):
+        from less_code.testrunners import _parse_tests_run
+
+        assert _parse_tests_run("some bespoke runner said fine\n") is None
+
+
+class TestCompiledArtifactBesideSource:
+    def test_same_stem_js_beside_ts_is_skipped_with_a_note(self, tmp_path):
+        (tmp_path / "package.json").write_text("{}")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "index.ts").write_text("export const x = 1;\n")
+        (tmp_path / "src" / "index.js").write_text("export const x = 1;\n")
+        # the tsc-emitted .js is skipped when its .ts source sits beside it,
+        # both under explicit javascript and under auto-detection
+        for project in (map_project(tmp_path), map_project(tmp_path, "javascript")):
+            assert project.source_files == []
+            assert len(project.notes) == 1 and "compiled output" in project.notes[0]
+
+    def test_plain_js_without_ts_sibling_is_kept(self, tmp_path):
+        (tmp_path / "package.json").write_text("{}")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "index.js").write_text("export const x = 1;\n")
+        project = map_project(tmp_path, "javascript")
+        assert [p.name for p in project.source_files] == ["index.js"]
+        assert project.notes == []

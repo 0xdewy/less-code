@@ -60,8 +60,18 @@ def _faithful_copy(value):
             raise ValueError("argument too large to copy")
     except TypeError:
         pass  # unsized
-    duplicate = copy.deepcopy(value)
-    if _same(duplicate, value) is False:
+    if type(value) is set:
+        # `deepcopy` re-inserts in iteration order, which lands differently
+        # in the hash table than the original's own insertion history — the
+        # copy then ITERATES in a different order. The oracle compares
+        # sequences, so a set copy must iterate exactly like its source:
+        # `set.copy()` duplicates the table structure and does.
+        duplicate = value.copy()
+    else:
+        duplicate = copy.deepcopy(value)
+    if _same(duplicate, value) is False or (
+        isinstance(value, (set, frozenset)) and list(duplicate) != list(value)
+    ):
         raise ValueError("unfaithful copy")
     return duplicate
 
@@ -79,14 +89,34 @@ _MAX_SIZE = 2000
 
 
 def _repr(value) -> str:
+    """Diagnostics text. Set and frozenset iteration order is not part of a
+    value's meaning (two equal sets built in different orders are the same
+    value), so their element reprs are sorted, recursively."""
     try:
-        if type(value).__repr__ is object.__repr__ and hasattr(value, "__dict__"):
-            text = f"{type(value).__name__}(**{vars(value)!r})"
-        else:
-            text = repr(value)
+        text = _repr_inner(value)
     except Exception:  # noqa: BLE001 - diagnostics only
         text = f"<unreprable {type(value).__name__}>"
     return text[:200]
+
+
+def _repr_inner(value) -> str:
+    if isinstance(value, (set, frozenset)):
+        inner = ", ".join(sorted(_repr(item) for item in value))
+        if isinstance(value, frozenset):
+            return f"frozenset({inner})" if inner else "frozenset()"
+        return "{" + inner + "}"
+    if isinstance(value, tuple):
+        body = ", ".join(_repr(item) for item in value)
+        return f"({body}{',' if len(value) == 1 else ''})"
+    if isinstance(value, list):
+        return "[" + ", ".join(_repr(item) for item in value) + "]"
+    if isinstance(value, dict):
+        return (
+            "{" + ", ".join(f"{_repr(k)}: {_repr(v)}" for k, v in value.items()) + "}"
+        )
+    if type(value).__repr__ is object.__repr__ and hasattr(value, "__dict__"):
+        return f"{type(value).__name__}(**{vars(value)!r})"
+    return repr(value)
 
 
 def _uncopyable(value, depth: int = 0) -> bool:
@@ -274,9 +304,15 @@ class _Oracle:
 
     # ---- outcome comparison -------------------------------------------------
 
-    def compare_iter(self, key: str, new_iter, old_iter):
-        """Lazily compare two iterators, yielding the rewritten one's items."""
+    def compare_iter(self, key: str, new_iter, old_iter, recheck=None):
+        """Lazily compare two iterators, yielding the rewritten one's items.
+
+        `recheck(first_original_run)` decides whether the original disagrees
+        with itself on the spare copies — the same nondeterminism discipline
+        the eager path applies before recording a mismatch."""
         compared = 0
+        old_items: list = []
+        rechecked = False
         while True:
             if compared >= _ITER_BUDGET:
                 yield from new_iter
@@ -304,8 +340,23 @@ class _Oracle:
                 yield item
                 yield from new_iter
                 return
+            if recheck is not None:
+                old_items.append(other)
             same = _same(item, other)
             if same is False:
+                if recheck is not None and not rechecked:
+                    rechecked = True
+                    old_items.append(other)
+                    first_run = old_items[:-1] + list(
+                        itertools.islice(old_iter, _ITER_BUDGET)
+                    )
+                    if recheck(first_run):
+                        self.entry(key)["nondeterministic"] = (
+                            self.entry(key).get("nondeterministic", 0) + 1
+                        )
+                        yield item
+                        yield from new_iter
+                        return
                 self.mismatch(key, "iterator-item", item, other)
             elif same is None and _is_iterator(item) and _is_iterator(other):
                 item = self.compare_iter(key, item, other)
@@ -407,7 +458,18 @@ class _Oracle:
         if new_exc is not None:
             raise new_exc
         if _is_iterator(new_result) and _is_iterator(old_result):
-            return self.compare_iter(key, new_result, old_result)
+
+            def recheck(first_run: list) -> bool:
+                try:
+                    second = old(*spare_args, **spare_kwargs)
+                    second_run = list(itertools.islice(second, _ITER_BUDGET))
+                except Exception:  # noqa: BLE001 - disagreement is the signal
+                    return True
+                if len(second_run) != len(first_run):
+                    return True
+                return any(_same(a, b) is False for a, b in zip(first_run, second_run))
+
+            return self.compare_iter(key, new_result, old_result, recheck)
         return new_result
 
     def _check_mutation(

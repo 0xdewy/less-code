@@ -178,3 +178,76 @@ def test_effectful_functions_are_excluded_up_front(tmp_path):
     assert spec == {"!effectful": {"lib.py:save": {}}}
     report = run_shadow(root, spec, PYTEST, 120)
     assert report.ok and report.functions == 0 and report.effectful == ["lib.py:save"]
+
+
+def test_set_argument_iteration_order_is_not_a_mismatch(tmp_path, monkeypatch):
+    """A set argument is copied for the shadowed original; a deep copy
+    re-inserts in iteration order and can land in a different table layout,
+    so the copy iterates differently. The oracle compares sequences, so an
+    order-unfaithful copy must be refused, not compared (found on
+    more-itertools: gray_product over a set literal flaked per hash seed)."""
+    monkeypatch.setenv("PYTHONHASHSEED", "1")
+    root, lib = _project(tmp_path)
+    lib_src = LIB + (
+        "\ndef pair_over(keys, other):\n    values = tuple(keys)\n"
+        "    for k in values:\n        yield (k, other)\n"
+    )
+    tests = (
+        TESTS + "\ndef test_pair_over():\n    from lib import pair_over\n"
+        "    keys = {'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't'}\n"
+        "    assert list(pair_over(keys, 1))\n"
+    )
+    lib.write_text(lib_src)
+    (root / "test_lib.py").write_text(tests)
+    rewritten = lib_src.replace(
+        "    values = tuple(keys)\n    for k in values:",
+        "    for k in tuple(keys):",
+    )
+    lib.write_text(rewritten)
+    spec = changed_functions({lib: lib_src}, {lib: rewritten})
+    report = run_shadow(root, spec, PYTEST, 120)
+    assert report.ok
+    assert not report.mismatches
+    assert report.exercised == 1 and report.verified_calls >= 1
+
+
+def test_set_returned_in_different_insertion_order_compares_equal(tmp_path):
+    root, lib = _project(tmp_path)
+    lib_src = LIB + (
+        "\ndef letters():\n    out = set()\n"
+        "    for ch in 'abc':\n        out.add(ch)\n    return out\n"
+    )
+    tests = (
+        TESTS + "\ndef test_letters():\n    from lib import letters\n"
+        "    assert letters()\n"
+    )
+    lib.write_text(lib_src)
+    (root / "test_lib.py").write_text(tests)
+    rewritten = lib_src.replace(
+        "    out = set()\n    for ch in 'abc':\n        out.add(ch)\n    return out",
+        "    return set(reversed('abc'))",
+    )
+    lib.write_text(rewritten)
+    spec = changed_functions({lib: lib_src}, {lib: rewritten})
+    report = run_shadow(root, spec, PYTEST, 120)
+    assert report.ok and not report.mismatches and report.exercised == 1
+
+
+def test_nondeterministic_iterator_items_are_not_mismatches(tmp_path):
+    root, lib = _project(tmp_path)
+    lib_src = LIB + (
+        "\nimport itertools\n_counter = itertools.count()\n\n"
+        "def stamps(n):\n    for _ in range(n):\n        yield next(_counter)\n"
+    )
+    tests = (
+        TESTS + "\ndef test_stamps():\n    from lib import stamps\n"
+        "    assert list(stamps(2))\n"
+    )
+    lib.write_text(lib_src)
+    (root / "test_lib.py").write_text(tests)
+    rewritten = lib_src.replace("yield next(_counter)", "yield _counter.__next__()")
+    lib.write_text(rewritten)
+    spec = changed_functions({lib: lib_src}, {lib: rewritten})
+    report = run_shadow(root, spec, PYTEST, 120)
+    assert report.ok and not report.mismatches
+    assert report.nondeterministic_calls >= 1

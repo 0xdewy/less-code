@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 EXT_LANG = {
@@ -53,10 +53,16 @@ class ProjectMap:
     lang: str
     source_files: list[Path]
     test_files: list[Path]
+    notes: list[str] = field(default_factory=list)
 
     @property
     def target_files(self) -> list[Path]:
         return self.source_files
+
+
+#: A compiled .js/.mjs/.cjs sitting next to its same-stem .ts source is build
+#: output (tsc emits it); shrinking it is wasted work the next build erases.
+_COMPILED_BESIDE_SOURCE = {".js": {".ts"}, ".mjs": {".mts"}, ".cjs": {".cts"}}
 
 
 def is_test_file(path: Path) -> bool:
@@ -131,10 +137,22 @@ def map_project(root: Path, lang: str | None = None) -> ProjectMap:
     exts = [ext for ext, l in EXT_LANG.items() if l == lang]
     source: list[Path] = []
     tests: list[Path] = []
+    notes: list[str] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.suffix not in exts:
             continue
         if any(p in SKIP_DIRS for p in path.parts):
             continue
+        compiled_beside = _COMPILED_BESIDE_SOURCE.get(path.suffix, set())
+        if compiled_beside and any(
+            path.with_suffix(alt).is_file() for alt in compiled_beside
+        ):
+            notes.append(
+                f"{path.relative_to(root)} skipped: compiled output beside "
+                f"its {path.with_suffix(next(iter(compiled_beside))).name} source"
+            )
+            continue
         (tests if is_test_file(path) else source).append(path)
-    return ProjectMap(root=root, lang=lang, source_files=source, test_files=tests)
+    return ProjectMap(
+        root=root, lang=lang, source_files=source, test_files=tests, notes=notes
+    )

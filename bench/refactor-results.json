@@ -1,0 +1,403 @@
+{
+  "backend": "python3 /home/user/code/less-code/bench/ollama_file.py qwen3:8b",
+  "projects": [
+    {
+      "name": "itoa",
+      "commit": "1577ed901354d0d7448ac162328f9dbf5183124c",
+      "test": [
+        "cargo",
+        "test",
+        "--quiet"
+      ],
+      "a_loc": 410,
+      "a_ok": true,
+      "a_duration_s": 8.3,
+      "b_loc_clippy_only": 414,
+      "b_loc": 410,
+      "b_ok": true,
+      "b_duration_s": 8.2,
+      "c_loc": 406,
+      "c_refactor_loc": 4,
+      "c_accepted_files": 1,
+      "c_ok": true,
+      "c_duration_s": 716.6,
+      "c_records": [
+        {
+          "path": "src/lib.rs",
+          "attempt": 1,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "backend",
+          "reason": "model error: RuntimeError: model command exited 1",
+          "loc_before": 313,
+          "loc_after": null,
+          "duration_s": 280.166
+        },
+        {
+          "path": "fuzz/fuzz_targets/fuzz_itoa.rs",
+          "attempt": 1,
+          "model": "file-cli",
+          "accepted": true,
+          "category": "accepted",
+          "reason": "",
+          "loc_before": 47,
+          "loc_after": 43,
+          "duration_s": 81.123
+        },
+        {
+          "path": "benches/bench.rs",
+          "attempt": 1,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "style",
+          "reason": "not canonically formatted",
+          "loc_before": 35,
+          "loc_after": null,
+          "duration_s": 69.737
+        },
+        {
+          "path": "benches/bench.rs",
+          "attempt": 2,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "style",
+          "reason": "not canonically formatted",
+          "loc_before": 35,
+          "loc_after": null,
+          "duration_s": 68.165
+        },
+        {
+          "path": "benches/bench.rs",
+          "attempt": 3,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "style",
+          "reason": "not canonically formatted",
+          "loc_before": 35,
+          "loc_after": null,
+          "duration_s": 67.966
+        },
+        {
+          "path": "src/u128_ext.rs",
+          "attempt": 1,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "style",
+          "reason": "not canonically formatted",
+          "loc_before": 15,
+          "loc_after": null,
+          "duration_s": 47.504
+        },
+        {
+          "path": "src/u128_ext.rs",
+          "attempt": 2,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "style",
+          "reason": "not canonically formatted",
+          "loc_before": 15,
+          "loc_after": null,
+          "duration_s": 46.956
+        },
+        {
+          "path": "src/u128_ext.rs",
+          "attempt": 3,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "style",
+          "reason": "not canonically formatted",
+          "loc_before": 15,
+          "loc_after": null,
+          "duration_s": 46.915
+        }
+      ],
+      "c_notes": []
+    },
+    {
+      "name": "humantime",
+      "commit": "76c8929b4cc286f675322475a8e1841f35bafc57",
+      "test": [
+        "cargo",
+        "test",
+        "--quiet"
+      ],
+      "a_loc": 1502,
+      "a_ok": true,
+      "a_duration_s": 5.4,
+      "b_loc_clippy_only": 1517,
+      "b_loc": 1502,
+      "b_ok": true,
+      "b_duration_s": 5.6,
+      "c_loc": 1500,
+      "c_refactor_loc": 2,
+      "c_accepted_files": 1,
+      "c_ok": true,
+      "c_duration_s": 1725.0,
+      "c_records": [
+        {
+          "path": "src/duration.rs",
+          "attempt": 1,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "backend",
+          "reason": "model error: RuntimeError: model command exited 1",
+          "loc_before": 713,
+          "loc_after": null,
+          "duration_s": 280.164
+        },
+        {
+          "path": "src/date.rs",
+          "attempt": 1,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "backend",
+          "reason": "model error: RuntimeError: model command exited 1",
+          "loc_before": 612,
+          "loc_after": null,
+          "duration_s": 280.191
+        },
+        {
+          "path": "src/wrapper.rs",
+          "attempt": 1,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "loc",
+          "reason": "no canonical LOC reduction",
+          "loc_before": 79,
+          "loc_after": null,
+          "duration_s": 180.279
+        },
+        {
+          "path": "src/wrapper.rs",
+          "attempt": 2,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "loc",
+          "reason": "no canonical LOC reduction",
+          "loc_before": 79,
+          "loc_after": null,
+          "duration_s": 177.237
+        },
+        {
+          "path": "src/wrapper.rs",
+          "attempt": 3,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "loc",
+          "reason": "no canonical LOC reduction",
+          "loc_before": 79,
+          "loc_after": null,
+          "duration_s": 178.264
+        },
+        {
+          "path": "benches/datetime_format.rs",
+          "attempt": 1,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "syntax",
+          "reason": "invalid syntax",
+          "loc_before": 51,
+          "loc_after": null,
+          "duration_s": 85.176
+        },
+        {
+          "path": "benches/datetime_format.rs",
+          "attempt": 2,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "syntax",
+          "reason": "invalid syntax",
+          "loc_before": 51,
+          "loc_after": null,
+          "duration_s": 81.979
+        },
+        {
+          "path": "benches/datetime_format.rs",
+          "attempt": 3,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "syntax",
+          "reason": "invalid syntax",
+          "loc_before": 51,
+          "loc_after": null,
+          "duration_s": 83.715
+        },
+        {
+          "path": "benches/datetime_parse.rs",
+          "attempt": 1,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "loc",
+          "reason": "no canonical LOC reduction",
+          "loc_before": 33,
+          "loc_after": null,
+          "duration_s": 83.656
+        },
+        {
+          "path": "benches/datetime_parse.rs",
+          "attempt": 2,
+          "model": "file-cli",
+          "accepted": true,
+          "category": "accepted",
+          "reason": "",
+          "loc_before": 33,
+          "loc_after": 31,
+          "duration_s": 81.151
+        },
+        {
+          "path": "src/lib.rs",
+          "attempt": 1,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "style",
+          "reason": "not canonically formatted",
+          "loc_before": 14,
+          "loc_after": null,
+          "duration_s": 67.701
+        },
+        {
+          "path": "src/lib.rs",
+          "attempt": 2,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "style",
+          "reason": "not canonically formatted",
+          "loc_before": 14,
+          "loc_after": null,
+          "duration_s": 70.338
+        },
+        {
+          "path": "src/lib.rs",
+          "attempt": 3,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "style",
+          "reason": "not canonically formatted",
+          "loc_before": 14,
+          "loc_after": null,
+          "duration_s": 70.032
+        }
+      ],
+      "c_notes": []
+    },
+    {
+      "name": "shell-words",
+      "commit": "8d2868b0edadbd5572acd7ed25b6be890c2781b7",
+      "test": [
+        "cargo",
+        "test",
+        "--quiet"
+      ],
+      "a_loc": 352,
+      "a_ok": true,
+      "a_duration_s": 0.5,
+      "b_loc_clippy_only": 353,
+      "b_loc": 352,
+      "b_ok": true,
+      "b_duration_s": 0.8,
+      "c_loc": 352,
+      "c_refactor_loc": 0,
+      "c_accepted_files": 0,
+      "c_ok": true,
+      "c_duration_s": 280.8,
+      "c_records": [
+        {
+          "path": "src/lib.rs",
+          "attempt": 1,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "backend",
+          "reason": "model error: RuntimeError: model command exited 1",
+          "loc_before": 352,
+          "loc_after": null,
+          "duration_s": 280.166
+        }
+      ],
+      "c_notes": []
+    },
+    {
+      "name": "strsim-rs",
+      "commit": "dacc84c0dc61eff0ee0ff66962bcf2e17018ad26",
+      "test": [
+        "cargo",
+        "test",
+        "--quiet"
+      ],
+      "a_loc": 1058,
+      "a_ok": true,
+      "a_duration_s": 1.5,
+      "b_loc_clippy_only": 1062,
+      "b_loc": 1058,
+      "b_ok": true,
+      "b_duration_s": 1.5,
+      "c_loc": 1058,
+      "c_refactor_loc": 0,
+      "c_accepted_files": 0,
+      "c_ok": true,
+      "c_duration_s": 661.8,
+      "c_records": [
+        {
+          "path": "src/lib.rs",
+          "attempt": 1,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "backend",
+          "reason": "model error: RuntimeError: model command exited 1",
+          "loc_before": 976,
+          "loc_after": null,
+          "duration_s": 280.13
+        },
+        {
+          "path": "benches/benches.rs",
+          "attempt": 1,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "style",
+          "reason": "not canonically formatted",
+          "loc_before": 82,
+          "loc_after": null,
+          "duration_s": 128.363
+        },
+        {
+          "path": "benches/benches.rs",
+          "attempt": 2,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "style",
+          "reason": "not canonically formatted",
+          "loc_before": 82,
+          "loc_after": null,
+          "duration_s": 126.112
+        },
+        {
+          "path": "benches/benches.rs",
+          "attempt": 3,
+          "model": "file-cli",
+          "accepted": false,
+          "category": "style",
+          "reason": "not canonically formatted",
+          "loc_before": 82,
+          "loc_after": null,
+          "duration_s": 125.734
+        }
+      ],
+      "c_notes": []
+    }
+  ],
+  "aggregate": {
+    "a_loc": 3322,
+    "b_loc_clippy_only": 3346,
+    "c_loc": 3316,
+    "c_delta_pct": 0.18,
+    "b_delta_pct": -0.72,
+    "all_gates_green": true
+  },
+  "verdict": {
+    "bar": "C >= A + 2% of corpus LOC and C > B (clippy), all gates green",
+    "result": "C = 3316 vs A = 3322 (+0.18%), clippy arm = -0.72% (no reduction), gates green",
+    "funnel": "24 proposals: 2 accepted (fuzz/bench helper files), 12 not-canonically-formatted, 4 no-reduction, 3 syntax (truncation), 5 backend timeouts",
+    "decision": "DELETED per REFACTOR.md success clause: less_code/refactor.py, the lc refactor subcommand, tests, and bench scripts removed; this file is the recorded negative",
+    "date": "2026-09-13",
+    "model": "qwen3:8b (ollama, temp 0, seed 42)"
+  }
+}

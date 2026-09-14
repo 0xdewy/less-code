@@ -13,8 +13,9 @@ import textwrap
 
 import pytest
 
+from less_code.langdetect import map_project
 from less_code.ml_shrink import ProposedEdit, apply_edit, extract_symbols, syntax_ok
-from less_code.pipeline import shrink_project
+from less_code.pipeline import ShrinkStats, _tree_loc, shrink_project, write_report
 from less_code.static import StaticResult
 
 
@@ -48,9 +49,6 @@ def test_within_file_salvage_keeps_savings_but_not_documentation_loss(
     monkeypatch.setattr(
         "less_code.pipeline._apply_rules", lambda sources: (sources, [])
     )
-    monkeypatch.setattr(
-        "less_code.pipeline._apply_outline", lambda sources: (sources, [])
-    )
     stats = shrink_project(root)
     assert stats.tests_ok and stats.docs_ok and stats.api_ok
     assert stats.loc_start - stats.loc_final == 2
@@ -75,9 +73,6 @@ def test_terminal_audit_restores_checkpoint_without_model_feedback(
     )
     monkeypatch.setattr(
         "less_code.pipeline._apply_rules", lambda sources: (sources, [])
-    )
-    monkeypatch.setattr(
-        "less_code.pipeline._apply_outline", lambda sources: (sources, [])
     )
     calls = []
 
@@ -134,9 +129,6 @@ def test_model_recovers_from_test_failure_with_context_and_fresh_spans(
     )
     monkeypatch.setattr(
         "less_code.pipeline._apply_rules", lambda sources: (sources, [])
-    )
-    monkeypatch.setattr(
-        "less_code.pipeline._apply_outline", lambda sources: (sources, [])
     )
 
     class Model:
@@ -307,7 +299,7 @@ def test_shrink_rejects_when_baseline_tests_are_red(tmp_path):
     (root / "test_mod.py").write_text("def test_will_fail():\n    assert False\n")
     stats = shrink_project(root)
     assert not stats.tests_ok
-    assert stats.loc_start == 0
+    assert stats.loc_start > 0
     assert (root / "mod.py").read_text() == VERBOSE_MODULE
 
 
@@ -324,7 +316,7 @@ def test_shrink_refuses_when_imports_resolve_outside_the_tree(tmp_path, monkeypa
     )
     stats = shrink_project(root)
     assert not stats.tests_ok
-    assert stats.loc_start == 0
+    assert stats.loc_start > 0
     assert "import-origin check failed" in stats.static_notes[0]
     assert (root / "mod.py").read_text() == VERBOSE_MODULE
 
@@ -373,7 +365,6 @@ def test_static_gate_salvages_good_files_from_rejected_batch(tmp_path, monkeypat
         ),
     )
     monkeypatch.setattr(pipeline, "_apply_rules", lambda sources: (sources, []))
-    monkeypatch.setattr(pipeline, "_apply_outline", lambda sources: (sources, []))
 
     stats = shrink_project(root)
 
@@ -404,7 +395,6 @@ def test_static_gate_preserves_the_original_public_api(tmp_path, monkeypatch):
         ),
     )
     monkeypatch.setattr(pipeline, "_apply_rules", lambda sources: (sources, []))
-    monkeypatch.setattr(pipeline, "_apply_outline", lambda sources: (sources, []))
 
     stats = shrink_project(root)
 
@@ -446,7 +436,6 @@ def test_rule_gate_salvages_good_files_from_rejected_batch(tmp_path, monkeypatch
 
     monkeypatch.setattr(pipeline, "static_pass", lambda *_a, **_k: StaticResult())
     monkeypatch.setattr(pipeline, "_apply_rules", scripted)
-    monkeypatch.setattr(pipeline, "_apply_outline", lambda sources: (sources, []))
     monkeypatch.setattr(pipeline, "_apply_ruff_again", lambda sources: (sources, []))
     monkeypatch.setattr(rules, "RULES", ("scripted",))
 
@@ -657,3 +646,117 @@ def test_ml_rejects_nonshrinking_edit_before_running_candidate_tests(
     assert (root / "library.py").read_text() == source
     assert stats.ml_stats["rejected_loc"] == 1
     assert len(calls) == 2  # baseline and final confirmation, not the candidate
+
+
+def test_failed_baseline_still_reports_measured_loc(tmp_path):
+    """A red baseline scores zero reduction but never zero LOC: the report
+    must say what the tree measures, not pretend it was never seen."""
+    root = _ml_project(
+        tmp_path,
+        "def live():\n    result = 1\n    return result\n",
+        "from library import live\n\ndef test_live():\n    assert live() == 2\n",
+    )
+    stats = shrink_project(root, "python")
+    assert not stats.tests_ok
+    assert stats.loc_start > 0
+    # nothing attempted, but the baseline run happened on this disk: the
+    # final number is the disk truth (equal to the start here), never a
+    # placeholder that pretends the tree was never measured.
+    assert stats.loc_final == stats.loc_start
+    assert stats.gate_tests_run == 1
+
+
+def test_vacuous_gate_is_reported_not_hidden(tmp_path):
+    """node --test exits 0 with zero tests: the shrink proceeds, but the
+    report must say the gate ran nothing."""
+    root = tmp_path / "quiet-js"
+    root.mkdir()
+    (root / "package.json").write_text('{"name": "quiet", "scripts": {}}')
+    (root / "index.js").write_text(
+        "export function twice(n) {\n    const v = n * 2;\n    return v;\n}\n"
+    )
+    stats = shrink_project(root, "javascript")
+    assert stats.gate_tests_run == 0
+    assert stats.tests_ok
+    assert any("0 tests" in note for note in stats.static_notes)
+
+
+def test_canonical_in_file_is_written_back_canonical(tmp_path, monkeypatch):
+    """A file that already matched the canonical formatter must not land
+    formatter churn (quote style) from a rewrite's AST rendering."""
+    source = 'def live():\n    return "hi"\n'
+    root = _ml_project(
+        tmp_path,
+        source,
+        "from library import live\n\ndef test_live():\n    assert live() == 'hi'\n",
+    )
+    monkeypatch.setattr(
+        "less_code.pipeline.static_pass",
+        lambda *_a, **_k: StaticResult(
+            changed_files={str(root / "library.py"): "def live():\n    return 'hi'\n"}
+        ),
+    )
+    shrink_project(root, "python")
+    # the proposal's single quotes were rendered back to the canonical form
+    # (and the no-op was not kept as a reduction)
+    assert (root / "library.py").read_text() == source
+
+
+def test_loc_final_is_disk_truth_including_files_the_tests_create(tmp_path):
+    """The frozen suite can make the tree grow (build/version artifacts):
+    the start measurement is re-based after the baseline run so start and
+    end cover the same file universe - no phantom reduction lines."""
+    root = tmp_path / "growing-project"
+    root.mkdir()
+    (root / "library.py").write_text("def pair(a, b):\n    return sorted([a, b])\n")
+    (root / "test_library.py").write_text(
+        "import pathlib\n\n"
+        'pathlib.Path(__file__).parent.joinpath("generated.py").write_text("X = 1\\n")\n\n'
+        "from library import pair\n\n"
+        "def test_pair():\n    assert pair(2, 1) == [1, 2]\n"
+    )
+
+    stats = shrink_project(root)
+
+    assert stats.tests_ok and stats.api_ok and stats.docs_ok
+    fresh = map_project(root, "python")
+    assert stats.loc_final == _tree_loc(fresh.source_files, "python")
+    assert any("generated.py" in str(path) for path in fresh.source_files)
+    assert any("baseline re-based" in note for note in stats.static_notes)
+    assert stats.loc_start == _tree_loc(fresh.source_files, "python")
+
+
+def test_universe_drift_after_baseline_fails_loud(tmp_path):
+    """A file materialized only by the FINAL test run (after the baseline
+    re-base) is a measurement hazard: shrink must refuse, not report a
+    mixed-universe number."""
+    root = tmp_path / "late-growing-project"
+    root.mkdir()
+    (root / "library.py").write_text("def pair(a, b):\n    return sorted([a, b])\n")
+    (root / "test_library.py").write_text(
+        "import pathlib\n\n"
+        "here = pathlib.Path(__file__).parent\n"
+        'if (here / "generated.py").exists():\n'
+        '    (here / "late.py").write_text("Y = 2\\n")\n'
+        '(here / "generated.py").write_text("X = 1\\n")\n\n'
+        "from library import pair\n\n"
+        "def test_pair():\n    assert pair(2, 1) == [1, 2]\n"
+    )
+
+    with pytest.raises(ValueError, match="universe drifted"):
+        shrink_project(root)
+
+
+def test_write_report_fails_loud_when_disk_truth_differs(tmp_path):
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "m.py").write_text("X = 1\n")
+    stats = ShrinkStats("python", loc_final=5)
+    stats.root = root
+    with pytest.raises(ValueError, match="disk truth"):
+        write_report(stats, tmp_path / "report.json")
+    stats.loc_final = _tree_loc([root / "m.py"], "python")
+    out = write_report(stats, tmp_path / "report.json")
+    import json
+
+    assert json.loads(out.read_text())["reduce"]["loc_final"] == stats.loc_final

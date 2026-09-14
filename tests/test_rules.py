@@ -507,7 +507,7 @@ def test_fresh_dict_writes_become_literal():
     after = norm(
         """
         def f(first, second):
-            return {'a': first(), 'b': second()}
+            return {"a": first(), "b": second()}
         """
     )
     assert apply_rules(before) == (
@@ -1048,13 +1048,11 @@ def test_every_rule_name_is_reachable():
         "bool-return",
         "merge-same-branch",
         "flatten-nested-if",
-        "guard-call",
         "conditional-return",
         "conditional-assignment",
         "self-default-assignment",
         "inline-return-temp",
         "inline-single-use-temp",
-        "merge-imports",
         "merge-from-imports",
         "hoist-common-tail",
         "dict-build-to-literal",
@@ -1610,32 +1608,6 @@ def test_merge_consecutive_from_imports_only_for_the_same_module():
     )
 
 
-def test_merge_consecutive_plain_imports_preserves_order_and_aliases():
-    source = "import first\nimport second as other\nfrom elsewhere import third\n"
-    reduced, applied = apply_rules(source, {"merge-imports"})
-    assert applied == ["merge-imports"]
-    assert reduced == "import first, second as other\nfrom elsewhere import third\n"
-
-
-def test_guard_call_preserves_short_circuit_and_call_result_is_discarded():
-    source = "def f(condition, action):\n    if condition():\n        action()\n"
-    reduced, applied = apply_rules(source, {"guard-call"})
-    assert applied == ["guard-call"]
-    assert "condition() and action()" in reduced
-    for truth in (False, True):
-        observed = []
-        for code in (source, reduced):
-            events = []
-            namespace = {}
-            exec(code, namespace)  # noqa: S102 - fixed differential fixture
-            namespace["f"](
-                lambda events=events, truth=truth: events.append("condition") or truth,
-                lambda events=events: events.append("action") or object(),
-            )
-            observed.append(events)
-        assert observed[0] == observed[1]
-
-
 def test_self_default_assignment_is_local_and_preserves_test_order():
     source = (
         "def f(value, events):\n"
@@ -1905,3 +1877,36 @@ def test_reassignment_of_the_same_name_is_folded():
         """
     )
     assert apply_rules(guarded, {"inline-single-use-temp"}) == (guarded, [])
+
+
+def test_rewrites_preserve_original_string_literal_spellings():
+    """unparse re-renders quotes and strips r"" prefixes; a rewrite must not
+    churn spellings on lines it touches (found on a real target)."""
+    source = (
+        "def f(c):\n"
+        "    if c:\n"
+        "        x = 'single'\n"
+        "    else:\n"
+        '        x = "double"\n'
+        "    return x\n"
+    )
+    reduced, applied = apply_rules(source, {"conditional-assignment"})
+    assert applied == ["conditional-assignment"]
+    assert "'single'" in reduced and '"double"' in reduced
+
+
+def test_literal_restore_aborts_when_constants_do_not_align():
+    """A rewrite that genuinely drops a literal must not mis-splice."""
+    source = 'def f(flag):\n    if flag:\n        return "kept"\n    return "dropped"\n'
+    reduced, applied = apply_rules(source, {"conditional-return"})
+    assert applied == ["conditional-return"]
+    compile(reduced, "<t>", "exec")
+
+
+def test_pack_assignments_never_crosses_a_blank_line():
+    """A blank line is paragraph structure; packing across it deletes the
+    author's intent (found on a real target: a fetch joined with an
+    aggregate call across a paragraph break)."""
+    source = "def f():\n    a = 1\n\n    b = 2\n    return a, b\n"
+    reduced, _ = apply_rules(source, {"pack-assignments"})
+    assert "a, b = 1, 2" not in reduced

@@ -8,8 +8,7 @@ gated by the frozen test suite and a public-API check.
 L0  canonical formatter (not counted as reduction)
 L1  static tools and language rules: ruff / JavaScript / Rust rewrites
 L1b rule library: AST semantic-preserving rewrites
-L1c guard-block outlining: project-wide repeated guards -> helper
-L1d ruff and the rule library once more over the rewritten tree
+L1c ruff and the rule library once more over the rewritten tree
 L2  optional per-symbol LLM rewrites
 ```
 
@@ -34,17 +33,13 @@ own yield.
   supply JavaScript and Rust candidates. These still require verification.
 - The rule library covers candidate rewrites no general tool covers
   (accumulator -> `sum()`, append loops -> comprehensions, manual max ->
-  `max(key=..., default=None)` with sentinel refusal, one-call guards ->
-  short-circuit calls, local self-defaults -> conditional assignments,
-  adjacent import packing with execution order retained, consecutive
-  independent assignments packed into one tuple assignment up to the
-  canonical width, and single-use temps inlined across provably bound
-  name and attribute lookups). Ruff runs a second time after the rule
-  layers, since their output exposes shapes it fixes (superfluous else,
-  useless trailing return).
-- Guard-block outlining factors repeated `if X: raise`, assignment and
-  call-statement windows into one shared `_`-prefixed helper across an
-  entire project.
+  `max(key=..., default=None)` with sentinel refusal, local self-defaults ->
+  conditional assignments, adjacent from-import packing with execution order
+  retained, consecutive independent assignments packed into one tuple
+  assignment up to the canonical width, and single-use temps inlined across
+  provably bound name and attribute lookups). Ruff runs a second time after
+  the rule layers, since their output exposes shapes it fixes (superfluous
+  else, useless trailing return).
 - An optional LLM backend handles residual per-symbol simplifications; every
   proposal passes the same formatter, tests, API, and documentation gates.
 
@@ -64,7 +59,12 @@ external effects (file, process, clock and random APIs are excluded up front;
 anything else whose double execution breaks the suite is bisected out),
 calls whose arguments have no faithful deep copy (weak references, closures
 and bound methods over shared state, container subclasses with instance
-state, very large containers), and calls beyond a per-function budget. It
+state, very large containers, and set arguments a deep copy would re-order —
+a copy must iterate exactly like its source, since the comparison is
+sequence-sensitive), and calls beyond a per-function budget. Iterator
+mismatches get the same second-original-run check as the eager path: if the
+original disagrees with itself, the call is nondeterministic, not a
+mismatch. It
 roughly multiplies gate time by ten on a large project. `bench/BASELINE.md`
 shows, per project, how many rewritten functions the suite actually
 exercised under the oracle. See `less_code/shadow.py`.
@@ -166,12 +166,54 @@ External tools are picked up automatically if installed:
 - Rust: `rustfmt` for measurement, `cargo test` for verification; the current
   reducer uses its own Rust rules and does not invoke Clippy.
 
+## Deletion proposals
+
+`lc propose <path>` mines groups of symbols that are provably unreferenced by
+anything the repository can express — including tests, docs, and config, which
+are all scanned as references — and groups them so a chain of dead private
+helpers is deleted together or not at all. A group carries its evidence: the
+reference files (empty for a proposal), whether the frozen suite covered it
+(when the optional `coverage` accelerator is available for the target's
+interpreter), and the public-API delta it would disclose.
+
+Nothing is ever deleted automatically, and nothing is deleted without explicit
+group ids: `lc propose` only writes `proposals.json` and prints a table;
+`lc propose --apply 1,3` (or `--apply all`) is the consent, one verification
+gate per group, each reverted with its gate reason on any red. There is no
+`--yes`. A proposals file older than the tree is rejected (`exit 3`), so spans
+can never go stale, and the command works on a sibling copy
+(`<path>-proposals`) unless `--in-place` is passed — originals are sacred.
+Exit codes: 0 nothing to do / applied cleanly, 1 every requested group failed
+its gate, 2 proposals awaiting consent, 3 stale proposals file.
+
+Rails, each backed by a test: dynamically discovered packages (`pkgutil`,
+`import_module`, `walk_packages`, `iter_modules`, `entry_points`,
+`__subclasses__`) are never proposed, nor anything near string dispatch
+(`getattr`/`globals()` drops all method candidates and 6+-character-prefix
+name collisions), decorated definitions, dunder/protocol surface, entry-point
+files (`noxfile.py`, `scripts/`, `bin/`, console-script modules), modules with
+a module-level `__getattr__`/`__dir__`, non-literal assignments, anything a
+test references, and — in library mode or any `[project]`/`setup.py`-packaged
+repo — non-private symbols. A repo shaped like pyupgrade's plugin registry
+yields zero candidates by construction. When nothing passes the rails, the
+tool says so and exits 0 — financial_planner is the recorded negative case:
+`lc propose --app` proposes nothing there because its only module lives
+under `scripts/` (an entry-point directory) and every symbol it defines is
+reachable from its `__main__` guard, its tests, or its docs.
+
+```bash
+uv run lc propose path/to/app                 # propose on a sibling copy
+uv run lc propose path/to/app --app           # application mode (no packaging)
+uv run lc propose path/to/app --apply 1,3     # consented groups only
+```
+
 ## CLI
 
 | command | purpose |
 |---|---|
 | `lc analyze <path>` | language, source/test files, canonical code-LOC baseline |
 | `lc shrink <path>` | run the layered pipeline; report per-layer yield |
+| `lc propose <path>` | mine consented deletion proposals; apply only by group id |
 | `lc report --json <file>` | render a shrink report as markdown |
 | `lc corpus` | clone and score the pinned Python/JavaScript/Rust corpus |
 
@@ -185,7 +227,12 @@ External tools are picked up automatically if installed:
   absent, raw LOC is used and the report shouts about it.
 * Every reduction layer preserves the exact multiset of source comments and
   docstrings. Documentation-losing candidates are reverted and score zero.
+* Comma collapse is reported separately (`comma_collapse_loc` and a
+  `comma-collapse` layer record), so the semantic reduction figure stays
+  comparable across runs.
 * `shrink` always restores the tree on `Ctrl-C` (signal handler).
+* Every report states how many tests the gate ran; a zero-test gate is
+  flagged as vacuous, so a green check never overstates its evidence.
 
 ## What it shrinks, in priority order
 
@@ -198,13 +245,9 @@ External tools are picked up automatically if installed:
    manual max/min -> `max(key=..., default=None)`
    (numeric sentinels declined because `-1` is not provably equivalent
    to `default=None`).
-3. **Repeated guards** — three or more identical `if X: raise ...` blocks
-   across function bodies become one module-level helper, each site a
-   one-line call. The helper travels along existing import edges, never
-   introducing a new dependency.
-4. **External tool yield** — whatever Ruff and the language-specific static
+3. **External tool yield** — whatever Ruff and the language-specific static
    passes find.
-5. **Optional model proposals** — bounded per-symbol rewrites supplied by
+4. **Optional model proposals** — bounded per-symbol rewrites supplied by
    `--ml-cli`, accepted only when every normal gate passes.
 
 ## What it does NOT do

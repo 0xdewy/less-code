@@ -3,6 +3,8 @@
 lc analyze <path>   map project + code-LOC baseline
 lc shrink  <path>   shrink the codebase using existing static tools + rules
                     every layer gated by the frozen test suite
+lc propose <path>   mine consented deletion proposals (never applies
+                    without explicit group ids)
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from . import propose as propose_mod
 from .langdetect import map_project
 from .loc import count_tree, formatter_available
 from .pipeline import shrink_project, write_report
@@ -108,14 +111,90 @@ def cmd_shrink(args: argparse.Namespace) -> int:
                     "tests_ok",
                     "api_ok",
                     "docs_ok",
+                    "gate_tests_run",
                 )
             },
             indent=2,
         )
     )
+    if stats.gate_tests_run == 0:
+        print(
+            "WARNING: the test gate ran 0 tests; only the API and "
+            "documentation checks back this reduction.",
+            file=sys.stderr,
+        )
     print(f"report: {args.out}")
     ok = stats.tests_ok and stats.api_ok and stats.docs_ok
     return 0 if ok else 1
+
+
+def tests_run_text(count) -> str:
+    if count is None:
+        return "unknown (unrecognized runner output)"
+    if count == 0:
+        return "0 tests — WARNING: vacuous gate, only API/docs checks apply"
+    return f"{count} tests"
+
+
+def _propose_target(
+    path: Path, copy_to: str | None, in_place: bool, fresh: bool
+) -> Path:
+    """propose always works on a copy: the auto sibling `<path>-proposals`
+    unless --copy-to DIR or --in-place. Originals are sacred."""
+    if in_place:
+        return path
+    if copy_to:
+        dest = Path(copy_to)
+        if dest.exists() and any(dest.iterdir()):
+            if fresh:
+                raise SystemExit(f"--copy-to {dest} exists and is not empty")
+            return dest
+        shutil.copytree(path, dest, dirs_exist_ok=True)
+        return dest
+    dest = path.parent / f"{path.name}-proposals"
+    if fresh and dest.exists():
+        shutil.rmtree(dest)
+    if not dest.exists() or not any(dest.iterdir()):
+        shutil.copytree(path, dest, dirs_exist_ok=True)
+    return dest
+
+
+def cmd_propose(args: argparse.Namespace) -> int:
+    target = Path(args.path)
+    applying = bool(args.apply)
+    work = _propose_target(target, args.copy_to, args.in_place, fresh=not applying)
+    if args.in_place and applying:
+        print(
+            f"WARNING: applying deletion groups IN PLACE on {target}",
+            file=sys.stderr,
+        )
+    out = Path(args.out) if args.out else work / "proposals.json"
+    test_command = shlex.split(args.test_command) if args.test_command else None
+    if not applying:
+        payload, code = propose_mod.propose_tree(
+            work,
+            lang=args.lang,
+            app=args.app,
+            coverage=args.coverage,
+            test_command=test_command,
+            timeout=args.timeout,
+            out=out,
+        )
+        propose_mod.print_table(payload, work)
+        print(f"proposals: {out}")
+        if code == 2:
+            print(
+                "nothing is deleted until you pass --apply with explicit group ids",
+                file=sys.stderr,
+            )
+        return code
+    ids = (
+        [group["id"] for group in propose_mod._load_runs(out)[0].get("groups", [])]
+        if args.apply == "all"
+        else [part.strip() for part in args.apply.split(",") if part.strip()]
+    )
+    _, code = propose_mod.apply_proposals(work, ids, test_command, args.timeout, out)
+    return code
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -137,6 +216,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         ),
         f"- documentation preserved: {r.get('docs_ok', False)}",
         f"- LOC counted after canonical formatting: {r.get('formatted_loc', False)}",
+        f"- gate strength: {tests_run_text(r.get('gate_tests_run'))}",
     ]
     if r.get("layer_records"):
         lines.append("\n## Per-layer yield\n")
@@ -163,6 +243,7 @@ def cmd_corpus(args: argparse.Namespace) -> int:
         ml_backend=backend,
         ml_attempts=args.ml_attempts,
         ml_symbols=args.ml_symbols,
+        only=getattr(args, "only", None),
     )
     write_corpus_report(result, Path(args.out), Path(args.markdown))
     print(json.dumps(result["aggregate"], indent=2))
@@ -241,6 +322,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("corpus", help="run the pinned multi-project benchmark")
     p.add_argument("--manifest", default="bench/corpus.toml")
+    p.add_argument(
+        "--only", metavar="NAME", help="run a single project row for re-measurement"
+    )
     p.add_argument("--out", default="bench/baseline.json")
     p.add_argument("--markdown", default="bench/BASELINE.md")
     p.add_argument("--timeout", type=int, default=900)
@@ -255,6 +339,51 @@ def main(argv: list[str] | None = None) -> int:
         "--ml-symbols", type=int, choices=range(1, 65), default=64, metavar="1..64"
     )
     p.set_defaults(func=cmd_corpus)
+
+    p = sub.add_parser(
+        "propose",
+        help="mine consented deletion proposals; apply only with explicit group ids",
+    )
+    p.add_argument("path")
+    p.add_argument("--lang")
+    p.add_argument(
+        "--app",
+        action="store_true",
+        help="allow non-private symbols in repos without library packaging",
+    )
+    p.add_argument(
+        "--apply",
+        default=None,
+        metavar="IDS",
+        help='apply consented groups by id, e.g. "1,3,7", or "all"',
+    )
+    p.add_argument(
+        "--copy-to",
+        default=None,
+        metavar="DIR",
+        help="work on a copy at DIR instead of the sibling <path>-proposals",
+    )
+    p.add_argument(
+        "--in-place",
+        action="store_true",
+        help="operate on path directly (originals are otherwise sacred)",
+    )
+    p.add_argument("--out", default=None, metavar="FILE")
+    p.add_argument(
+        "--test-command",
+        default=None,
+        metavar="CMD",
+        help="frozen-suite command for verification (shell-parsed)",
+    )
+    p.add_argument("--timeout", type=int, default=600)
+    p.add_argument(
+        "--coverage",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="run the suite under coverage to rank candidates (needs the"
+        " target interpreter to import coverage; degrades silently)",
+    )
+    p.set_defaults(func=cmd_propose)
 
     args = parser.parse_args(argv)
     return args.func(args)

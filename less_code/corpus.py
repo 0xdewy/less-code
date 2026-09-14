@@ -15,7 +15,7 @@ from statistics import median
 
 from .langdetect import map_project
 from .loc import count_tree
-from .pipeline import ShrinkStats, pct, shrink_project
+from .pipeline import ShrinkStats, _disk_loc, pct, shrink_project
 
 
 @dataclass(frozen=True)
@@ -72,6 +72,7 @@ def run_corpus(
     ml_backend=None,
     ml_attempts: int = 3,
     ml_symbols: int = 64,
+    only: str | None = None,
 ) -> dict:
     if not 1 <= ml_attempts <= 3:
         raise ValueError("ml_attempts must be between 1 and 3")
@@ -79,6 +80,8 @@ def run_corpus(
         raise ValueError("ml_symbols must be between 1 and 64")
     rows = []
     for item in load_corpus(manifest):
+        if only and item.name != only:
+            continue
         with tempfile.TemporaryDirectory(prefix="less-code-corpus-") as scratch:
             print(
                 f"[{item.name}] preparing pinned checkout", file=sys.stderr, flush=True
@@ -163,6 +166,15 @@ def run_corpus(
                 if item.audit and audit_baseline.returncode == 0
                 else None
             )
+            if stats.root is not None:
+                disk, _ = _disk_loc(root, item.lang)
+                if disk != stats.loc_final:
+                    raise RuntimeError(
+                        f"{item.name}: report-time disk truth ({disk} code LOC)"
+                        f" does not match the measured loc_final"
+                        f" ({stats.loc_final}); the tree changed after the"
+                        " shrink - re-run"
+                    )
             result = stats.to_json()
             valid = bool(
                 result["tests_ok"]

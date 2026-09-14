@@ -29,6 +29,14 @@ class StaticResult:
     notes: list[str] = field(default_factory=list)
 
 
+def _is_definition_site(prefix: str) -> bool:
+    """A match whose line prefix ends in `def`/`class` is the definition
+    site itself, not a reference."""
+    return bool(re.match(r"^\s*(def|class)\s+$", prefix)) or prefix.rstrip().endswith(
+        ("def", "class")
+    )
+
+
 def _names_referenced_outside(
     root_files: list[Path], definitions: dict[Path, set[str]]
 ) -> dict[str, bool]:
@@ -48,10 +56,7 @@ def _names_referenced_outside(
                 continue
             for m in pattern.finditer(source):
                 line_start = source.rfind("\n", 0, m.start()) + 1
-                prefix = source[line_start : m.start()]
-                if re.match(r"^\s*(def|class)\s+$", prefix) or prefix.rstrip().endswith(
-                    ("def", "class")
-                ):
+                if _is_definition_site(source[line_start : m.start()]):
                     continue  # the definition site itself
                 referenced[name] = True
                 break
@@ -71,6 +76,26 @@ _ENTRY_POINT_FILES = frozenset(
         "manage.py",
     }
 )
+
+
+def _attached_kill_lines(lines: list[str], start: int, end: int) -> set[int]:
+    """0-based line indices for [start, end): the span itself, the blank lines
+    directly above it, so removal never leaves a doubled blank line, plus a
+    comment block tightly attached above those blanks — the dead item's own
+    header. The header only goes when a blank line (or the file top) bounds it
+    from above, else it is a trailing comment of the previous statement and
+    stays."""
+    kill = set(range(start, end))
+    i = start - 1
+    while i >= 0 and not lines[i].strip():
+        kill.add(i)
+        i -= 1
+    j = i
+    while j >= 0 and lines[j].lstrip().startswith("#"):
+        j -= 1
+    if j < i and (j < 0 or not lines[j].strip()):
+        kill.update(range(j + 1, i + 1))
+    return kill
 
 
 def _python_remove_dead(
@@ -140,22 +165,7 @@ def _python_remove_dead(
         kill: set[int] = set()  # 0-based indices
         for node in dead:
             start = min([node.lineno] + [d.lineno for d in node.decorator_list]) - 1
-            kill.update(range(start, node.end_lineno))
-            # the blank lines directly above the item go with it, so removal
-            # never leaves a doubled blank line
-            i = start - 1
-            while i >= 0 and not lines[i].strip():
-                kill.add(i)
-                i -= 1
-            # a comment block tightly attached above those blanks is the dead
-            # item's own header and goes too — but only when a blank line (or
-            # the file top) bounds it from above, else it is a trailing
-            # comment of the previous statement and stays
-            j = i
-            while j >= 0 and lines[j].lstrip().startswith("#"):
-                j -= 1
-            if j < i and (j < 0 or not lines[j].strip()):
-                kill.update(range(j + 1, i + 1))
+            kill.update(_attached_kill_lines(lines, start, node.end_lineno))
         kept_lines = [l for n, l in enumerate(lines) if n not in kill]
         while kept_lines and not kept_lines[-1].strip():
             kept_lines.pop()

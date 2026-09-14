@@ -35,13 +35,11 @@ RULES = (
     "bool-return",
     "merge-same-branch",
     "flatten-nested-if",
-    "guard-call",
     "conditional-return",
     "conditional-assignment",
     "self-default-assignment",
     "inline-return-temp",
     "inline-single-use-temp",
-    "merge-imports",
     "merge-from-imports",
     "hoist-common-tail",
     "dict-build-to-literal",
@@ -643,40 +641,6 @@ def _rule_flatten_nested_if(
         [combined],
         outer.col_offset,
         _end_col([outer], end),
-    )
-
-
-def _rule_guard_call(
-    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
-) -> Rewrite | None:
-    """``if condition: call()`` -> ``condition and call()``.
-
-    A boolean ``and`` statement has precisely the control flow of a one-arm
-    call guard: it truth-tests the condition once and evaluates the call only
-    when that test succeeds. The expression's value is discarded in both
-    forms. Limiting the body to a call keeps this as a familiar guard idiom
-    rather than turning arbitrary side effects into boolean expressions.
-    """
-    stmt = body[i]
-    if not (
-        isinstance(stmt, ast.If)
-        and not stmt.orelse
-        and len(stmt.body) == 1
-        and isinstance(stmt.body[0], ast.Expr)
-        and isinstance(stmt.body[0].value, ast.Call)
-    ):
-        return None
-    expression = ast.Expr(
-        value=ast.BoolOp(op=ast.And(), values=[stmt.test, stmt.body[0].value])
-    )
-    start, end = _span([stmt])
-    return Rewrite(
-        "guard-call",
-        start,
-        end,
-        [expression],
-        stmt.col_offset,
-        _end_col([stmt], end),
     )
 
 
@@ -1707,50 +1671,6 @@ def _rule_inline_single_use_temp(
     )
 
 
-# ---- merge consecutive imports --------------------------------------------
-
-
-def _rule_merge_imports(
-    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
-) -> Rewrite | None:
-    """Pack adjacent plain imports while retaining their exact order.
-
-    ``import a`` followed by ``import b as c`` executes the same IMPORT_NAME
-    operations, in the same order, as ``import a, b as c``. Greedy chunks
-    stop at the canonical width so formatting cannot erase the saving.
-    """
-    first = body[i]
-    if not isinstance(first, ast.Import):
-        return None
-    run = [first]
-    j = i + 1
-    while j < len(body) and isinstance(body[j], ast.Import):
-        run.append(body[j])
-        j += 1
-    if len(run) < 2:
-        return None
-    aliases = [alias for stmt in run for alias in stmt.names]
-    width = 88 - first.col_offset
-    chunks: list[list[ast.alias]] = []
-    for alias in aliases:
-        if chunks and len(ast.unparse(ast.Import(names=chunks[-1] + [alias]))) <= width:
-            chunks[-1].append(alias)
-        else:
-            chunks.append([alias])
-    if len(chunks) >= len(run):
-        return None
-    statements = [ast.Import(names=chunk) for chunk in chunks]
-    start, end = _span(run)
-    return Rewrite(
-        "merge-imports",
-        start,
-        end,
-        statements,
-        first.col_offset,
-        _end_col(run, end),
-    )
-
-
 # ---- merge consecutive `from M import a` / `from M import b` ---------------
 
 
@@ -2006,6 +1926,8 @@ def _rule_pack_assignments(
     j = i
     while j < len(body):
         stmt = body[j]
+        if chunk and stmt.lineno > chunk[-1].end_lineno + 1:
+            break  # blank line/comment between: the author's paragraphs stay
         pairs = _pack_pairs(stmt)
         if pairs is None:
             break
@@ -2201,13 +2123,11 @@ _RULE_FNS = {
     "bool-return": _rule_bool_return,
     "merge-same-branch": _rule_merge_same_branch,
     "flatten-nested-if": _rule_flatten_nested_if,
-    "guard-call": _rule_guard_call,
     "conditional-return": _rule_conditional_return,
     "conditional-assignment": _rule_conditional_assignment,
     "self-default-assignment": _rule_self_default_assignment,
     "inline-return-temp": _rule_inline_return_temp,
     "inline-single-use-temp": _rule_inline_single_use_temp,
-    "merge-imports": _rule_merge_imports,
     "merge-from-imports": _rule_merge_from_imports,
     "hoist-common-tail": _rule_hoist_common_tail,
     "dict-build-to-literal": _rule_dict_build_literal,
@@ -2294,6 +2214,58 @@ def _collect(
         _collect(handler, only, out, scope_lines, class_body)
 
 
+def _string_tokens(text: str) -> list[tuple[int, int, object]]:
+    """Single-line plain string/bytes literals: (abs_start, abs_end, value).
+
+    F-strings and anything not statically evaluable are skipped on purpose:
+    a splice is only safe when the rendered literal provably holds the same
+    value as the original it replaces. Offsets are absolute into `text`,
+    because the rewritten span is multi-line.
+    """
+    out = []
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return out
+    line_starts = [0]
+    for line in text.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+    for tok in tokens:
+        if tok.type != tokenize.STRING or tok.start[0] != tok.end[0]:
+            continue
+        try:
+            value = ast.literal_eval(tok.string)
+        except (ValueError, SyntaxError):
+            continue
+        if isinstance(value, (str, bytes)):
+            out.append(
+                (
+                    line_starts[tok.start[0] - 1] + tok.start[1],
+                    line_starts[tok.end[0] - 1] + tok.end[1],
+                    value,
+                )
+            )
+    return out
+
+
+def _restore_literal_text(original: str, rendered: str) -> str:
+    """Splice original string-literal spellings back onto unparse output.
+
+    ast.unparse re-renders every literal (single quotes, lost ``r""``
+    prefixes), churning lines the rewrite never semantically touched. When
+    the rendered literals evaluate to exactly the original values, in order,
+    each rendered spelling is replaced by the original text; any mismatch
+    aborts and leaves the unparse output as is.
+    """
+    src = _string_tokens(original)
+    dst = _string_tokens(rendered)
+    if len(src) != len(dst) or any(a[2] != b[2] for a, b in zip(src, dst)):
+        return rendered
+    for (start, end, _), (rstart, rend, _) in reversed(list(zip(src, dst))):
+        rendered = rendered[:rstart] + original[start:end] + rendered[rend:]
+    return rendered
+
+
 def _render(rw: Rewrite) -> list[str]:
     pad = " " * rw.col
     if rw.text is not None:
@@ -2340,10 +2312,8 @@ def _one_pass(source: str, only: set[str]) -> tuple[str, list[str]]:
             "conditional-assignment",
             "merge-same-branch",
             "flatten-nested-if",
-            "guard-call",
             "self-default-assignment",
             "inline-single-use-temp",
-            "merge-imports",
             "merge-from-imports",
             "hoist-common-tail",
             "merge-del",
@@ -2359,7 +2329,9 @@ def _one_pass(source: str, only: set[str]) -> tuple[str, list[str]]:
         )
         if not _line_aligned(lines, rw) or comments and not movable_comments:
             continue
-        rendered = _render(rw)
+        rendered = _restore_literal_text(
+            "\n".join(lines[rw.start - 1 : rw.end]), "\n".join(_render(rw))
+        ).splitlines()
         if comments:
             rendered = [
                 " " * rw.col + comment_tokens[number] for number in comments
@@ -2376,10 +2348,8 @@ def _one_pass(source: str, only: set[str]) -> tuple[str, list[str]]:
             "conditional-assignment",
             "merge-same-branch",
             "flatten-nested-if",
-            "guard-call",
             "self-default-assignment",
             "inline-single-use-temp",
-            "merge-imports",
             "merge-from-imports",
             "hoist-common-tail",
             "pack-assignments",

@@ -1,15 +1,16 @@
 # less-code report
 
-- language: `javascript`
-- LOC: 601 -> 407 (post-static) -> 407 (final)
-- reduction: **32.28%**
-- tests green: True  |  API preserved: True (baseline: post-static)
+- language: `python`
+- LOC: 629 -> 609 (post-static) -> 609 (final)
+- reduction: **3.18%**
+- tests green: True  |  API preserved: True (baseline: original)
+- documentation preserved: True
 - LOC counted after canonical formatting: True
-- documentation comments preserved verbatim: **48 -> 48**
+- gate strength: 7 tests
 
 ## Per-layer yield
 
-- **external-static** 601 -> 407 [kept] (knip: 3 unused exports)
-- **rules** 407 -> 407 [kept]
-- **outline** 407 -> 407 [kept]
-- **dedup** 407 -> 407 [kept]
+- **external-static** 629 -> 629 [reverted]
+- **rules** 629 -> 609 [kept] (snapshot.py: rules {'inline-single-use-temp': 5, 'self-default-assignment': 1, 'pack-assignments': 14})
+- **ruff-again** 609 -> 609 [reverted]
+- **rules-again** 609 -> 609 [reverted]

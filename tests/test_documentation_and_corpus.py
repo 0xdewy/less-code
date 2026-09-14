@@ -253,8 +253,7 @@ def test_pipeline_rejects_added_documentation(tmp_path, monkeypatch):
             loc_removed=1,
         ),
     )
-    monkeypatch.setattr(pipeline, "_apply_rules", lambda sources: (sources, []))
-    monkeypatch.setattr(pipeline, "_apply_outline", lambda sources: (sources, []))
+    monkeypatch.setattr(pipeline, "_apply_rules", lambda sources, **kw: (sources, []))
     shrink_project(tmp_path, "python")
     assert module.read_text() == original
 
@@ -280,7 +279,6 @@ def test_pipeline_rejects_removed_documentation(tmp_path, monkeypatch):
             loc_removed=1,
         ),
     )
-    monkeypatch.setattr(pipeline, "_apply_rules", lambda sources: (sources, []))
-    monkeypatch.setattr(pipeline, "_apply_outline", lambda sources: (sources, []))
+    monkeypatch.setattr(pipeline, "_apply_rules", lambda sources, **kw: (sources, []))
     shrink_project(tmp_path, "python")
     assert module.read_text() == original
