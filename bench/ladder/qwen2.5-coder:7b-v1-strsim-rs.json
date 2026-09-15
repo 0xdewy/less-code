@@ -1,0 +1,79 @@
+{
+  "rung": "qwen2.5-coder:7b",
+  "variant": "v1",
+  "crate": "strsim-rs",
+  "digest": "dae161e27b0e",
+  "loc_before": 1062,
+  "loc_after": 1062,
+  "loc_delta": 0,
+  "delta_pct": 0.0,
+  "attempts": 4,
+  "accepted_files": 0,
+  "funnel": {
+    "backend": 1,
+    "symbol-set": 1,
+    "duplicate": 2
+  },
+  "wall_s": 291.7,
+  "records": [
+    {
+      "path": "src/lib.rs",
+      "model": "file-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 1,
+      "accepted": false,
+      "category": "backend",
+      "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen2.5-coder:7b' timed out after 240.0 seconds",
+      "loc_before": 980,
+      "loc_after": 980,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "5de72f6fd9d8b4ab1e622711afd712031ea2e7a852867f38473cf6466a80f1ce",
+          "accepted": false,
+          "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen2.5-coder:7b' timed out after 240.0 seconds",
+          "category": "backend",
+          "duration_s": 240.132
+        }
+      ]
+    },
+    {
+      "path": "benches/benches.rs",
+      "model": "file-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 3,
+      "accepted": false,
+      "category": "duplicate",
+      "reason": "duplicate proposal",
+      "loc_before": 82,
+      "loc_after": 82,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "7b3c2bc5b222bdf772fbcf51dd13104254ad45fcd79dfaffb9c88b9802833f91",
+          "accepted": false,
+          "reason": "symbol set could not be extracted",
+          "category": "symbol-set",
+          "duration_s": 26.461
+        },
+        {
+          "attempt": 2,
+          "prompt_sha256": "7b3c2bc5b222bdf772fbcf51dd13104254ad45fcd79dfaffb9c88b9802833f91",
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate",
+          "duration_s": 11.253
+        },
+        {
+          "attempt": 3,
+          "prompt_sha256": "7b3c2bc5b222bdf772fbcf51dd13104254ad45fcd79dfaffb9c88b9802833f91",
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate",
+          "duration_s": 9.962
+        }
+      ]
+    }
+  ],
+  "diffs": {}
+}

@@ -1,0 +1,133 @@
+{
+  "rung": "qwen2.5-coder:7b",
+  "variant": "v2",
+  "crate": "shell-words",
+  "digest": "dae161e27b0e",
+  "loc_before": 353,
+  "loc_after": 353,
+  "loc_delta": 0,
+  "delta_pct": 0.0,
+  "attempts": 12,
+  "accepted_files": 0,
+  "funnel": {
+    "invalid syntax": 1,
+    "model error": 3,
+    "project lint/format failed": 2,
+    "documentation changed": 1,
+    "duplicate proposal": 4,
+    "no canonical LOC reduction": 1
+  },
+  "wall_s": 136.3,
+  "records": [
+    {
+      "path": "src/lib.rs",
+      "model": "item-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 12,
+      "accepted": false,
+      "category": "duplicate proposal",
+      "reason": "",
+      "loc_before": 353,
+      "loc_after": 353,
+      "proposals": [
+        {
+          "symbol": "split",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "invalid syntax",
+          "category": "invalid syntax",
+          "duration_s": 21.905
+        },
+        {
+          "symbol": "split",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "model error: ValueError: model returned a function declaration instead of a body",
+          "category": "model error",
+          "duration_s": 42.606
+        },
+        {
+          "symbol": "escape_style",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "project lint/format failed",
+          "category": "project lint/format failed",
+          "duration_s": 13.546
+        },
+        {
+          "symbol": "escape_style",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "model error: ValueError: model returned a function declaration instead of a body",
+          "category": "model error",
+          "duration_s": 9.626
+        },
+        {
+          "symbol": "quote",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 8.329
+        },
+        {
+          "symbol": "quote",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "model error: ValueError: model returned a function declaration instead of a body",
+          "category": "model error",
+          "duration_s": 17.363
+        },
+        {
+          "symbol": "join",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "project lint/format failed",
+          "category": "project lint/format failed",
+          "duration_s": 6.182
+        },
+        {
+          "symbol": "join",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 4.462
+        },
+        {
+          "symbol": "join",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 4.316
+        },
+        {
+          "symbol": "ParseError.fmt",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 3.601
+        },
+        {
+          "symbol": "ParseError.fmt",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 1.941
+        },
+        {
+          "symbol": "ParseError.fmt",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 2.139
+        }
+      ]
+    }
+  ],
+  "diffs": {}
+}

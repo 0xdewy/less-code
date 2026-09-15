@@ -22,3 +22,15 @@ grpo/adapter/
 
 # external reduction targets (working clones, not source)
 click/
+
+# model runtime + learning track artifacts (never the manifests or records)
+bench/.ollama.log
+training/crates/
+training/out/
+training/adapter/
+training/pairs/*.jsonl
+bench/ladder/scratch/
+bench/ladder/run_grid.sh
+
+# raw run traces (summaries live in the tracked .md/.json reports)
+*.log

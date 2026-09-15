@@ -1,3 +1,15 @@
+# REFACTOR.md - superseded by the Rust plan
+
+> **Status note (2026-09-14):** this file's delete-on-first-miss clause was
+> REPEALED by PLAN.md §0.3 (the Iteration Protocol: >= 2 models x >= 2
+> interface variants x >= 3 gate-feedback retries before any "it doesn't
+> work" is legal, with funnel accounting). The feature itself is superseded
+> by `lc rewrite` (`less_code/ml_file.py`), which keeps this file's good
+> benchmark protocol (Phase 2 inherits it) and fixes the real defect the
+> +0.18% run died of: the model had to reproduce headers and docs byte-exact,
+> which the host now owns via test-span masking and body/file splicing. The
+> design and outcome below are kept for the record.
+
 # REFACTOR.md — model-proposed, gate-verified refactors for Rust
 
 One feature, judged by benchmarks, deleted if it misses the bar.

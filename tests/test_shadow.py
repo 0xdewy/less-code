@@ -52,6 +52,156 @@ def test_calls():
 PYTEST = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
 
 
+# ---- Rust oracle (bounded v1) ----
+
+import shutil
+
+from less_code.rust_shadow import changed_functions as rust_changed_functions
+from less_code.rust_shadow import run_rust_shadow
+
+RS_COUNT_SPACES = """pub fn count_spaces(text: &str) -> usize {
+    let mut count = 0usize;
+    for c in text.chars() {
+        if c == ' ' {
+            count = count + 1;
+        } else {
+            break;
+        }
+    }
+    count
+}
+"""
+
+RS_COUNT_SPACES_EQUAL = """pub fn count_spaces(text: &str) -> usize {
+    text.chars().take_while(|&c| c == ' ').count()
+}
+"""
+
+RS_COUNT_SPACES_CAPPED = """pub fn count_spaces(text: &str) -> usize {
+    text.chars().take_while(|&c| c == ' ').take(10).count()
+}
+"""
+
+
+def _rs_project(tmp_path: Path, fn_text: str) -> tuple[Path, Path, str]:
+    """Copy the pinned fixture (cargo keeps its incremental target/) and
+    append the function under test to lib.rs, keeping the crate's own tests
+    compiling."""
+    root = tmp_path / "rs-shadow"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "fixtures" / "rs", root)
+    lib = root / "src" / "lib.rs"
+    base = lib.read_text()
+    lib.write_text(base + fn_text)
+    return root, lib, base + fn_text
+
+
+def test_rust_equal_rewrite_is_verified(tmp_path):
+    root, lib, pristine_text = _rs_project(tmp_path, RS_COUNT_SPACES)
+    lib.write_text(pristine_text.replace(RS_COUNT_SPACES, RS_COUNT_SPACES_EQUAL))
+    spec = rust_changed_functions({lib: pristine_text}, {lib: lib.read_text()})
+    assert set(spec[str(lib)]) == {"count_spaces"}
+    report = run_rust_shadow(root, spec, ["cargo", "test", "--quiet"], 600)
+    assert report.tests_ok
+    assert not report.mismatches
+    assert report.exercised == 1
+    assert report.verified_calls > 0
+    # the appended shadow mod is gone either way
+    assert "__lc_shadow" not in lib.read_text()
+
+
+def test_rust_wrong_result_is_reported_as_mismatch(tmp_path):
+    """Passes the crate's own tests (the 20-space input is uncovered) - only
+    the oracle can catch the cap."""
+    root, lib, pristine_text = _rs_project(tmp_path, RS_COUNT_SPACES)
+    rewritten = pristine_text.replace(RS_COUNT_SPACES, RS_COUNT_SPACES_CAPPED)
+    lib.write_text(rewritten)
+    spec = rust_changed_functions({lib: pristine_text}, {lib: rewritten})
+    report = run_rust_shadow(root, spec, ["cargo", "test", "--quiet"], 600)
+    assert report.mismatches
+    assert report.mismatches[0]["function"] == "count_spaces"
+    assert report.mismatches[0]["file"] == "lib.rs"
+    assert "__lc_shadow" not in lib.read_text()
+
+
+def test_rust_unverified_functions_are_never_mismatches(tmp_path):
+    """unsafe bodies and methods taking self sit outside the v1 whitelist:
+    counted as unverified, never a failure, and cargo never runs."""
+    import tree_sitter as ts
+    import tree_sitter_rust as grammar
+
+    from less_code.rust_shadow import _eligible
+
+    unsafe_fn = "unsafe fn twist(x: u8) -> u8 { x ^ 1 }\n"
+    method_fn = "struct P;\nimpl P { fn poke(&mut self) { let _ = 1; } }\n"
+    parser = ts.Parser(ts.Language(grammar.language()))
+
+    def first_item(text):
+        stack = [parser.parse(text.encode()).root_node]
+        while stack:
+            node = stack.pop()
+            if node.type == "function_item":
+                return node
+            stack.extend(node.named_children)
+        raise AssertionError("no function_item")
+
+    for text in (unsafe_fn, method_fn):
+        ok, _, _ = _eligible(first_item(text), text.encode())
+        assert not ok
+    # changed_functions buckets both under !unverified
+    pristine = {Path("/unused/lib.rs"): unsafe_fn + method_fn}
+    current = {
+        Path("/unused/lib.rs"): unsafe_fn.replace("x ^ 1", "x ^ 2")
+        + method_fn.replace("let _ = 1;", "let _ = 2;")
+    }
+    spec = rust_changed_functions(pristine, current)
+    assert set(spec) == {"!unverified"}
+    report = run_rust_shadow(Path("/unused"), spec, None, 60)
+    assert report.functions == 2
+    assert report.exercised == 0
+    assert not report.mismatches
+
+
+def test_rust_gate_reverts_shadow_mismatch(tmp_path, monkeypatch):
+    """End to end: a wrong rewrite the frozen suite cannot see is caught by
+    the rust oracle, and the layer reverts."""
+    from less_code.pipeline import shrink_project
+    from less_code.static import StaticResult
+
+    root, lib, pristine_text = _rs_project(tmp_path, RS_COUNT_SPACES)
+    rewritten = pristine_text.replace(RS_COUNT_SPACES, RS_COUNT_SPACES_CAPPED)
+    monkeypatch.setattr(
+        "less_code.pipeline.static_pass",
+        lambda *_a, **_k: StaticResult(changed_files={str(lib): rewritten}),
+    )
+
+    stats = shrink_project(root, "rust", test_command=["cargo", "test", "--quiet"])
+
+    assert lib.read_text() == pristine_text
+    assert any("rust shadow mismatch" in note for note in stats.static_notes)
+
+
+def test_rust_gate_accepts_equal_rewrite_with_oracle(tmp_path, monkeypatch):
+    from less_code.pipeline import shrink_project
+    from less_code.static import StaticResult
+
+    root, lib, pristine_text = _rs_project(tmp_path, RS_COUNT_SPACES)
+    equal = pristine_text.replace(RS_COUNT_SPACES, RS_COUNT_SPACES_EQUAL)
+    monkeypatch.setattr(
+        "less_code.pipeline.static_pass",
+        lambda *_a, **_k: StaticResult(changed_files={str(lib): equal}),
+    )
+
+    stats = shrink_project(root, "rust", test_command=["cargo", "test", "--quiet"])
+
+    assert stats.tests_ok and stats.api_ok and stats.docs_ok
+    assert lib.read_text() == equal
+    # the rewrite is kept and the final-run rust oracle verified it
+    # (other fixture lines may also shrink under canonical formatting)
+    assert stats.loc_final < stats.loc_start
+    assert stats.oracle["exercised"] >= 1
+    assert not stats.oracle["mismatches"]
+
+
 def _project(tmp_path: Path) -> tuple[Path, Path]:
     root = tmp_path / "shadowed"
     root.mkdir(parents=True)
@@ -251,3 +401,146 @@ def test_nondeterministic_iterator_items_are_not_mismatches(tmp_path):
     report = run_shadow(root, spec, PYTEST, 120)
     assert report.ok and not report.mismatches
     assert report.nondeterministic_calls >= 1
+
+
+def test_rust_shadow_mod_is_no_std_compatible():
+    """The generated module must also compile inside a `#![no_std]` crate:
+    no `vec!`/`println!` (std macro prelude, absent under no_std), no
+    json-style escapes Rust cannot parse, `extern crate std;` for the paths
+    the harness links anyway, and valid syntax (one `let` per binding - the
+    review found `let a = x, b = y;` and a lone-surrogate literal the hard
+    way, on the no_std corpus crate)."""
+    import tree_sitter as ts
+    import tree_sitter_rust as grammar
+
+    from less_code.rust_shadow import _shadow_mod
+
+    info = {
+        "source": (
+            "fn join(a: &str, b: Option<u32>) -> String {\n"
+            '    format!("{}{:?}", a, b)\n'
+            "}\n"
+        ),
+        "params": [
+            ("ref", ("str",), "&str"),
+            ("option", ("scalar", "u32"), "Option<u32>"),
+        ],
+        "return": ("string",),
+    }
+    mod = _shadow_mod({"join": info}, Path("/tmp/lc-shadow-marker.log"))
+    assert "extern crate std;" in mod
+    for banned in ("vec!", "println!", "\\u"):
+        assert banned not in mod
+    root = ts.Parser(ts.Language(grammar.language())).parse(mod.encode()).root_node
+    assert not root.has_error
+
+
+# ---- oracle v2: methods on constructible local structs ----
+
+_DEFAULT_METHOD = """\
+use std::time::Duration;
+
+#[derive(Debug, Default, Clone)]
+struct Config {
+    retries: u32,
+    timeout: Duration,
+}
+
+impl Config {
+    fn effective_timeout(&self) -> Duration {
+        self.timeout + Duration::from_secs(self.retries as u64)
+    }
+}
+"""
+
+
+def test_v2_method_mismatch_is_caught(tmp_path):
+    root, lib, pristine_text = _rs_project(tmp_path, _DEFAULT_METHOD)
+    rewritten = pristine_text.replace(
+        "self.timeout + Duration::from_secs(self.retries as u64)",
+        "self.timeout - Duration::from_secs(self.retries as u64)",
+    )
+    lib.write_text(rewritten)
+    spec = rust_changed_functions({lib: pristine_text}, {lib: rewritten})
+    assert "Config::effective_timeout" in spec[str(lib)]
+    report = run_rust_shadow(root, spec, ["cargo", "test", "--quiet"], 600)
+    assert report.mismatches, "subtracting timeouts must surface as a mismatch"
+    assert report.mismatches[0]["function"] == "Config::effective_timeout"
+    assert "__lc_shadow" not in lib.read_text()
+
+
+def test_v2_equal_method_is_verified(tmp_path):
+    root, lib, pristine_text = _rs_project(tmp_path, _DEFAULT_METHOD)
+    rewritten = pristine_text.replace(
+        """    fn effective_timeout(&self) -> Duration {
+        self.timeout + Duration::from_secs(self.retries as u64)
+    }""",
+        """    fn effective_timeout(&self) -> Duration {
+        let extra = Duration::from_secs(self.retries as u64);
+        extra + self.timeout
+    }""",
+    )
+    lib.write_text(rewritten)
+    spec = rust_changed_functions({lib: pristine_text}, {lib: rewritten})
+    assert "Config::effective_timeout" in spec[str(lib)]
+    report = run_rust_shadow(root, spec, ["cargo", "test", "--quiet"], 600)
+    assert report.tests_ok
+    assert not report.mismatches
+    assert report.exercised == 1
+    assert "__lc_shadow" not in lib.read_text()
+
+
+def test_v2_refusals_are_counted_unverified():
+    """Drop impls, generic structs and interior mutability are refused -
+    unverified, never a mismatch, and no cargo run is needed to see it."""
+    drop_case = (
+        "struct D;\n"
+        "impl Drop for D { fn drop(&mut self) {} }\n"
+        "impl D { fn hit(&self) -> u32 { 1 } }\n"
+    )
+    generic_case = (
+        "struct G<T> { v: T }\n"
+        "impl<T> G<T> { fn first(&self) -> u32 { 1 } }\n"
+        "impl G<u32> { fn hit(&self) -> u32 { 1 } }\n"
+    )
+    interior_case = (
+        "use std::cell::Cell;\n"
+        "#[derive(Debug, Default)]\n"
+        "struct M { n: Cell<u32> }\n"
+        "impl M { fn hit(&self) -> u32 { self.n.get() } }\n"
+    )
+    for bad in (drop_case, generic_case, interior_case):
+        lib = Path("/unused/lib.rs")
+        current = bad.replace(
+            "fn hit(&self) -> u32 { 1 }", "fn hit(&self) -> u32 { 2 }"
+        )
+        current = current.replace("self.n.get()", "self.n.get() + 1")
+        spec = rust_changed_functions({lib: bad}, {lib: current})
+        assert set(spec) == {"!unverified"}, bad
+        assert len(spec["!unverified"]) == 1
+
+
+def test_v2_mut_self_and_trait_impls_stay_refused():
+    mut_case = (
+        "#[derive(Debug, Default)]\n"
+        "struct C { n: u32 }\n"
+        "impl C { fn bump(&mut self) { self.n += 1; } }\n"
+    )
+    trait_case = (
+        "use std::fmt;\n"
+        "#[derive(Debug, Default)]\n"
+        "struct C { n: u32 }\n"
+        "impl fmt::Display for C {\n"
+        "    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n"
+        '        write!(f, "{}", self.n)\n'
+        "    }\n"
+        "}\n"
+    )
+    for bad in (mut_case, trait_case):
+        current = bad.replace("self.n += 1;", "self.n += 2;").replace(
+            'write!(f, "{}", self.n)', 'write!(f, "{} ", self.n)'
+        )
+        spec = rust_changed_functions(
+            {Path("/unused/lib.rs"): bad}, {Path("/unused/lib.rs"): current}
+        )
+        assert set(spec) == {"!unverified"}, bad

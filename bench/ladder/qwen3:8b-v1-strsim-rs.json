@@ -1,0 +1,79 @@
+{
+  "rung": "qwen3:8b",
+  "variant": "v1",
+  "crate": "strsim-rs",
+  "digest": "500a1f067a9f",
+  "loc_before": 1062,
+  "loc_after": 1062,
+  "loc_delta": 0,
+  "delta_pct": 0.0,
+  "attempts": 4,
+  "accepted_files": 0,
+  "funnel": {
+    "backend": 1,
+    "loc": 1,
+    "duplicate": 2
+  },
+  "wall_s": 302.1,
+  "records": [
+    {
+      "path": "src/lib.rs",
+      "model": "file-cli",
+      "digest": "500a1f067a9f",
+      "attempts": 1,
+      "accepted": false,
+      "category": "backend",
+      "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen3:8b' timed out after 240.0 seconds",
+      "loc_before": 980,
+      "loc_after": 980,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "5de72f6fd9d8b4ab1e622711afd712031ea2e7a852867f38473cf6466a80f1ce",
+          "accepted": false,
+          "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen3:8b' timed out after 240.0 seconds",
+          "category": "backend",
+          "duration_s": 240.075
+        }
+      ]
+    },
+    {
+      "path": "benches/benches.rs",
+      "model": "file-cli",
+      "digest": "500a1f067a9f",
+      "attempts": 3,
+      "accepted": false,
+      "category": "duplicate",
+      "reason": "duplicate proposal",
+      "loc_before": 82,
+      "loc_after": 82,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "7b3c2bc5b222bdf772fbcf51dd13104254ad45fcd79dfaffb9c88b9802833f91",
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "loc",
+          "duration_s": 21.873
+        },
+        {
+          "attempt": 2,
+          "prompt_sha256": "7b3c2bc5b222bdf772fbcf51dd13104254ad45fcd79dfaffb9c88b9802833f91",
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate",
+          "duration_s": 19.852
+        },
+        {
+          "attempt": 3,
+          "prompt_sha256": "7b3c2bc5b222bdf772fbcf51dd13104254ad45fcd79dfaffb9c88b9802833f91",
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate",
+          "duration_s": 19.888
+        }
+      ]
+    }
+  ],
+  "diffs": {}
+}

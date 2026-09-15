@@ -5,19 +5,44 @@ analysis ecosystem plus a focused semantic-preserving rule library,
 gated by the frozen test suite and a public-API check.
 
 ```
-L0  canonical formatter (not counted as reduction)
+L0  canonical formatter (rustfmt is project-config aware; not counted)
 L1  static tools and language rules: ruff / JavaScript / Rust rewrites
-L1b rule library: AST semantic-preserving rewrites
+L1b rule library: AST semantic-preserving rewrites + whole-file model
+    rewrites (Rust, test spans masked) + dedup transactions
 L1c ruff and the rule library once more over the rewritten tree
-L2  optional per-symbol LLM rewrites
+L2  optional per-symbol and whole-file LLM rewrites, plus the learning
+    track (mined SFT + rejection-sampling fine-tune) served back through
+    the same backend contract
 ```
+
+## Rust-first quickstart
+
+```bash
+# whole-file model rewrites, every proposal gate-verified:
+uv run lc rewrite path/to/crate --ml-cli "python3 bench/ollama_file.py qwen2.5-coder:7b"
+# or as a layer of the full pipeline (own stat, never blended):
+uv run lc shrink path/to/crate --ml-file-cli "python3 bench/ollama_file.py qwen2.5-coder:7b"
+# cross-function dedup as one all-or-nothing transaction:
+uv run lc dedup path/to/crate --ml-cli "python3 bench/remote_model.py"
+# the model ladder benchmark (rungs x interface variants, funnel accounting):
+uv run python bench/rust_ladder.py --rung qwen2.5-coder:7b --variant v1 --crate humantime
+```
+
+Rust rewrites are the current first-class target: inline `#[cfg(test)]`
+spans are frozen (masked out, never rewritten by the model), each crate's
+own rustfmt config and edition decide the gates, and a differential oracle
+runs each rewritten function's original body alongside it - methods on
+constructible local structs included.
 
 A reduction is accepted only if the frozen suite stays green, the public
 API and documentation are preserved, and code-LOC (after canonical formatting) shrinks.
 Everything else reverts.
 
-For the effectiveness investigation, tool recommendations, and staged model
-training proposal, see [the research strategy](bench/STRATEGY.md).
+The learning track (`training/`) mines gate-verified pairs, fine-tunes
+QLoRA on the local GPU, and evaluates on a held-out split before any
+benchmark touch; the exam/training separation is enforced by test
+(`training/anticontamination.py`). For the effectiveness investigation and
+research history, see [the research strategy](bench/STRATEGY.md).
 Passing the existing tests and API checks is evidence, not proof of semantic
 equivalence. Script entrypoints are executable behavior and must survive.
 

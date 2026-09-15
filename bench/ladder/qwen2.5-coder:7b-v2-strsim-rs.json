@@ -1,0 +1,624 @@
+{
+  "rung": "qwen2.5-coder:7b",
+  "variant": "v2",
+  "crate": "strsim-rs",
+  "digest": "dae161e27b0e",
+  "loc_before": 1062,
+  "loc_after": 1062,
+  "loc_delta": 0,
+  "delta_pct": 0.0,
+  "attempts": 72,
+  "accepted_files": 0,
+  "funnel": {
+    "documentation changed": 12,
+    "duplicate proposal": 27,
+    "no canonical LOC reduction": 15,
+    "compile failed": 13,
+    "tests failed": 5
+  },
+  "wall_s": 472.4,
+  "records": [
+    {
+      "path": "benches/benches.rs",
+      "model": "item-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 0,
+      "accepted": false,
+      "category": "untried",
+      "reason": "",
+      "loc_before": 82,
+      "loc_after": 82,
+      "proposals": []
+    },
+    {
+      "path": "src/lib.rs",
+      "model": "item-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 72,
+      "accepted": false,
+      "category": "duplicate proposal",
+      "reason": "",
+      "loc_before": 980,
+      "loc_after": 980,
+      "proposals": [
+        {
+          "symbol": "damerau_levenshtein_impl",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 25.212
+        },
+        {
+          "symbol": "damerau_levenshtein_impl",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 22.645
+        },
+        {
+          "symbol": "damerau_levenshtein_impl",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 17.594
+        },
+        {
+          "symbol": "generic_jaro",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 17.523
+        },
+        {
+          "symbol": "generic_jaro",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 14.564
+        },
+        {
+          "symbol": "generic_jaro",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 14.238
+        },
+        {
+          "symbol": "generic_damerau_levenshtein",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 17.747
+        },
+        {
+          "symbol": "generic_damerau_levenshtein",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 14.668
+        },
+        {
+          "symbol": "generic_damerau_levenshtein",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 14.991
+        },
+        {
+          "symbol": "osa_distance",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 12.717
+        },
+        {
+          "symbol": "osa_distance",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 9.338
+        },
+        {
+          "symbol": "osa_distance",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 9.672
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.grow",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 11.495
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.grow",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "compile failed: error[E0308]: mismatched types\n--> src/lib.rs:541:13; error[E0609]: no field `value` on type `&&Vec<GrowingHashmapMapElemChar<ValueType>>`\n--> src/lib.rs:544:49; error[E0609]: no field `key` on type `&Vec<GrowingHashmapMapElemChar<ValueType>>`\n--> src/lib.rs:545:38",
+          "category": "compile failed",
+          "duration_s": 8.387
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.grow",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "compile failed: error[E0308]: mismatched types\n--> src/lib.rs:541:13; error[E0609]: no field `value` on type `Vec<GrowingHashmapMapElemChar<ValueType>>`\n--> src/lib.rs:545:21; error[E0609]: no field `key` on type `Vec<GrowingHashmapMapElemChar<ValueType>>`\n--> src/lib.rs:546:42",
+          "category": "compile failed",
+          "duration_s": 7.736
+        },
+        {
+          "symbol": "sorensen_dice",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 11.732
+        },
+        {
+          "symbol": "sorensen_dice",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 8.115
+        },
+        {
+          "symbol": "sorensen_dice",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 8.114
+        },
+        {
+          "symbol": "generic_levenshtein",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "tests failed: error: test failed, to rerun pass `--lib`",
+          "category": "tests failed",
+          "duration_s": 9.616
+        },
+        {
+          "symbol": "generic_levenshtein",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "tests failed: error: test failed, to rerun pass `--lib`",
+          "category": "tests failed",
+          "duration_s": 5.797
+        },
+        {
+          "symbol": "generic_levenshtein",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 5.231
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.get_mut",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 8.022
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.get_mut",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 4.379
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.get_mut",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 4.34
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.lookup",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "compile failed: error[E0308]: mismatched types\n--> src/lib.rs:506:48; error[E0277]: no implementation for `i32 & usize`\n--> src/lib.rs:506:46; error[E0277]: the type `[GrowingHashmapMapElemChar<ValueType>]` cannot be indexed by `i32`\n--> src/lib.rs:506:36",
+          "category": "compile failed",
+          "duration_s": 6.135
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.lookup",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "compile failed: error[E0308]: mismatched types\n--> src/lib.rs:506:9; error: could not compile `strsim` (lib) due to 1 previous error",
+          "category": "compile failed",
+          "duration_s": 2.33
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.lookup",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "compile failed: error[E0308]: mismatched types\n--> src/lib.rs:506:112; error[E0277]: no implementation for `u32 & usize`\n--> src/lib.rs:506:110; error[E0308]: mismatched types\n--> src/lib.rs:506:57",
+          "category": "compile failed",
+          "duration_s": 3.275
+        },
+        {
+          "symbol": "generic_hamming",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 11.379
+        },
+        {
+          "symbol": "generic_hamming",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "tests failed: error: test failed, to rerun pass `--lib`",
+          "category": "tests failed",
+          "duration_s": 5.236
+        },
+        {
+          "symbol": "generic_hamming",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 3.987
+        },
+        {
+          "symbol": "generic_jaro_winkler",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 9.58
+        },
+        {
+          "symbol": "generic_jaro_winkler",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "compile failed: error[E0308]: mismatched types\n--> src/lib.rs:193:5; error: could not compile `strsim` (lib) due to 1 previous error",
+          "category": "compile failed",
+          "duration_s": 1.844
+        },
+        {
+          "symbol": "generic_jaro_winkler",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 5.626
+        },
+        {
+          "symbol": "normalized_damerau_levenshtein",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "tests failed: error: test failed, to rerun pass `--lib`",
+          "category": "tests failed",
+          "duration_s": 8.157
+        },
+        {
+          "symbol": "normalized_damerau_levenshtein",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 4.19
+        },
+        {
+          "symbol": "normalized_damerau_levenshtein",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 3.593
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.get_mut",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 7.704
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.get_mut",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 4.303
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.get_mut",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 4.314
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.get",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "compile failed: error[E0599]: no method named `as_ref` found for struct `GrowingHashmapChar<ValueType>` in the current scope\n--> src/lib.rs:573:18; error[E0599]: no method named `lookup` found for reference `&HybridGrowingHashmapChar<ValueType>` in the current scope\n--> src/lib.rs:573:55; error: could not compile `strsim` (lib) due to 2 previous errors",
+          "category": "compile failed",
+          "duration_s": 5.725
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.get",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "compile failed: error[E0277]: the trait bound `usize: From<u32>` is not satisfied\n--> src/lib.rs:575:33; error: could not compile `strsim` (lib) due to 1 previous error",
+          "category": "compile failed",
+          "duration_s": 3.523
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.get",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "compile failed: error[E0308]: mismatched types\n--> src/lib.rs:573:16; error[E0599]: no method named `lookup` found for reference `&HybridGrowingHashmapChar<ValueType>` in the current scope\n--> src/lib.rs:573:49; error: could not compile `strsim` (lib) due to 2 previous errors",
+          "category": "compile failed",
+          "duration_s": 2.296
+        },
+        {
+          "symbol": "StrSimError.fmt",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 5.929
+        },
+        {
+          "symbol": "StrSimError.fmt",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 2.05
+        },
+        {
+          "symbol": "StrSimError.fmt",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "compile failed: error: expected pattern, found `{`\n--> src/lib.rs:39:37; error[E0425]: cannot find value `f` in this scope\n--> src/lib.rs:39:16; error: could not compile `strsim` (lib) due to 2 previous errors",
+          "category": "compile failed",
+          "duration_s": 2.734
+        },
+        {
+          "symbol": "normalized_levenshtein",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "tests failed: error: doctest failed, to rerun pass `--doc`",
+          "category": "tests failed",
+          "duration_s": 6.006
+        },
+        {
+          "symbol": "normalized_levenshtein",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 2.091
+        },
+        {
+          "symbol": "normalized_levenshtein",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 2.134
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.default",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 5.595
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.default",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 2.543
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.default",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 2.304
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.get",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "compile failed: error[E0308]: mismatched types\n--> src/lib.rs:462:45; error: could not compile `strsim` (lib) due to 1 previous error",
+          "category": "compile failed",
+          "duration_s": 5.731
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.get",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "compile failed: error[E0308]: mismatched types\n--> src/lib.rs:462:37; error: could not compile `strsim` (lib) due to 1 previous error",
+          "category": "compile failed",
+          "duration_s": 1.978
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.get",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 1.754
+        },
+        {
+          "symbol": "damerau_levenshtein",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 5.922
+        },
+        {
+          "symbol": "damerau_levenshtein",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 1.678
+        },
+        {
+          "symbol": "damerau_levenshtein",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 1.452
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.default",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "compile failed: error[E0599]: no associated function or constant named `new` found for struct `GrowingHashmapChar<ValueType>` in the current scope\n--> src/lib.rs:448:15; error: could not compile `strsim` (lib) due to 1 previous error",
+          "category": "compile failed",
+          "duration_s": 5.041
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.default",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 1.639
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.default",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 1.682
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.allocate",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 6.069
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.allocate",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 2.39
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.allocate",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 2.285
+        },
+        {
+          "symbol": "jaro_winkler",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 5.581
+        },
+        {
+          "symbol": "jaro_winkler",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 1.574
+        },
+        {
+          "symbol": "jaro_winkler",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 1.335
+        },
+        {
+          "symbol": "levenshtein",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 5.451
+        },
+        {
+          "symbol": "levenshtein",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 2.162
+        },
+        {
+          "symbol": "levenshtein",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 2.082
+        },
+        {
+          "symbol": "bigrams",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 4.605
+        },
+        {
+          "symbol": "bigrams",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 1.41
+        },
+        {
+          "symbol": "bigrams",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 1.322
+        }
+      ]
+    }
+  ],
+  "diffs": {}
+}

@@ -1,0 +1,625 @@
+{
+  "rung": "qwen3:8b",
+  "variant": "v2",
+  "crate": "strsim-rs",
+  "digest": "500a1f067a9f",
+  "loc_before": 1062,
+  "loc_after": 1062,
+  "loc_delta": 0,
+  "delta_pct": 0.0,
+  "attempts": 72,
+  "accepted_files": 0,
+  "funnel": {
+    "documentation changed": 6,
+    "duplicate proposal": 44,
+    "no canonical LOC reduction": 18,
+    "tests failed": 2,
+    "compile failed": 1,
+    "invalid syntax": 1
+  },
+  "wall_s": 2341.1,
+  "records": [
+    {
+      "path": "benches/benches.rs",
+      "model": "item-cli",
+      "digest": "500a1f067a9f",
+      "attempts": 0,
+      "accepted": false,
+      "category": "untried",
+      "reason": "",
+      "loc_before": 82,
+      "loc_after": 82,
+      "proposals": []
+    },
+    {
+      "path": "src/lib.rs",
+      "model": "item-cli",
+      "digest": "500a1f067a9f",
+      "attempts": 72,
+      "accepted": false,
+      "category": "duplicate proposal",
+      "reason": "",
+      "loc_before": 980,
+      "loc_after": 980,
+      "proposals": [
+        {
+          "symbol": "damerau_levenshtein_impl",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 107.928
+        },
+        {
+          "symbol": "damerau_levenshtein_impl",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 84.321
+        },
+        {
+          "symbol": "damerau_levenshtein_impl",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 86.01
+        },
+        {
+          "symbol": "generic_jaro",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 84.091
+        },
+        {
+          "symbol": "generic_jaro",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 73.849
+        },
+        {
+          "symbol": "generic_jaro",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 77.977
+        },
+        {
+          "symbol": "generic_damerau_levenshtein",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 93.285
+        },
+        {
+          "symbol": "generic_damerau_levenshtein",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 84.129
+        },
+        {
+          "symbol": "generic_damerau_levenshtein",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 83.382
+        },
+        {
+          "symbol": "osa_distance",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 58.685
+        },
+        {
+          "symbol": "osa_distance",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 53.231
+        },
+        {
+          "symbol": "osa_distance",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 51.102
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.grow",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 44.17
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.grow",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 34.602
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.grow",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 34.63
+        },
+        {
+          "symbol": "sorensen_dice",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 46.542
+        },
+        {
+          "symbol": "sorensen_dice",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 38.475
+        },
+        {
+          "symbol": "sorensen_dice",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 42.639
+        },
+        {
+          "symbol": "generic_levenshtein",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 36.763
+        },
+        {
+          "symbol": "generic_levenshtein",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 27.575
+        },
+        {
+          "symbol": "generic_levenshtein",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 30.291
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.get_mut",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 41.625
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.get_mut",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 31.55
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.get_mut",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 34.127
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.lookup",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 38.504
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.lookup",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 28.114
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.lookup",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 27.881
+        },
+        {
+          "symbol": "generic_hamming",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 28.685
+        },
+        {
+          "symbol": "generic_hamming",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 21.624
+        },
+        {
+          "symbol": "generic_hamming",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 24.414
+        },
+        {
+          "symbol": "generic_jaro_winkler",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 30.685
+        },
+        {
+          "symbol": "generic_jaro_winkler",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 26.396
+        },
+        {
+          "symbol": "generic_jaro_winkler",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 23.633
+        },
+        {
+          "symbol": "normalized_damerau_levenshtein",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 30.668
+        },
+        {
+          "symbol": "normalized_damerau_levenshtein",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 22.633
+        },
+        {
+          "symbol": "normalized_damerau_levenshtein",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "tests failed: error: doctest failed, to rerun pass `--doc`",
+          "category": "tests failed",
+          "duration_s": 15.806
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.get_mut",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "compile failed: error[E0425]: cannot find value `value` in this scope\n--> src/lib.rs:583:12; error[E0425]: cannot find value `value` in this scope\n--> src/lib.rs:584:47; error[E0425]: cannot find value `value` in this scope\n--> src/lib.rs:587:38",
+          "category": "compile failed",
+          "duration_s": 27.478
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.get_mut",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 99.077
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.get_mut",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 43.455
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.get",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 31.993
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.get",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "invalid syntax",
+          "category": "invalid syntax",
+          "duration_s": 9.273
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.get",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 11.459
+        },
+        {
+          "symbol": "StrSimError.fmt",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 21.626
+        },
+        {
+          "symbol": "StrSimError.fmt",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 11.277
+        },
+        {
+          "symbol": "StrSimError.fmt",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 12.788
+        },
+        {
+          "symbol": "normalized_levenshtein",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "tests failed: error: doctest failed, to rerun pass `--doc`",
+          "category": "tests failed",
+          "duration_s": 17.555
+        },
+        {
+          "symbol": "normalized_levenshtein",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 8.786
+        },
+        {
+          "symbol": "normalized_levenshtein",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 10.58
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.default",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 17.812
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.default",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 9.623
+        },
+        {
+          "symbol": "HybridGrowingHashmapChar<ValueType>.default",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 10.165
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.get",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 16.417
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.get",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 8.277
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.get",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 10.35
+        },
+        {
+          "symbol": "damerau_levenshtein",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 16.479
+        },
+        {
+          "symbol": "damerau_levenshtein",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 8.82
+        },
+        {
+          "symbol": "damerau_levenshtein",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 8.71
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.default",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 23.988
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.default",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 9.561
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.default",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 12.179
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.allocate",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 19.348
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.allocate",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 10.35
+        },
+        {
+          "symbol": "GrowingHashmapChar<ValueType>.allocate",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 14.457
+        },
+        {
+          "symbol": "jaro_winkler",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 32.594
+        },
+        {
+          "symbol": "jaro_winkler",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 18.347
+        },
+        {
+          "symbol": "jaro_winkler",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 21.189
+        },
+        {
+          "symbol": "levenshtein",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 15.75
+        },
+        {
+          "symbol": "levenshtein",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 6.938
+        },
+        {
+          "symbol": "levenshtein",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 10.497
+        },
+        {
+          "symbol": "bigrams",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 21.225
+        },
+        {
+          "symbol": "bigrams",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 6.268
+        },
+        {
+          "symbol": "bigrams",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 5.983
+        }
+      ]
+    }
+  ],
+  "diffs": {}
+}

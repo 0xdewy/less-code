@@ -51,3 +51,26 @@ reductions separately from tooling reductions, plus review failures and time.
 Do not train on test-gated acceptances: this experiment showed that those labels
 contain real regressions. Larger structural simplifications remain an unproven
 direction, not an implemented capability.
+
+## Rust expansion cohort must be selected before yield is measured
+
+Any proposed widening of the Rust cohort must be selected before measuring
+yield on it, under the same policy the Python expansion cohort followed:
+candidates qualify on realistic redundancy (compatibility shims kept for old
+callers, feature-gated code paths, hand-rolled CLI plumbing), not on whether
+a rule is known to fire. Hand-picking repositories because today's rule
+library scores well on them converts a benchmark into a demonstration. The
+frozen-test share of each candidate's denominator should be recorded
+alongside any yield number for the same reason.
+
+## Oracle v2: constructed self types
+
+The bounded v1 oracle refuses methods, which is where humantime's logic
+actually lives: all 5 functions its run changed take `&self`/`&mut self` (or
+a `Formatter`), so the oracle verified nothing on that crate. The natural
+extension is methods on constructible types: the shadow mod builds a value
+via `Default`/`new()` (plus field-wise simple constructors), calls
+`receiver.method(...)` on it for both bodies, and refuses anything whose
+receiver type is not constructible without generics, traits, or unsafe.
+Land this only after v1's mismatch-report shape has proven stable in use.
+

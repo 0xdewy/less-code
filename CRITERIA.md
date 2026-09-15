@@ -125,15 +125,42 @@ semantic-preservation target. See `bench/BASELINE.md` for the latest run and
 
 ## Out of scope / accepted trade-offs
 
-* No bundled LLM training or GPU requirement. The tool runs on CPU with
-  optional external static tools and accepts bounded model proposals.
-* No whole-file semantic rewrite by an LLM.
+* LLM training and whole-file rewrites are optional layers, never
+  requirements: the deterministic pipeline runs on CPU with optional
+  external static tools. When used, model proposals are just proposals -
+  every one passes the same formatter, docs, API, test and oracle gates
+  (see C9/C10 below; PLAN.md Phase 1/6).
 * Formatting as a reduction strategy is excluded — counting is done
   after canonical formatting at a fixed width, so joining lines or
   minifying buys nothing. Exception: a magic trailing comma is a source
   edit, not formatting config; its collapse is gated like any rewrite and
   reported as a separate layer and stat (`comma_collapse_loc`), never
   inside the semantic reduction figure.
+## C9 ml-file layer (PLAN.md Phase 1)
+`lc rewrite` and the `--ml-file-cli` shrink/corpus layers: whole-file Rust
+rewrites where test spans are masked (`/*__LC_FROZEN_N__*/` sentinels,
+restored byte-exact by the host - a dropped/reordered/duplicated sentinel is
+a reject), declarations and docs are host-verified, and the full cascade
+(syntax, symbol set, docs, width-88 AND project-rustfmt LOC, API, style,
+`cargo check`, frozen suite, differential oracle) gates every candidate.
+Reported as its OWN stat (`ml_file_loc`), never inside the deterministic
+figure. Model digests and prompts are recorded per attempt.
+
+## C10 learning track (PLAN.md Phase 6)
+Training never touches the exam: `training/anticontamination.py` scans every
+mined pair and dataset file for the four benchmark crates' names, repo URLs
+and pinned commits; a hit fails the build. `role = "eval"` crates are held
+out of every fine-tune. Promotion of a trained proposer onto the benchmark
+requires the held-out F3 win at equal call budget
+(`training/EVAL.md`); otherwise the trained model is recorded as a negative.
+
+## C11 test compaction (PLAN.md Phase 8, only if built)
+Mutation-certified test compaction requires the owner's explicit consent,
+`cargo-mutants` kill-superset safety (candidate kills every mutant the
+original tests kill, same mutant IDs; unmeasured mutants excluded from both
+sides), a consent flow like `lc propose`, and a separate stat
+(`test_compaction_loc`) - never inside the semantic figure.
+
 * The docs gate enforces the multiset contract documented in
   README.md (no comment or docstring added or removed). It does not
   pin column or line number, so a reformatting pass (prettier /

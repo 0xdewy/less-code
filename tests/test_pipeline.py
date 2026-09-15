@@ -747,6 +747,63 @@ def test_universe_drift_after_baseline_fails_loud(tmp_path):
         shrink_project(root)
 
 
+def _rust_project(tmp_path):
+    root = tmp_path / "tiny-rs"
+    root.mkdir()
+    (root / "Cargo.toml").write_text(
+        '[package]\nname = "tiny"\nversion = "0.1.0"\nedition = "2021"\n'
+    )
+    (root / "src").mkdir()
+    (root / "src" / "lib.rs").write_text(
+        "pub fn value(x: u64) -> u64 {\n"
+        "    let a = x;\n"
+        "    let b = x;\n"
+        "    a + b\n"
+        "}\n"
+        "\n"
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "    use super::value;\n"
+        "    #[test]\n"
+        "    fn doubles() {\n"
+        "        assert_eq!(value(3), 6);\n"
+        "    }\n"
+        "}\n"
+    )
+    return root
+
+
+def test_ml_rust_body_splicing_keeps_header_and_reduces(tmp_path, monkeypatch):
+    """Rust proposals carry only the body; the host re-attaches attrs, docs
+    and the signature byte-exact, so header-mangling rejections cannot happen."""
+    root = _rust_project(tmp_path)
+    model = _Model({"value": "x + x"})
+
+    stats = shrink_project(root, "rust", ml_backend=model, ml_attempts=1)
+
+    source = (root / "src" / "lib.rs").read_text()
+    assert "pub fn value(x: u64) -> u64 {" in source
+    assert "let a = x;" not in source
+    assert stats.tests_ok and stats.ml_stats["accepted"] == 1
+    assert stats.ml_records[0]["mode"] == "body"
+    assert stats.ml_records[0]["replacement"] == "x + x"
+
+
+def test_ml_rust_body_that_breaks_behavior_is_reverted(tmp_path, monkeypatch):
+    """A body-only proposal that changes behavior dies at the test gate and
+    never lands - the deterministic rule layer may still have shrunk the file,
+    so the claim is about the model's body, not the whole file."""
+    root = _rust_project(tmp_path)
+    model = _Model({"value": "0"})
+
+    stats = shrink_project(root, "rust", ml_backend=model, ml_attempts=1)
+
+    final = (root / "src" / "lib.rs").read_text()
+    assert "    0\n}" not in final
+    assert stats.ml_records[0]["reason"].startswith("tests failed")
+    assert stats.ml_stats["rejected_tests"] == 1
+
+
 def test_write_report_fails_loud_when_disk_truth_differs(tmp_path):
     root = tmp_path / "proj"
     root.mkdir()

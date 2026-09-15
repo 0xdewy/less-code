@@ -655,7 +655,9 @@ def test_ollama_adapter_has_explicit_reasoning_budget(
 
     def respond(request, timeout):
         payload = json.loads(request.data)
-        assert payload.get("think", False) == reasoning
+        # reasoning is explicitly disabled: chain-of-thought burns the
+        # wall-clock budget before the JSON is emitted
+        assert payload.get("think", False) is False
         assert payload["options"]["num_predict"] == (4096 if reasoning else 2048)
         assert timeout == (270 if reasoning else 90)
         return io.StringIO(json.dumps({"response": "null"}))
@@ -663,6 +665,89 @@ def test_ollama_adapter_has_explicit_reasoning_budget(
     monkeypatch.setattr(ollama.urllib.request, "urlopen", respond)
     ollama.main()
     assert capsys.readouterr().out.strip() == "null"
+
+
+_RUST_BODY_SOURCE = (
+    "use std::time::Duration;\n\n"
+    "/// Format a duration.\n"
+    "#[inline]\n"
+    "pub fn format_duration(d: Duration) -> String {\n"
+    "    let secs = d.as_secs();\n"
+    '    let out = format!("{}s", secs);\n'
+    "    out\n"
+    "}\n"
+)
+
+
+def _rust_body_symbol():
+    from less_code.ml_shrink import extract_symbols
+
+    return extract_symbols(_RUST_BODY_SOURCE, "rust", private_only=False)[0]
+
+
+def test_rust_body_edit_keeps_header_byte_exact():
+    """Body-only splicing exists because models mangle headers: attrs, docs
+    and the signature must survive the splice untouched."""
+    from less_code.ml_shrink import apply_body_edit
+
+    symbol = _rust_body_symbol()
+    head = _RUST_BODY_SOURCE[: _RUST_BODY_SOURCE.index("{") + 1]
+    candidate = apply_body_edit(
+        _RUST_BODY_SOURCE, symbol, 'format!("{}s", d.as_secs())'
+    )
+    assert candidate.startswith(head)
+    assert "/// Format a duration." in candidate
+    assert "#[inline]" in candidate
+    assert candidate.count("format_duration") == 1
+    assert "let secs" not in candidate
+
+
+def test_rust_body_edit_accepts_full_function_and_wrapped_replies():
+    """Be liberal: models keep ignoring the body-only contract."""
+    from less_code.ml_shrink import apply_body_edit
+
+    symbol = _rust_body_symbol()
+    body = 'format!("{}s", d.as_secs())'
+    direct = apply_body_edit(_RUST_BODY_SOURCE, symbol, body)
+    full = apply_body_edit(
+        _RUST_BODY_SOURCE,
+        symbol,
+        symbol["text"].replace(
+            'let secs = d.as_secs();\n    let out = format!("{}s", secs);\n    out',
+            body,
+        ),
+    )
+    wrapped = apply_body_edit(_RUST_BODY_SOURCE, symbol, "{\n    " + body + "\n}")
+    assert direct == full == wrapped
+
+
+def test_rust_body_edit_rejects_garbage():
+    import pytest
+
+    from less_code.ml_shrink import apply_body_edit
+
+    symbol = _rust_body_symbol()
+    for reply in (
+        "",
+        "   \n",
+        "fn totally_other(x: u8) { x }",
+        "fn format_duration( {",
+    ):
+        with pytest.raises(ValueError):
+            apply_body_edit(_RUST_BODY_SOURCE, symbol, reply)
+
+
+def test_rust_prompt_demands_body_only():
+    from less_code.ml_shrink import SYSTEM_PROMPT, SYSTEM_PROMPT_RUST, build_prompt
+
+    symbol = _rust_body_symbol()
+    rust_prompt = build_prompt("rust", symbol)
+    python_prompt = build_prompt("python", {"id": "x@0:1", "name": "x", "text": "x"})
+    assert "ONLY the function body" in rust_prompt
+    assert "WITHOUT the enclosing braces" in rust_prompt
+    assert "only the complete symbol including its declaration" in python_prompt
+    assert "complete signature" in rust_prompt and "complete signature" in SYSTEM_PROMPT
+    assert SYSTEM_PROMPT != SYSTEM_PROMPT_RUST
 
 
 def test_rust_inline_test_items_are_never_model_targets():
@@ -815,6 +900,97 @@ def test_rust_unbrace_match_arm_keeps_arm_types():
     assert "helper(c);" in reduced
 
 
+def test_rust_unbrace_match_arm_accepts_multiline_bodies():
+    """The recorded model acceptance was exactly the multi-line shape of this
+    rule. The per-candidate canonical-LOC check, not a single-line guard,
+    decides width-pinned sites: rustfmt re-wraps the candidate, and only a
+    strictly smaller canonical form is kept."""
+    from less_code.rust_rules import apply_rules
+
+    source = (
+        "fn f(c: char, out: &mut Option<u64>) -> Result<u64, ()> {\n"
+        "    match c {\n"
+        "            'x' => {\n"
+        "                return Err((\n"
+        '                    "long reason string",\n'
+        "                ));\n"
+        "            }\n"
+        "        '0'..='9' => {\n"
+        "            *out = Some(\n"
+        "                c as u64 - '0' as u64,\n"
+        "            );\n"
+        "        }\n"
+        "        'y' => {\n"
+        "            if out.is_some() {\n"
+        "                1\n"
+        "            } else {\n"
+        "                2\n"
+        "            }\n"
+        "        }\n"
+        "        _ => 0,\n"
+        "    }\n"
+        "}\n"
+    )
+    reduced, applied = apply_rules(source, {"unbrace-match-arm"})
+    # The `if`-tail arm is collected (see _collect_arm_unbrace) but rustfmt
+    # re-braces if-tail arms, so its canonical form is unchanged and the
+    # per-candidate LOC check declines it. Measured, not assumed.
+    assert applied == ["unbrace-match-arm"] * 2
+    assert "'x' => return Err((" in reduced
+    assert '"long reason string",' in reduced
+    assert "'0'..='9' => *out = Some(" in reduced
+    assert "'y' => {\n            if out.is_some() {" in reduced
+
+
+def test_rust_unbrace_match_arm_keeps_multi_statement_and_binding_blocks():
+    from less_code.rust_rules import apply_rules
+
+    source = (
+        "fn f(c: char) -> u64 {\n"
+        "    let mut n = 0u64;\n"
+        "    match c {\n"
+        "            'x' => {\n"
+        "                let unit;\n"
+        "            }\n"
+        "        '0'..='9' => {\n"
+        "            n = n\n"
+        "                .checked_mul(10)\n"
+        "                .unwrap_or(0);\n"
+        "            n = n + 1;\n"
+        "        }\n"
+        "        'z' => {\n"
+        "            helper(c);\n"
+        "            // trailing note\n"
+        "        }\n"
+        "        _ => {}\n"
+        "    }\n"
+        "    n\n"
+        "}\n"
+    )
+    reduced, applied = apply_rules(source, {"unbrace-match-arm"})
+    assert applied == []
+    assert "let unit;" in reduced
+    assert "n = n + 1;" in reduced
+    assert "// trailing note" in reduced
+
+
+def test_rust_unbrace_match_arm_declines_width_pinned_sites():
+    """rustfmt re-wraps both shapes to the same canonical text, so the
+    candidate is not strictly smaller: the honest answer is no edit."""
+    from less_code.rust_rules import apply_rules
+
+    name = "combination_of_alpha_beta_gamma_delta_epsilon_zeta_eta_theta_iota"
+    source = (
+        f"fn f(c: char) -> u64 {{\n"
+        f"    match c {{\n"
+        f"        'x' => {{ {name}(1_111, 222_222, 33_333) }}\n"
+        f"        _ => 0,\n"
+        f"    }}\n"
+        f"}}\n"
+    )
+    assert apply_rules(source, {"unbrace-match-arm"}) == (source, [])
+
+
 def test_rust_inline_single_use_binding_fires_on_a_bare_tail_expression():
     """`let result = a + b; result` (no `return`, no wrapping expression) is
     the idiomatic Rust shape this rule exists for. The ancestor walk that
@@ -838,6 +1014,52 @@ def test_rust_inline_single_use_binding_fires_on_a_bare_tail_expression():
     reduced, applied = apply_rules(explicit_return, {"inline-single-use-binding"})
     assert applied == ["inline-single-use-binding"]
     assert "return (a + b);" in reduced
+
+
+class TestCompileFeedback:
+    """Rustc errors must reach the model's retry feedback with identity and
+    location, not just the --explain hint that dominates the output tail."""
+
+    def test_extracts_rustc_errors_with_locations(self):
+        from less_code.testrunners import compile_feedback
+
+        output = (
+            "   Compiling humantime v2.1.0\n"
+            "error[E0308]: mismatched types\n"
+            "  --> src/duration.rs:123:45\n"
+            "   |\n"
+            "123 |     let x: u8 = value;\n"
+            "   |            ^^ expected `u8`, found integer\n"
+            "   |\n"
+            "   = note: several pages of explanation follow\n"
+            "error[E0425]: cannot find function `helper` in this scope\n"
+            "  --> src/lib.rs:9:5\n"
+            "   |\n"
+            "error: aborting due to 2 previous errors\n"
+            "For more information about this error, try `rustc --explain E0308`.\n"
+        )
+        feedback = compile_feedback(output)
+        assert "error[E0308]" in feedback
+        assert "src/duration.rs:123" in feedback
+        assert "error[E0425]" in feedback
+        assert "src/lib.rs:9" in feedback
+        # the explain hint and the code frame do not crowd out the identity
+        assert "explain E0308" not in feedback
+        assert len(feedback) <= 400
+
+    def test_assertion_failure_falls_back_to_tail(self):
+        from less_code.testrunners import compile_feedback
+
+        output = (
+            "running 1 test\ntest parse_bad ... FAILED\n\n"
+            "failures:\n\nfailures test result: FAILED. 0 passed; 1 failed; 0 ignored\n"
+        )
+        assert compile_feedback(output) == output[-200:]
+
+    def test_truncates_to_limit(self):
+        from less_code.testrunners import compile_feedback
+
+        assert len(compile_feedback("error[E0308]: " + "x" * 600)) == 400
 
 
 class TestParseTestsRun:

@@ -32,10 +32,12 @@ from .api_check import api_surface, api_violations
 from .comma import collapse_magic_commas
 from .documentation import documentation_layout
 from .langdetect import map_project
-from .loc import canonical_format, measure
+from .loc import canonical_format, measure, project_measure, rustfmt_config
+from .rust_shadow import changed_functions as rust_changed_functions
+from .rust_shadow import run_rust_shadow
 from .shadow import changed_functions, run_shadow
 from .static import static_pass
-from .testrunners import run_tests, shadowed_imports
+from .testrunners import compile_feedback, run_tests, shadowed_imports
 
 
 @dataclass
@@ -57,6 +59,9 @@ class ShrinkStats:
     comma_collapse_loc: int = 0
     ml_stats: dict[str, int] = field(default_factory=dict)
     ml_records: list[dict] = field(default_factory=list)
+    ml_file_loc: int = 0
+    ml_file_stats: dict[str, int] = field(default_factory=dict)
+    ml_file_records: list[dict] = field(default_factory=list)
     audit_records: list[dict] = field(default_factory=list)
     oracle: dict = field(default_factory=dict)
     gate_tests_run: int | None = None
@@ -83,6 +88,9 @@ class ShrinkStats:
             "layer_records": self.layer_records,
             "ml_stats": self.ml_stats,
             "ml_records": self.ml_records,
+            "ml_file_loc": self.ml_file_loc,
+            "ml_file_stats": self.ml_file_stats,
+            "ml_file_records": self.ml_file_records,
             "audit_records": self.audit_records,
             "oracle": self.oracle,
             "gate_tests_run": self.gate_tests_run,
@@ -205,6 +213,8 @@ def shrink_project(
     ml_attempts: int = 3,
     ml_symbols: int = 64,
     final_validator: Callable[[], bool] | None = None,
+    ml_file_backend: object | None = None,
+    ml_file_attempts: int = 3,
 ) -> ShrinkStats:
     if not 1 <= ml_attempts <= 3:
         raise ValueError("ml_attempts must be between 1 and 3")
@@ -316,6 +326,27 @@ def shrink_project(
 
     def project_style_ok(paths: list[Path]) -> bool:
         """Run configured format/lint checks on the files a layer changed."""
+        if project.lang == "rust":
+            config_path, edition = rustfmt_config(root)
+            if config_path is None:
+                return True
+            proc = subprocess.run(
+                [
+                    "rustfmt",
+                    "--check",
+                    "--edition",
+                    edition,
+                    "--config-path",
+                    config_path,
+                    *[str(path) for path in paths],
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            return proc.returncode == 0
         if project.lang != "python" or shutil.which("ruff") is None:
             return True
         config = _project_ruff_config(root)
@@ -340,6 +371,18 @@ def shrink_project(
             ).returncode
             == 0
             for command in commands
+        )
+
+    def _project_rustfmt_drops(changes: dict[str, str], pre: dict[Path, str]) -> bool:
+        """True when every changed rust file also shrinks under the project's
+        OWN rustfmt config. A join that survives width 88 but re-splits under
+        the project's rustfmt.toml must be rejected, never counted. `pre` is
+        the pre-write snapshot: the comparison is candidate vs original."""
+        return all(
+            project_measure(text, root).code
+            < project_measure(pre[Path(path)], root).code
+            for path, text in changes.items()
+            if Path(path) in pre
         )
 
     def _gate_layer(
@@ -413,12 +456,35 @@ def shrink_project(
                 True,
                 "unchanged",
             )
+        if project.lang == "rust":
+            # A syntactically broken candidate would make the canonical
+            # formatter reject it and `measure()` fall back to raw LOC - the
+            # formatter-fallback masking class. Parse every changed file
+            # before any LOC is counted (the comma layer's lesson, rust side).
+            from .ml_shrink import syntax_ok
+
+            broken = [
+                path for path, text_ in changes.items() if not syntax_ok(text_, "rust")
+            ]
+            if broken:
+                return (
+                    _tree_loc(project.source_files, project.lang),
+                    list(notes),
+                    False,
+                    f"invalid syntax: {broken[0]} does not parse",
+                )
         pre_loc = _tree_loc(project.source_files, project.lang)
         _write_changes(changes)
         loc_after = _tree_loc(project.source_files, project.lang)
         reason = ""
         if loc_after >= pre_loc:
             reason = "no canonical LOC reduction"
+        elif (
+            project.lang == "rust"
+            and rustfmt_config(root)[0] is not None
+            and not _project_rustfmt_drops(changes, current)
+        ):
+            reason = "no canonical LOC reduction under the project's rustfmt config"
         elif not project_style_ok([Path(path) for path in changes]):
             reason = "project lint/format failed"
         elif not docs_preserved(_snapshot(project.source_files)):
@@ -432,7 +498,7 @@ def shrink_project(
         if not reason:
             check = runner(root, project.lang)
             if not check.ok:
-                reason = f"tests failed: {check.output_tail[-200:]}"
+                reason = f"tests failed: {compile_feedback(check.output_tail)}"
         if not reason and project.lang == "python":
             # Differential oracle: every rewritten function's original body
             # runs alongside it for the whole suite. Cumulative against the
@@ -447,6 +513,18 @@ def shrink_project(
                     reason = (
                         f"shadow oracle mismatch in {first['file']}:{first['function']}"
                         f" ({first['examples'][0]['kind'] if first['examples'] else 'n/a'})"
+                    )
+        if not reason and project.lang == "rust":
+            # Differential oracle, Rust flavor: appended __lc_shadow mod runs
+            # each rewritten function's original body beside it. Refused
+            # functions are unverified, never a mismatch.
+            spec = rust_changed_functions(pristine, _snapshot(project.source_files))
+            if spec:
+                report = run_rust_shadow(root, spec, test_command, test_timeout)
+                if report.mismatches:
+                    first = report.mismatches[0]
+                    reason = (
+                        f"rust shadow mismatch in {first['file']}:{first['function']}"
                     )
         if os.environ.get("LC_TRACE"):
             print(
@@ -746,10 +824,70 @@ def shrink_project(
                     audit_rollback=True,
                 )
 
+    if ml_file_backend is not None and project.lang == "rust":
+        from .ml_file import default_gate, rewrite_tree
+
+        pre_loc = _tree_loc(project.source_files, project.lang)
+        file_checkpoint = _snapshot(project.source_files)
+        gate = default_gate(root, file_checkpoint, test_timeout, test_command)
+        stats.ml_file_stats, stats.ml_file_records = rewrite_tree(
+            root,
+            project.source_files,
+            ml_file_backend,
+            gate,
+            attempts=ml_file_attempts,
+        )
+        final_file_loc = _tree_loc(project.source_files, project.lang)
+        stats.ml_file_loc = pre_loc - final_file_loc
+        stats.static_notes.append(
+            f"ml-file: {stats.ml_file_stats.get('accepted_files', 0)} file(s),"
+            f" -{stats.ml_file_loc} LOC"
+        )
+        stats.layer_records.append(
+            {
+                "layer": "ml-file",
+                "loc_before": pre_loc,
+                "loc_after": final_file_loc,
+                "committed": final_file_loc < pre_loc,
+                "notes": [
+                    f"{r['path']}: {r['category']} ({r['reason'][:120]})"
+                    if not r["accepted"]
+                    else f"{r['path']}: accepted -{r['loc_before'] - r['loc_after']} LOC"
+                    for r in stats.ml_file_records
+                ],
+            }
+        )
+        if final_validator is not None:
+            try:
+                file_ok = final_validator()
+            except Exception:
+                _restore(file_checkpoint)
+                raise
+            stats.audit_records.append({"stage": "ml-file", "passed": file_ok})
+            if not file_ok:
+                _restore(file_checkpoint)
+                stats.static_notes.append(
+                    "ml-file audit failed; restored pre-file-layer checkpoint"
+                )
+                stats.ml_file_stats["rolled_back"] = stats.ml_file_stats.get(
+                    "accepted_files", 0
+                )
+                stats.ml_file_loc = 0
+                stats.layer_records[-1].update(
+                    committed=False,
+                    loc_after=pre_loc,
+                    audit_rollback=True,
+                )
+
     stats.loc_final = _tree_loc(project.source_files, project.lang)
     if project.lang == "python":
         final_spec = changed_functions(pristine, _snapshot(project.source_files))
         stats.oracle = run_shadow(
+            root, final_spec, test_command, test_timeout
+        ).to_json()
+    elif project.lang == "rust":
+        final_spec = rust_changed_functions(pristine, _snapshot(project.source_files))
+        stats.oracle = run_rust_shadow(
             root, final_spec, test_command, test_timeout
         ).to_json()
 

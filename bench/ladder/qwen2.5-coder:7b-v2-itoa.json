@@ -1,0 +1,345 @@
+{
+  "rung": "qwen2.5-coder:7b",
+  "variant": "v2",
+  "crate": "itoa",
+  "digest": "dae161e27b0e",
+  "loc_before": 414,
+  "loc_after": 414,
+  "loc_delta": 0,
+  "delta_pct": 0.0,
+  "attempts": 34,
+  "accepted_files": 0,
+  "funnel": {
+    "no canonical LOC reduction": 7,
+    "duplicate proposal": 15,
+    "model error": 1,
+    "documentation changed": 11
+  },
+  "wall_s": 442.4,
+  "records": [
+    {
+      "path": "benches/bench.rs",
+      "model": "item-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 4,
+      "accepted": false,
+      "category": "model error",
+      "reason": "",
+      "loc_before": 36,
+      "loc_after": 36,
+      "proposals": [
+        {
+          "symbol": "do_bench",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 11.242
+        },
+        {
+          "symbol": "do_bench",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 11.479
+        },
+        {
+          "symbol": "do_bench",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 11.307
+        },
+        {
+          "symbol": "bench",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "model error: ValueError: model returned a different function",
+          "category": "model error",
+          "duration_s": 21.924
+        }
+      ]
+    },
+    {
+      "path": "fuzz/fuzz_targets/fuzz_itoa.rs",
+      "model": "item-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 0,
+      "accepted": false,
+      "category": "untried",
+      "reason": "",
+      "loc_before": 47,
+      "loc_after": 47,
+      "proposals": []
+    },
+    {
+      "path": "src/lib.rs",
+      "model": "item-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 27,
+      "accepted": false,
+      "category": "duplicate proposal",
+      "reason": "",
+      "loc_before": 315,
+      "loc_after": 315,
+      "proposals": [
+        {
+          "symbol": "u128.fmt",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 32.131
+        },
+        {
+          "symbol": "u128.fmt",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 4.444
+        },
+        {
+          "symbol": "u128.fmt",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 4.233
+        },
+        {
+          "symbol": "enc_16lsd",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 26.948
+        },
+        {
+          "symbol": "enc_16lsd",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 24.366
+        },
+        {
+          "symbol": "enc_16lsd",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 23.916
+        },
+        {
+          "symbol": "div_rem_1e16",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 14.878
+        },
+        {
+          "symbol": "div_rem_1e16",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 12.076
+        },
+        {
+          "symbol": "div_rem_1e16",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 11.9
+        },
+        {
+          "symbol": "slice_buffer_to_str",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 6.805
+        },
+        {
+          "symbol": "slice_buffer_to_str",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 3.93
+        },
+        {
+          "symbol": "slice_buffer_to_str",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 5.853
+        },
+        {
+          "symbol": "Buffer.format",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 8.053
+        },
+        {
+          "symbol": "Buffer.format",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 5.022
+        },
+        {
+          "symbol": "Buffer.format",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 5.141
+        },
+        {
+          "symbol": "divmod100",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 10.169
+        },
+        {
+          "symbol": "divmod100",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 10.69
+        },
+        {
+          "symbol": "divmod100",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 10.877
+        },
+        {
+          "symbol": "Buffer.new",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 6.772
+        },
+        {
+          "symbol": "Buffer.new",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 3.547
+        },
+        {
+          "symbol": "Buffer.new",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 3.884
+        },
+        {
+          "symbol": "Buffer.clone",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 21.9
+        },
+        {
+          "symbol": "Buffer.clone",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 14.937
+        },
+        {
+          "symbol": "Buffer.clone",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 14.856
+        },
+        {
+          "symbol": "Buffer.default",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 23.871
+        },
+        {
+          "symbol": "Buffer.default",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 11.203
+        },
+        {
+          "symbol": "Buffer.default",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 2.998
+        }
+      ]
+    },
+    {
+      "path": "src/u128_ext.rs",
+      "model": "item-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 3,
+      "accepted": false,
+      "category": "documentation changed",
+      "reason": "",
+      "loc_before": 16,
+      "loc_after": 16,
+      "proposals": [
+        {
+          "symbol": "mulhi",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 15.691
+        },
+        {
+          "symbol": "mulhi",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 24.377
+        },
+        {
+          "symbol": "mulhi",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 13.757
+        }
+      ]
+    }
+  ],
+  "diffs": {}
+}

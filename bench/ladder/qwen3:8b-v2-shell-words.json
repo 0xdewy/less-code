@@ -1,0 +1,140 @@
+{
+  "rung": "qwen3:8b",
+  "variant": "v2",
+  "crate": "shell-words",
+  "digest": "500a1f067a9f",
+  "loc_before": 353,
+  "loc_after": 353,
+  "loc_delta": 0,
+  "delta_pct": 0.0,
+  "attempts": 13,
+  "accepted_files": 0,
+  "funnel": {
+    "model error": 1,
+    "no canonical LOC reduction": 3,
+    "invalid syntax": 1,
+    "documentation changed": 2,
+    "duplicate proposal": 6
+  },
+  "wall_s": 593.4,
+  "records": [
+    {
+      "path": "src/lib.rs",
+      "model": "item-cli",
+      "digest": "500a1f067a9f",
+      "attempts": 13,
+      "accepted": false,
+      "category": "duplicate proposal",
+      "reason": "",
+      "loc_before": 353,
+      "loc_after": 353,
+      "proposals": [
+        {
+          "symbol": "split",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama.py qwen3:8b' timed out after 240.0 seconds",
+          "category": "model error",
+          "duration_s": 240.105
+        },
+        {
+          "symbol": "escape_style",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 109.504
+        },
+        {
+          "symbol": "escape_style",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "invalid syntax",
+          "category": "invalid syntax",
+          "duration_s": 51.094
+        },
+        {
+          "symbol": "escape_style",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 31.008
+        },
+        {
+          "symbol": "quote",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 41.958
+        },
+        {
+          "symbol": "quote",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "documentation changed",
+          "duration_s": 22.773
+        },
+        {
+          "symbol": "quote",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 36.424
+        },
+        {
+          "symbol": "join",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "no canonical LOC reduction",
+          "duration_s": 16.021
+        },
+        {
+          "symbol": "join",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 12.997
+        },
+        {
+          "symbol": "join",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 12.724
+        },
+        {
+          "symbol": "ParseError.fmt",
+          "attempt": 1,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 8.379
+        },
+        {
+          "symbol": "ParseError.fmt",
+          "attempt": 2,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 5.399
+        },
+        {
+          "symbol": "ParseError.fmt",
+          "attempt": 3,
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate proposal",
+          "duration_s": 4.842
+        }
+      ]
+    }
+  ],
+  "diffs": {}
+}

@@ -58,6 +58,33 @@ def _parse_tests_run(output: str) -> int | None:
     return None
 
 
+_RUSTC_ERROR_RE = re.compile(r"^error(?:\[E\d{4}\])?: .*$", re.MULTILINE)
+
+
+def compile_feedback(output: str, limit: int = 400) -> str:
+    """The retry feedback for a failed candidate. A rustc failure prints the
+    error identity and its `--> file:line:col` at the TOP and buries them
+    under the --explain hint at the bottom, so the last 200 chars carry no
+    error name and no location. Extract up to three error/location pairs
+    instead; anything else (an assertion failure, say) keeps the old tail.
+    Harmless for other languages - the pattern only matches rustc output."""
+    pairs: list[str] = []
+    lines = output.splitlines()
+    for index, line in enumerate(lines):
+        if not _RUSTC_ERROR_RE.match(line):
+            continue
+        pair = line
+        # rustc indents the location under the error line ("  --> src/f.rs:1:5")
+        if index + 1 < len(lines) and lines[index + 1].strip().startswith("--> "):
+            pair += "\n" + lines[index + 1].strip()
+        pairs.append(pair)
+        if len(pairs) == 3:
+            break
+    if not pairs:
+        return output[-200:]
+    return "; ".join(pairs)[:limit]
+
+
 def _run(
     cmd: list[str], cwd: Path, timeout: int, env: dict[str, str] | None = None
 ) -> TestResult:

@@ -1,0 +1,230 @@
+{
+  "rung": "qwen2.5-coder:7b",
+  "variant": "v1",
+  "crate": "humantime",
+  "digest": "dae161e27b0e",
+  "loc_before": 1517,
+  "loc_after": 1517,
+  "loc_delta": 0,
+  "delta_pct": 0.0,
+  "attempts": 16,
+  "accepted_files": 0,
+  "funnel": {
+    "sentinel": 1,
+    "backend": 2,
+    "docs": 3,
+    "syntax": 4,
+    "duplicate": 2,
+    "symbol-set": 4
+  },
+  "wall_s": 2005.0,
+  "records": [
+    {
+      "path": "src/duration.rs",
+      "model": "file-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 2,
+      "accepted": false,
+      "category": "backend",
+      "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen2.5-coder:7b' timed out after 240.0 seconds",
+      "loc_before": 727,
+      "loc_after": 727,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "d70a84907462e8a339a826082e117b1a364f45b32f108037da0102a08a3a27cb",
+          "accepted": false,
+          "reason": "sentinel integrity violated: a frozen test marker was dropped, reordered, duplicated or edited",
+          "category": "sentinel",
+          "duration_s": 106.533
+        },
+        {
+          "attempt": 2,
+          "prompt_sha256": "d70a84907462e8a339a826082e117b1a364f45b32f108037da0102a08a3a27cb",
+          "accepted": false,
+          "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen2.5-coder:7b' timed out after 240.0 seconds",
+          "category": "backend",
+          "duration_s": 240.102
+        }
+      ]
+    },
+    {
+      "path": "src/date.rs",
+      "model": "file-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 2,
+      "accepted": false,
+      "category": "backend",
+      "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen2.5-coder:7b' timed out after 240.0 seconds",
+      "loc_before": 613,
+      "loc_after": 613,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "a475a4d0e7dd3bf9a6c88c801f2c96c34d403582baa3d83db22cbfebff9f4ca0",
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "docs",
+          "duration_s": 237.137
+        },
+        {
+          "attempt": 2,
+          "prompt_sha256": "a475a4d0e7dd3bf9a6c88c801f2c96c34d403582baa3d83db22cbfebff9f4ca0",
+          "accepted": false,
+          "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen2.5-coder:7b' timed out after 240.0 seconds",
+          "category": "backend",
+          "duration_s": 240.103
+        }
+      ]
+    },
+    {
+      "path": "src/wrapper.rs",
+      "model": "file-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 3,
+      "accepted": false,
+      "category": "syntax",
+      "reason": "invalid syntax",
+      "loc_before": 79,
+      "loc_after": 79,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "a949efcff1c3e19b49c2d9b8c0aead68d519406a574f77031c4f98142d09bc3b",
+          "accepted": false,
+          "reason": "invalid syntax",
+          "category": "syntax",
+          "duration_s": 138.739
+        },
+        {
+          "attempt": 2,
+          "prompt_sha256": "a949efcff1c3e19b49c2d9b8c0aead68d519406a574f77031c4f98142d09bc3b",
+          "accepted": false,
+          "reason": "invalid syntax",
+          "category": "syntax",
+          "duration_s": 125.906
+        },
+        {
+          "attempt": 3,
+          "prompt_sha256": "a949efcff1c3e19b49c2d9b8c0aead68d519406a574f77031c4f98142d09bc3b",
+          "accepted": false,
+          "reason": "invalid syntax",
+          "category": "syntax",
+          "duration_s": 111.887
+        }
+      ]
+    },
+    {
+      "path": "benches/datetime_format.rs",
+      "model": "file-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 3,
+      "accepted": false,
+      "category": "duplicate",
+      "reason": "duplicate proposal",
+      "loc_before": 51,
+      "loc_after": 51,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "51df8d3ad15b34bee036a12436992328e5c115bddbcd3ad56ca96860fff2fab3",
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "docs",
+          "duration_s": 94.451
+        },
+        {
+          "attempt": 2,
+          "prompt_sha256": "51df8d3ad15b34bee036a12436992328e5c115bddbcd3ad56ca96860fff2fab3",
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "docs",
+          "duration_s": 89.237
+        },
+        {
+          "attempt": 3,
+          "prompt_sha256": "51df8d3ad15b34bee036a12436992328e5c115bddbcd3ad56ca96860fff2fab3",
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate",
+          "duration_s": 90.934
+        }
+      ]
+    },
+    {
+      "path": "src/lib.rs",
+      "model": "file-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 3,
+      "accepted": false,
+      "category": "duplicate",
+      "reason": "duplicate proposal",
+      "loc_before": 14,
+      "loc_after": 14,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "f5c5cccbd865a29ad39fef70cc36ae76aa170204a7f01911903d771f090ae975",
+          "accepted": false,
+          "reason": "symbol set could not be extracted",
+          "category": "symbol-set",
+          "duration_s": 111.637
+        },
+        {
+          "attempt": 2,
+          "prompt_sha256": "f5c5cccbd865a29ad39fef70cc36ae76aa170204a7f01911903d771f090ae975",
+          "accepted": false,
+          "reason": "symbol set could not be extracted",
+          "category": "symbol-set",
+          "duration_s": 91.962
+        },
+        {
+          "attempt": 3,
+          "prompt_sha256": "f5c5cccbd865a29ad39fef70cc36ae76aa170204a7f01911903d771f090ae975",
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate",
+          "duration_s": 99.893
+        }
+      ]
+    },
+    {
+      "path": "benches/datetime_parse.rs",
+      "model": "file-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 3,
+      "accepted": false,
+      "category": "syntax",
+      "reason": "invalid syntax",
+      "loc_before": 33,
+      "loc_after": 33,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "b8af3c2f3b529f8ac5bd2f1959bd1f53a6d328aa69fe83c8f3086ba0d054f64f",
+          "accepted": false,
+          "reason": "symbol vanished: datetime_utc_parse_millis",
+          "category": "symbol-set",
+          "duration_s": 77.344
+        },
+        {
+          "attempt": 2,
+          "prompt_sha256": "b8af3c2f3b529f8ac5bd2f1959bd1f53a6d328aa69fe83c8f3086ba0d054f64f",
+          "accepted": false,
+          "reason": "symbol vanished: datetime_utc_parse_millis",
+          "category": "symbol-set",
+          "duration_s": 64.243
+        },
+        {
+          "attempt": 3,
+          "prompt_sha256": "b8af3c2f3b529f8ac5bd2f1959bd1f53a6d328aa69fe83c8f3086ba0d054f64f",
+          "accepted": false,
+          "reason": "invalid syntax",
+          "category": "syntax",
+          "duration_s": 78.38
+        }
+      ]
+    }
+  ],
+  "diffs": {}
+}

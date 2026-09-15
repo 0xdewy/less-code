@@ -1,0 +1,156 @@
+{
+  "rung": "qwen2.5-coder:7b",
+  "variant": "v1",
+  "crate": "itoa",
+  "digest": "dae161e27b0e",
+  "loc_before": 414,
+  "loc_after": 414,
+  "loc_delta": 0,
+  "delta_pct": 0.0,
+  "attempts": 10,
+  "accepted_files": 0,
+  "funnel": {
+    "backend": 1,
+    "symbol-set": 2,
+    "duplicate": 1,
+    "syntax": 3,
+    "docs": 2,
+    "loc": 1
+  },
+  "wall_s": 475.5,
+  "records": [
+    {
+      "path": "src/lib.rs",
+      "model": "file-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 1,
+      "accepted": false,
+      "category": "backend",
+      "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen2.5-coder:7b' timed out after 240.0 seconds",
+      "loc_before": 315,
+      "loc_after": 315,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "d0edea7c590aeb58c4093a6ce25c32cf3d9d941a5c82f398e0934d2826ad423e",
+          "accepted": false,
+          "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen2.5-coder:7b' timed out after 240.0 seconds",
+          "category": "backend",
+          "duration_s": 240.104
+        }
+      ]
+    },
+    {
+      "path": "fuzz/fuzz_targets/fuzz_itoa.rs",
+      "model": "file-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 3,
+      "accepted": false,
+      "category": "duplicate",
+      "reason": "duplicate proposal",
+      "loc_before": 47,
+      "loc_after": 47,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "e06d8942af90f04645ff0f58b66cb714751d0a9d969dc82da590f24b9d3823a9",
+          "accepted": false,
+          "reason": "symbol set could not be extracted",
+          "category": "symbol-set",
+          "duration_s": 25.02
+        },
+        {
+          "attempt": 2,
+          "prompt_sha256": "e06d8942af90f04645ff0f58b66cb714751d0a9d969dc82da590f24b9d3823a9",
+          "accepted": false,
+          "reason": "symbol set could not be extracted",
+          "category": "symbol-set",
+          "duration_s": 25.346
+        },
+        {
+          "attempt": 3,
+          "prompt_sha256": "e06d8942af90f04645ff0f58b66cb714751d0a9d969dc82da590f24b9d3823a9",
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate",
+          "duration_s": 24.861
+        }
+      ]
+    },
+    {
+      "path": "benches/bench.rs",
+      "model": "file-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 3,
+      "accepted": false,
+      "category": "syntax",
+      "reason": "invalid syntax",
+      "loc_before": 36,
+      "loc_after": 36,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "61c381ee794e1c8e6532a7c783469e3b1e9b504f035acad5f875014306951d1f",
+          "accepted": false,
+          "reason": "invalid syntax",
+          "category": "syntax",
+          "duration_s": 35.898
+        },
+        {
+          "attempt": 2,
+          "prompt_sha256": "61c381ee794e1c8e6532a7c783469e3b1e9b504f035acad5f875014306951d1f",
+          "accepted": false,
+          "reason": "invalid syntax",
+          "category": "syntax",
+          "duration_s": 37.882
+        },
+        {
+          "attempt": 3,
+          "prompt_sha256": "61c381ee794e1c8e6532a7c783469e3b1e9b504f035acad5f875014306951d1f",
+          "accepted": false,
+          "reason": "invalid syntax",
+          "category": "syntax",
+          "duration_s": 30.401
+        }
+      ]
+    },
+    {
+      "path": "src/u128_ext.rs",
+      "model": "file-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 3,
+      "accepted": false,
+      "category": "docs",
+      "reason": "documentation changed",
+      "loc_before": 16,
+      "loc_after": 16,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "d3185f4b411ee5653deae7d66e6631c410ef41511f1f933c19e5acf80be7675f",
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "docs",
+          "duration_s": 16.23
+        },
+        {
+          "attempt": 2,
+          "prompt_sha256": "d3185f4b411ee5653deae7d66e6631c410ef41511f1f933c19e5acf80be7675f",
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "loc",
+          "duration_s": 16.268
+        },
+        {
+          "attempt": 3,
+          "prompt_sha256": "d3185f4b411ee5653deae7d66e6631c410ef41511f1f933c19e5acf80be7675f",
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "docs",
+          "duration_s": 15.789
+        }
+      ]
+    }
+  ],
+  "diffs": {}
+}

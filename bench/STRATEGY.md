@@ -344,3 +344,93 @@ still fails loud as stale. Unit tests cover consecutive adjacent deletions
 and a group spanning a region another group deleted. Demo re-run: 8/8
 groups applied in one invocation, gates green, 8,967 -> 8,943 canonical LOC
 = 0.27% deleted; group-claimed LOC now equals disk LOC exactly.
+
+## Rust yield: what cannot move the number, and what did (2026-09-13, same day)
+
+**Rust comma-collapse is zero, by measurement, and is not worth building.** A
+tree-sitter-sound experiment collapsed every magic trailing comma in the four
+pinned Rust crates and rustfmt re-canonicalized all of them back to the
+original line counts: 0 LOC on itoa, humantime, shell-words and strsim-rs.
+rustfmt is width-driven, not comma-driven - where it collapses it drops
+commas itself, and where it explodes arguments it re-adds them, so no comma
+state survives canonicalization. Methodology note: the first version of that
+experiment claimed +22 lines because it counted LOC through
+`canonical_format`'s failure fallback - rustfmt rejected the broken candidate,
+`measure()` silently counted the raw text, and a formatting bug looked like a
+reduction. Every LOC path that runs a candidate through a formatter now
+parses the candidate itself and rejects it when the tree has errors
+(formatter-fallback masking, closed as a bug class in `apply_rules`).
+
+**The Rust model layer's 26 recorded proposals die on the header, not the
+body.** Taxonomy from `model-experiment.json` (qwen2.5-coder:7b, rust
+cohorts): 8 "documentation changed", 6 "declaration changed", 5 "no canonical
+LOC reduction", 4 tests failed (all rustc compile errors: E0308, E0425, E0277,
+E0599), 2 invalid syntax, 1 accepted. The lone acceptance was a multi-line
+match-arm unbracing - a shape the deterministic `unbrace-match-arm` rule
+declined because it required single-line bodies. The rule now accepts
+multi-line bodies (width-pinned sites still fail the per-candidate canonical
+LOC check, which is the honest answer), and the model interface was changed
+structurally: Rust proposals now carry only the function body and the host
+re-attaches attributes, docs and the signature byte-exact, so the two header
+rejection classes cannot occur.
+
+**Frozen inline `#[cfg(test)]` code dominates three of the four Rust
+denominators** - 44.6% of humantime, 41.4% of shell-words, 51.5% of
+strsim-rs, against 3.1% of itoa. `test_spans()` freezes these correctly; the
+consequence is arithmetic, not a bug: cross-language reduction percentages
+understate Rust's non-test yield by roughly 1.7-2x, and cross-language
+comparisons against Python (whose test code lives outside the counted files)
+are not like-for-like. A bounded differential shadow oracle for Rust rewrites
+shipped the same day (refused functions count as unverified, never as
+failures), with the same contract as the Python oracle: it may only reject
+more, never accept more.
+
+
+**Review addendum (same day): the oracle's first cut was blind on `no_std`
+crates.** Verification of the handoff reproduced every corpus number, then
+chased itoa's `tests_ok=False`: the generated shadow mod used bare
+`vec!`/`println!`/`format!("{:?}", ..)`, which come from the std macro
+prelude and do not exist inside a `#![no_std]` crate - every no_std target
+silently degraded to "unverified" (conservative, but no verification). The
+mod now emits `extern crate std;` (legal in a cfg(test) module because the
+test harness links std either way), unrolls the input cases (no `vec!`),
+writes markers through the built-in `format_args!`, and reads them from a
+temp file instead of the 4000-char output tail, where rustc warnings had
+been pushing stdout markers out of the parse window. Two generator bugs the
+same review caught by execution, now unit-regressed: `let a = x, b = y;`
+is not Rust syntax (one `let` per binding), and `json.dumps` produces
+escape sequences (`\uXXXX`, lone surrogates) that Rust string literals
+reject - non-ASCII reprs stay raw UTF-8. itoa's oracle now exercises
+`div_rem_1e16` + `mulhi` (42 calls, 0 mismatches) instead of nothing.
+
+## Re-opened verdicts and why (2026-09-14, the Rust plan)
+
+Three earlier negatives were re-examined with receipts; the sections above
+stay because they are what not-trying looked like.
+
+1. "7B whole-file rewriting did not survive validator hardening" (commit
+   330f979 deleted the 14.29%-on-rust result from 90073b1). What actually
+   died was the interface: the model had to emit header-exact, docs-exact
+   symbols. The capability was never refuted; the contract was made
+   unlearnable and the model was blamed. Response: `less_code/ml_file.py`
+   rebuilds whole-file rewriting with host-owned interfaces - test spans are
+   masked with sentinels the model must copy through, declarations are
+   re-attached by the host, and the full gate stack disposes.
+2. The `REFACTOR.md` deletion (+0.18% vs >= 2%, one model, one prompt, one
+   iteration budget). One shot is not a measurement. The delete-on-first-
+   miss clause is repealed by the Iteration Protocol: >= 2 models x >= 2
+   structurally different interfaces x >= 3 gate-feedback retries per
+   target, with the dominant rejection category named and re-measured after
+   each fix, before any model-dependent feature may be declared failed.
+3. The "26 LOC" per-symbol verdict predates the body-only Rust interface
+   (`SYSTEM_PROMPT_RUST`, `apply_body_edit`): 14 of those 26 proposals died
+   reproducing headers/docs - a defect since fixed structurally. The ceiling
+   is re-measured through the fixed interfaces by the model ladder
+   (`bench/rust_ladder.py`, `bench/LADDER.md`).
+
+The Iteration Protocol does not forbid deletion - a negative that passes it
+is respected like any other measurement. What it forbids is declaring
+failure while the funnel has untried fixes. The Phase 2/3/6 measurements
+this section promises live in `bench/LADDER.md`, `bench/HARVEST.md`, and
+`training/EVAL.md` respectively; `bench/RUST10.md` carries the weighted
+result against the 10% bar.

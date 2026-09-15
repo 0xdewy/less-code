@@ -1,0 +1,58 @@
+{
+  "rung": "qwen2.5-coder:7b",
+  "variant": "v1",
+  "crate": "shell-words",
+  "digest": "dae161e27b0e",
+  "loc_before": 353,
+  "loc_after": 353,
+  "loc_delta": 0,
+  "delta_pct": 0.0,
+  "attempts": 3,
+  "accepted_files": 0,
+  "funnel": {
+    "docs": 1,
+    "syntax": 1,
+    "sentinel": 1
+  },
+  "wall_s": 387.3,
+  "records": [
+    {
+      "path": "src/lib.rs",
+      "model": "file-cli",
+      "digest": "dae161e27b0e",
+      "attempts": 3,
+      "accepted": false,
+      "category": "sentinel",
+      "reason": "sentinel integrity violated: a frozen test marker was dropped, reordered, duplicated or edited",
+      "loc_before": 353,
+      "loc_after": 353,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "287096b546e17aa626a0bb8eb12f42816de7224f79d49d1dfeb09cf1ce156c11",
+          "accepted": false,
+          "reason": "documentation changed",
+          "category": "docs",
+          "duration_s": 167.151
+        },
+        {
+          "attempt": 2,
+          "prompt_sha256": "287096b546e17aa626a0bb8eb12f42816de7224f79d49d1dfeb09cf1ce156c11",
+          "accepted": false,
+          "reason": "invalid syntax",
+          "category": "syntax",
+          "duration_s": 133.335
+        },
+        {
+          "attempt": 3,
+          "prompt_sha256": "287096b546e17aa626a0bb8eb12f42816de7224f79d49d1dfeb09cf1ce156c11",
+          "accepted": false,
+          "reason": "sentinel integrity violated: a frozen test marker was dropped, reordered, duplicated or edited",
+          "category": "sentinel",
+          "duration_s": 86.546
+        }
+      ]
+    }
+  ],
+  "diffs": {}
+}

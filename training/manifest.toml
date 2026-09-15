@@ -1,0 +1,485 @@
+# Training cohort (PLAN.md 6.1). Mechanically selected from the crates.io
+# top-downloads ranking BEFORE any reduction was measured; blocklist-checked
+# against bench/corpus.toml by training/anticontamination.py, which is unit
+# tested. role = "eval" rows are held out from every fine-tune.
+
+[[crate]]
+name = "getrandom"
+repo = "https://github.com/rust-random/getrandom"
+commit = "eeb6a3d4ade21087c0f7bd560192e4bfb8357670"
+license = "MIT OR Apache-2.0"
+loc = 1966
+role = "train"
+
+[[crate]]
+name = "bitflags"
+repo = "https://github.com/bitflags/bitflags"
+commit = "fa833ad35d0f952f6c60f8763b2a15efb45f4cab"
+license = "MIT OR Apache-2.0"
+loc = 2247
+role = "train"
+
+[[crate]]
+name = "quote"
+repo = "https://github.com/dtolnay/quote"
+commit = "dcaa9aaf1f1c048eaaa209e8d881ffc3c82cd004"
+license = "MIT OR Apache-2.0"
+loc = 1793
+role = "train"
+
+[[crate]]
+name = "proc-macro2"
+repo = "https://github.com/dtolnay/proc-macro2"
+commit = "4626ab98d794f0ff1c3da3fdaf1d6b6e8e6d269c"
+license = "MIT OR Apache-2.0"
+loc = 4825
+role = "train"
+
+[[crate]]
+name = "thiserror-impl"
+repo = "https://github.com/dtolnay/thiserror"
+commit = "5a306c7d0a8588caaaaa6a7567aeb25c1c10719b"
+license = "MIT OR Apache-2.0"
+loc = 2586
+role = "train"
+
+[[crate]]
+name = "unicode-ident"
+repo = "https://github.com/dtolnay/unicode-ident"
+commit = "b23d56c88ce2e61fb6d66396a5814c5a5be79f05"
+license = "(MIT OR Apache-2.0) AND Unicode-3.0"
+loc = 1244
+role = "train"
+
+[[crate]]
+name = "autocfg"
+repo = "https://github.com/cuviper/autocfg"
+commit = "2799b09c24e6632f8e653c5cd8fc303e85a906ba"
+license = "Apache-2.0 OR MIT"
+loc = 588
+role = "train"
+
+[[crate]]
+name = "heck"
+repo = "https://github.com/withoutboats/heck"
+commit = "252c1906cefefb8d13ecad7fce7b8f27ce6437e0"
+license = "MIT OR Apache-2.0"
+loc = 516
+role = "train"
+
+[[crate]]
+name = "log"
+repo = "https://github.com/rust-lang/log"
+commit = "8034743dd9d7f7583bd9a670271483d176130911"
+license = "MIT OR Apache-2.0"
+loc = 3649
+role = "train"
+
+[[crate]]
+name = "socket2"
+repo = "https://github.com/rust-lang/socket2"
+commit = "6c83ef67154cf16730aca3b607a2d64365703657"
+license = "MIT OR Apache-2.0"
+loc = 5958
+role = "train"
+
+[[crate]]
+name = "smallvec"
+repo = "https://github.com/servo/rust-smallvec"
+commit = "ed4b23aa0191fcec40ccfcffc17170e3c6f11b06"
+license = "MIT OR Apache-2.0"
+loc = 3126
+role = "train"
+
+[[crate]]
+name = "bytes"
+repo = "https://github.com/tokio-rs/bytes"
+commit = "7930d93d583757e922014312d4aa3e58a415131f"
+license = "MIT"
+loc = 4612
+role = "train"
+
+[[crate]]
+name = "pin-project-lite"
+repo = "https://github.com/taiki-e/pin-project-lite"
+commit = "d98892c5de7a3632a8f993fa52b67daf6056a80d"
+license = "Apache-2.0 OR MIT"
+loc = 1244
+role = "train"
+
+[[crate]]
+name = "num-traits"
+repo = "https://github.com/rust-num/num-traits"
+commit = "1166177ec398601d6dd4d88891cf7674f3978888"
+license = "MIT OR Apache-2.0"
+loc = 4143
+role = "train"
+
+[[crate]]
+name = "either"
+repo = "https://github.com/rayon-rs/either"
+commit = "ce6f07fc3d56d6a56ecfc32256d2c33bd0b4ad09"
+license = "MIT OR Apache-2.0"
+loc = 1284
+role = "train"
+
+[[crate]]
+name = "semver"
+repo = "https://github.com/dtolnay/semver"
+commit = "280ebcb6edac3aa4cdc545dbff8a26c5ac4861fe"
+license = "MIT OR Apache-2.0"
+loc = 1426
+role = "train"
+
+[[crate]]
+name = "anyhow"
+repo = "https://github.com/dtolnay/anyhow"
+commit = "c63b279f3f4af2b02ca6267d9eb47d6d10497f69"
+license = "MIT OR Apache-2.0"
+loc = 2462
+role = "train"
+
+[[crate]]
+name = "scopeguard"
+repo = "https://github.com/bluss/scopeguard"
+commit = "bb988222848d39b0b9037b29da3a3a1eb05ebf4b"
+license = "MIT OR Apache-2.0"
+loc = 265
+role = "train"
+
+[[crate]]
+name = "slab"
+repo = "https://github.com/tokio-rs/slab"
+commit = "7d1d8ab00a7b8b1978b4bf21d9ae9633ac8c0b05"
+license = "MIT"
+loc = 760
+role = "train"
+
+[[crate]]
+name = "fastrand"
+repo = "https://github.com/smol-rs/fastrand"
+commit = "7a1cc2c69ebde6cb3442809213db3fe19a2cb0ba"
+license = "Apache-2.0 OR MIT"
+loc = 745
+role = "train"
+
+[[crate]]
+name = "http-body"
+repo = "https://github.com/hyperium/http-body"
+commit = "929ff1c456c6cfe7a984e8d4bd70f506cbd9c78c"
+license = "MIT"
+loc = 3609
+role = "train"
+
+[[crate]]
+name = "errno"
+repo = "https://github.com/lambda-fairy/rust-errno"
+commit = "756e1900e027dbb48c605608700d8b31d86310fb"
+license = "MIT OR Apache-2.0"
+loc = 328
+role = "train"
+
+[[crate]]
+name = "shlex"
+repo = "https://github.com/comex/rust-shlex"
+commit = "653936e120cdd0a8d1b4f0837e2cce0f347da4c0"
+license = "MIT OR Apache-2.0"
+loc = 1101
+role = "train"
+
+[[crate]]
+name = "tempfile"
+repo = "https://github.com/Stebalien/tempfile"
+commit = "6a094dcce1cd51d1cbb065af8ecf92de39b11a05"
+license = "MIT OR Apache-2.0"
+loc = 1312
+role = "train"
+
+[[crate]]
+name = "byteorder"
+repo = "https://github.com/BurntSushi/byteorder"
+commit = "5a82625fae462e8ba64cec8146b24a372b4d75c6"
+license = "Unlicense OR MIT"
+loc = 2888
+role = "train"
+
+[[crate]]
+name = "uuid"
+repo = "https://github.com/uuid-rs/uuid"
+commit = "9f927126c89892ddfed6cd2f92df16852f3f9aa6"
+license = "Apache-2.0 OR MIT"
+loc = 5806
+role = "train"
+
+[[crate]]
+name = "fnv"
+repo = "https://github.com/servo/rust-fnv"
+commit = "4e55052a343a4372c191141f29a17ab829cf1dbc"
+license = "Apache-2.0 / MIT"
+loc = 472
+role = "train"
+
+[[crate]]
+name = "rustc-hash"
+repo = "https://github.com/rust-lang/rustc-hash"
+commit = "6ced6cb4235295509102d05f8915e0bb0d8cfe54"
+license = "Apache-2.0 OR MIT"
+loc = 403
+role = "train"
+
+[[crate]]
+name = "ahash"
+repo = "https://github.com/tkaitchuck/ahash"
+commit = "a9d649d18d6aefeef106a48252dc6708ee7f9e47"
+license = "MIT OR Apache-2.0"
+loc = 3202
+role = "train"
+
+[[crate]]
+name = "tokio-rustls"
+repo = "https://github.com/rustls/tokio-rustls"
+commit = "0ad049ef4620161936ee3216a75c0fcecc4b6dfd"
+license = "MIT OR Apache-2.0"
+loc = 1852
+role = "train"
+
+[[crate]]
+name = "rustversion"
+repo = "https://github.com/dtolnay/rustversion"
+commit = "9bb564a5a08fc16bad9597a4cdc1de817beaab34"
+license = "MIT OR Apache-2.0"
+loc = 768
+role = "train"
+
+[[crate]]
+name = "pkg-config"
+repo = "https://github.com/rust-lang/pkg-config-rs"
+commit = "a8852cc148f8f7d504bf3a62444c298dcd3637f0"
+license = "MIT OR Apache-2.0"
+loc = 896
+role = "train"
+
+[[crate]]
+name = "rustc_version"
+repo = "https://github.com/djc/rustc-version-rs"
+commit = "eeca449cca83e24150e46739e797aa82e9142809"
+license = "MIT OR Apache-2.0"
+loc = 282
+role = "train"
+
+[[crate]]
+name = "memoffset"
+repo = "https://github.com/Gilnaa/memoffset"
+commit = "153fc3d50f03755be53148bc3eb97390f9011e45"
+license = "MIT"
+loc = 576
+role = "train"
+
+[[crate]]
+name = "signal-hook-registry"
+repo = "https://github.com/vorner/signal-hook"
+commit = "f37a7b5918830009c83f5e17fd5a533f2dfd7f82"
+license = "MIT OR Apache-2.0"
+loc = 2284
+role = "train"
+
+[[crate]]
+name = "tinyvec"
+repo = "https://github.com/Lokathor/tinyvec"
+commit = "e343bbbb5a6594c9d57de718e6f232e6c0115dcb"
+license = "Zlib OR Apache-2.0 OR MIT"
+loc = 4952
+role = "train"
+
+[[crate]]
+name = "httparse"
+repo = "https://github.com/seanmonstar/httparse"
+commit = "a0fa552e4e0fa9a5914a736ef3a556748fef709b"
+license = "MIT OR Apache-2.0"
+loc = 3410
+role = "train"
+
+[[crate]]
+name = "subtle"
+repo = "https://github.com/dalek-cryptography/subtle"
+commit = "369e7463e85921377a5f2df80aabcbbc6d57a930"
+license = "BSD-3-Clause"
+loc = 550
+role = "train"
+
+[[crate]]
+name = "thread_local"
+repo = "https://github.com/Amanieu/thread_local-rs"
+commit = "69fb0508498fc4484cf5696ed16f2c9d6c50f9d4"
+license = "MIT OR Apache-2.0"
+loc = 778
+role = "train"
+
+[[crate]]
+name = "synstructure"
+repo = "https://github.com/mystor/synstructure"
+commit = "30cfafe36e42405e717a8e55da042a2835a698d7"
+license = "MIT"
+loc = 1172
+role = "train"
+
+[[crate]]
+name = "crc32fast"
+repo = "https://github.com/srijs/rust-crc32fast"
+commit = "92c03d6315fd43ea168441691ac42885dafbcafc"
+license = "MIT OR Apache-2.0"
+loc = 1693
+role = "train"
+
+[[crate]]
+name = "num-integer"
+repo = "https://github.com/rust-num/num-integer"
+commit = "765fd9b3eb9397471d41b9f613e530f6d9d6383f"
+license = "MIT OR Apache-2.0"
+loc = 1761
+role = "train"
+
+[[crate]]
+name = "flate2"
+repo = "https://github.com/rust-lang/flate2-rs"
+commit = "fcc804306677bf8cfde2250bf0472d61b75d1c45"
+license = "MIT OR Apache-2.0"
+loc = 4839
+role = "train"
+
+[[crate]]
+name = "iana-time-zone"
+repo = "https://github.com/strawlab/iana-time-zone"
+commit = "c6fe5ec58eb6989860c8ce137bc5b566c7232d9e"
+license = "MIT OR Apache-2.0"
+loc = 3020
+role = "train"
+
+[[crate]]
+name = "async-trait"
+repo = "https://github.com/dtolnay/async-trait"
+commit = "fe8c77e8e8bcaea1a93e2d1ef98933a2c67241a2"
+license = "MIT OR Apache-2.0"
+loc = 876
+role = "train"
+
+[[crate]]
+name = "spin"
+repo = "https://codeberg.org/zesterer/spin"
+commit = "7c335e36204fb367bcd524764e4a1fa829aae058"
+license = "MIT"
+loc = 2769
+role = "train"
+
+[[crate]]
+name = "hex"
+repo = "https://github.com/KokaKiwi/rust-hex"
+commit = "e25a8701f7f6b5ec4acedffcb4a45cfb69cc34eb"
+license = "MIT OR Apache-2.0"
+loc = 526
+role = "train"
+
+[[crate]]
+name = "hyper-rustls"
+repo = "https://github.com/rustls/hyper-rustls"
+commit = "a3a18383c1bfb756d8f4c0dbaac0b3a6909a8812"
+license = "Apache-2.0 OR ISC OR MIT"
+loc = 828
+role = "train"
+
+[[crate]]
+name = "strum_macros"
+repo = "https://github.com/Peternator7/strum"
+commit = "90775661c7710b546e25af5e044dc687f1df0e7d"
+license = "MIT"
+loc = 2952
+role = "train"
+
+[[crate]]
+name = "want"
+repo = "https://github.com/seanmonstar/want"
+commit = "6e65401c71fa55c75b6fb52f595a692ef3643939"
+license = "MIT"
+loc = 292
+role = "train"
+
+[[crate]]
+name = "utf8parse"
+repo = "https://github.com/alacritty/vte"
+commit = "abeae765dd546dfff60b278f0757dcc71beb8ab1"
+license = "Apache-2.0 OR MIT"
+loc = 3155
+role = "eval"
+
+[[crate]]
+name = "unicode-xid"
+repo = "https://github.com/unicode-rs/unicode-xid"
+commit = "0aeadace2aa539b1488266c9a17f5c695c5faace"
+license = "MIT OR Apache-2.0"
+loc = 1689
+role = "eval"
+
+[[crate]]
+name = "glob"
+repo = "https://github.com/rust-lang/glob"
+commit = "cfa2a58f2e44373573f657ec25b3621e44714dee"
+license = "MIT OR Apache-2.0"
+loc = 1093
+role = "eval"
+
+[[crate]]
+name = "num_cpus"
+repo = "https://github.com/seanmonstar/num_cpus"
+commit = "474977ee4ae9d05a6bf7d997f422782997c1f4b4"
+license = "MIT OR Apache-2.0"
+loc = 803
+role = "eval"
+
+[[crate]]
+name = "httpdate"
+repo = "https://github.com/pyfisch/httpdate"
+commit = "53df52094835dd85aca70e23b9f384abcf843f7f"
+license = "MIT OR Apache-2.0"
+loc = 592
+role = "eval"
+
+[[crate]]
+name = "phf_shared"
+repo = "https://github.com/rust-phf/rust-phf"
+commit = "f149e57f805f3792f079b8285223daf2fd52dfb0"
+license = "MIT"
+loc = 3514
+role = "eval"
+
+[[crate]]
+name = "displaydoc"
+repo = "https://github.com/yaahc/displaydoc"
+commit = "500b131f4b32ad92b2a6caa44d2fcb545271a2ad"
+license = "MIT OR Apache-2.0"
+loc = 626
+role = "eval"
+
+[[crate]]
+name = "pin-project-internal"
+repo = "https://github.com/taiki-e/pin-project"
+commit = "dc9ac65cacb3a011e3e22e994fadb4ba709aef98"
+license = "Apache-2.0 OR MIT"
+loc = 1887
+role = "eval"
+
+[[crate]]
+name = "ipnet"
+repo = "https://github.com/krisprice/ipnet"
+commit = "13c5c5873c02127679b1e8e64b538e4e36942640"
+license = "MIT OR Apache-2.0"
+loc = 2540
+role = "eval"
+
+[[crate]]
+name = "hmac"
+repo = "https://github.com/RustCrypto/MACs"
+commit = "e905def365b4a53b2530f4dce64a5f49276985c2"
+license = "MIT OR Apache-2.0"
+loc = 1470
+role = "eval"
+

@@ -1,0 +1,20 @@
+# The model ladder (PLAN.md §2.1). Rungs are tried weakest-first on humantime
+# before any full run. Digests: ollama rungs record `ollama list` model ID;
+# the API rung records model id + response system_fingerprint.
+[[rung]]
+name = "qwen2.5-coder:7b"
+kind = "ollama"
+command = "python3 bench/ollama_file.py qwen2.5-coder:7b"
+item_command = "python3 bench/ollama.py qwen2.5-coder:7b"
+digest = "dae161e27b0e"
+
+[[rung]]
+name = "qwen3:8b"
+kind = "ollama"
+command = "python3 bench/ollama_file.py qwen3:8b"
+item_command = "python3 bench/ollama.py qwen3:8b"
+digest = "500a1f067a9f"
+
+# Active only when LC_ML_API_BASE / LC_ML_API_KEY / LC_ML_MODEL are set.
+# If absent, the Iteration Protocol's ladder requirement degrades to
+# "2 local models + documented impossibility" (recorded in LADDER.md).

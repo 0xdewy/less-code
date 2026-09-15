@@ -95,10 +95,46 @@ FORMAT_CMDS = {
 PRETTIER_NPX = ["npx", "--yes", "prettier@3.9.6"]
 
 
-def format_command(lang: str) -> list[str] | None:
+def rustfmt_config(root: Path) -> tuple[str | None, str]:
+    """(rustfmt.toml path or None, edition) for the project at `root`.
+
+    A crate pinning edition 2021 must be measured under 2021 rules; and a
+    project with its own rustfmt.toml gets gate decisions under its own
+    config, not under the width-88 metric default."""
+    edition = "2024"
+    cargo = root / "Cargo.toml"
+    if cargo.is_file():
+        try:
+            import tomllib
+
+            data = tomllib.loads(cargo.read_text(encoding="utf-8", errors="replace"))
+            found = data.get("package", {}).get("edition")
+            if isinstance(found, str):
+                edition = found
+        except (OSError, ValueError):
+            match = re.search(
+                r"""(?m)^\s*edition\s*=\s*["']([^"']+)["']""",
+                cargo.read_text(encoding="utf-8", errors="replace"),
+            )
+            if match:
+                edition = match.group(1)
+    for name in ("rustfmt.toml", ".rustfmt.toml"):
+        config = root / name
+        if config.is_file():
+            return str(config), edition
+    return None, edition
+
+
+def format_command(lang: str, root: Path | None = None) -> list[str] | None:
     cmd = FORMAT_CMDS.get(lang)
     if not cmd:
         return None
+    if lang == "rust" and root is not None:
+        config, edition = rustfmt_config(root)
+        project_cmd = ["rustfmt", "--emit", "stdout", "--edition", edition]
+        if config is not None:
+            return project_cmd + ["--config-path", config]
+        return project_cmd + ["--config", f"max_width={PRINT_WIDTH}"]
     if shutil.which(cmd[0]) is not None:
         return cmd
     if lang in ("javascript", "typescript") and shutil.which("npx") is not None:
@@ -117,10 +153,12 @@ def formatter_available(lang: str) -> bool:
 
 
 @lru_cache(maxsize=512)
-def canonical_format(source: str, lang: str) -> tuple[str, bool]:
+def canonical_format(
+    source: str, lang: str, root: Path | None = None
+) -> tuple[str, bool]:
     """(text, formatted). Falls back to the raw text when the tool is absent
     or rejects the input (a syntactically broken candidate, typically)."""
-    cmd = format_command(lang)
+    cmd = format_command(lang, root)
     if not cmd:
         return source, False
     try:
@@ -255,6 +293,30 @@ def count_source(source: str, lang: str, format_first: bool = False) -> Loc:
 def measure(source: str, lang: str) -> Loc:
     """The reduction metric: canonical-format count wherever it is available."""
     return count_source(source, lang, format_first=True)
+
+
+def project_canonical_format(source: str, root: Path) -> tuple[str, bool]:
+    """Gate-path canonical format: the project's own rustfmt config + edition.
+
+    The published metric stays width-88 for cross-project comparability; this
+    one decides GATES, so a candidate whose joins survive 88 but die under
+    the project's own rustfmt is rejected rather than silently counted."""
+    return canonical_format(source, "rust", root)
+
+
+def project_measure(source: str, root: Path) -> Loc:
+    """Code-LOC of `source` canonically formatted under the project's own
+    rustfmt config (gate path only; `measure` remains the metric)."""
+    text, _ = project_canonical_format(source, root)
+    base = LANG_COUNTERS["rust"](text)
+    return Loc(
+        base.code,
+        base.comment,
+        base.blank,
+        formatted=True,
+        tokens=count_tokens(text),
+        ast_nodes=count_ast_nodes(text, "rust"),
+    )
 
 
 def count_file(path: Path, lang: str, format_first: bool = False) -> Loc:

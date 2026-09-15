@@ -1,0 +1,188 @@
+{
+  "rung": "qwen3:8b",
+  "variant": "v1",
+  "crate": "humantime",
+  "digest": "500a1f067a9f",
+  "loc_before": 1517,
+  "loc_after": 1517,
+  "loc_delta": 0,
+  "delta_pct": 0.0,
+  "attempts": 11,
+  "accepted_files": 0,
+  "funnel": {
+    "backend": 5,
+    "loc": 3,
+    "duplicate": 2,
+    "symbol-set": 1
+  },
+  "wall_s": 2338.8,
+  "records": [
+    {
+      "path": "src/duration.rs",
+      "model": "file-cli",
+      "digest": "500a1f067a9f",
+      "attempts": 1,
+      "accepted": false,
+      "category": "backend",
+      "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen3:8b' timed out after 240.0 seconds",
+      "loc_before": 727,
+      "loc_after": 727,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "d70a84907462e8a339a826082e117b1a364f45b32f108037da0102a08a3a27cb",
+          "accepted": false,
+          "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen3:8b' timed out after 240.0 seconds",
+          "category": "backend",
+          "duration_s": 240.108
+        }
+      ]
+    },
+    {
+      "path": "src/date.rs",
+      "model": "file-cli",
+      "digest": "500a1f067a9f",
+      "attempts": 1,
+      "accepted": false,
+      "category": "backend",
+      "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen3:8b' timed out after 240.0 seconds",
+      "loc_before": 613,
+      "loc_after": 613,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "a475a4d0e7dd3bf9a6c88c801f2c96c34d403582baa3d83db22cbfebff9f4ca0",
+          "accepted": false,
+          "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen3:8b' timed out after 240.0 seconds",
+          "category": "backend",
+          "duration_s": 240.103
+        }
+      ]
+    },
+    {
+      "path": "src/wrapper.rs",
+      "model": "file-cli",
+      "digest": "500a1f067a9f",
+      "attempts": 2,
+      "accepted": false,
+      "category": "backend",
+      "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen3:8b' timed out after 240.0 seconds",
+      "loc_before": 79,
+      "loc_after": 79,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "a949efcff1c3e19b49c2d9b8c0aead68d519406a574f77031c4f98142d09bc3b",
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "loc",
+          "duration_s": 213.853
+        },
+        {
+          "attempt": 2,
+          "prompt_sha256": "a949efcff1c3e19b49c2d9b8c0aead68d519406a574f77031c4f98142d09bc3b",
+          "accepted": false,
+          "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen3:8b' timed out after 240.0 seconds",
+          "category": "backend",
+          "duration_s": 240.116
+        }
+      ]
+    },
+    {
+      "path": "benches/datetime_format.rs",
+      "model": "file-cli",
+      "digest": "500a1f067a9f",
+      "attempts": 3,
+      "accepted": false,
+      "category": "duplicate",
+      "reason": "duplicate proposal",
+      "loc_before": 51,
+      "loc_after": 51,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "51df8d3ad15b34bee036a12436992328e5c115bddbcd3ad56ca96860fff2fab3",
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "loc",
+          "duration_s": 183.82
+        },
+        {
+          "attempt": 2,
+          "prompt_sha256": "51df8d3ad15b34bee036a12436992328e5c115bddbcd3ad56ca96860fff2fab3",
+          "accepted": false,
+          "reason": "no canonical LOC reduction",
+          "category": "loc",
+          "duration_s": 175.227
+        },
+        {
+          "attempt": 3,
+          "prompt_sha256": "51df8d3ad15b34bee036a12436992328e5c115bddbcd3ad56ca96860fff2fab3",
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate",
+          "duration_s": 176.51
+        }
+      ]
+    },
+    {
+      "path": "src/lib.rs",
+      "model": "file-cli",
+      "digest": "500a1f067a9f",
+      "attempts": 3,
+      "accepted": false,
+      "category": "backend",
+      "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen3:8b' timed out after 240.0 seconds",
+      "loc_before": 14,
+      "loc_after": 14,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "f5c5cccbd865a29ad39fef70cc36ae76aa170204a7f01911903d771f090ae975",
+          "accepted": false,
+          "reason": "symbol set could not be extracted",
+          "category": "symbol-set",
+          "duration_s": 177.671
+        },
+        {
+          "attempt": 2,
+          "prompt_sha256": "f5c5cccbd865a29ad39fef70cc36ae76aa170204a7f01911903d771f090ae975",
+          "accepted": false,
+          "reason": "duplicate proposal",
+          "category": "duplicate",
+          "duration_s": 201.353
+        },
+        {
+          "attempt": 3,
+          "prompt_sha256": "f5c5cccbd865a29ad39fef70cc36ae76aa170204a7f01911903d771f090ae975",
+          "accepted": false,
+          "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen3:8b' timed out after 240.0 seconds",
+          "category": "backend",
+          "duration_s": 240.105
+        }
+      ]
+    },
+    {
+      "path": "benches/datetime_parse.rs",
+      "model": "file-cli",
+      "digest": "500a1f067a9f",
+      "attempts": 1,
+      "accepted": false,
+      "category": "backend",
+      "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen3:8b' timed out after 240.0 seconds",
+      "loc_before": 33,
+      "loc_after": 33,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "b8af3c2f3b529f8ac5bd2f1959bd1f53a6d328aa69fe83c8f3086ba0d054f64f",
+          "accepted": false,
+          "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen3:8b' timed out after 240.0 seconds",
+          "category": "backend",
+          "duration_s": 240.106
+        }
+      ]
+    }
+  ],
+  "diffs": {}
+}

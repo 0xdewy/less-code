@@ -9,6 +9,7 @@ def main():
     prompt = json.load(sys.stdin)
     model = sys.argv[1] if len(sys.argv) > 1 else "qwen2.5-coder:7b"
     reasoning = model.startswith("qwen3")
+    retry = prompt.get("feedback") is not None
     payload = {
         "model": model,
         "system": prompt.pop("system"),
@@ -24,14 +25,18 @@ def main():
         },
         "stream": False,
         "options": {
-            "temperature": 0,
+            # retries sample warmer, or a temp-0 policy just repeats the
+            # rejected output and the funnel fills with duplicates
+            "temperature": 0.4 if retry else 0,
             "seed": 42,
             "num_ctx": 16384,
             "num_predict": 4096 if reasoning else 2048,
         },
     }
     if reasoning:
-        payload["think"] = True
+        # structural rewrites at temp 0 do not benefit from chain-of-thought;
+        # thinking burns the wall-clock budget before the JSON is emitted
+        payload["think"] = False
     payload["system"] += (
         " If no safe reduction exists, return the unchanged symbol as replacement."
     )

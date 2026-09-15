@@ -1,0 +1,40 @@
+{
+  "rung": "qwen3:8b",
+  "variant": "v1",
+  "crate": "shell-words",
+  "digest": "500a1f067a9f",
+  "loc_before": 353,
+  "loc_after": 353,
+  "loc_delta": 0,
+  "delta_pct": 0.0,
+  "attempts": 1,
+  "accepted_files": 0,
+  "funnel": {
+    "backend": 1
+  },
+  "wall_s": 240.3,
+  "records": [
+    {
+      "path": "src/lib.rs",
+      "model": "file-cli",
+      "digest": "500a1f067a9f",
+      "attempts": 1,
+      "accepted": false,
+      "category": "backend",
+      "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen3:8b' timed out after 240.0 seconds",
+      "loc_before": 353,
+      "loc_after": 353,
+      "proposals": [
+        {
+          "attempt": 1,
+          "prompt_sha256": "287096b546e17aa626a0bb8eb12f42816de7224f79d49d1dfeb09cf1ce156c11",
+          "accepted": false,
+          "reason": "model error: TimeoutExpired: Command 'python3 bench/ollama_file.py qwen3:8b' timed out after 240.0 seconds",
+          "category": "backend",
+          "duration_s": 240.11
+        }
+      ]
+    }
+  ],
+  "diffs": {}
+}

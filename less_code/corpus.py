@@ -14,8 +14,9 @@ from pathlib import Path
 from statistics import median
 
 from .langdetect import map_project
-from .loc import count_tree
+from .loc import count_tree, measure
 from .pipeline import ShrinkStats, _disk_loc, pct, shrink_project
+from .rust_rules import test_spans
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,20 @@ def load_corpus(path: Path) -> list[CorpusProject]:
     ]
 
 
+def rust_inline_test_loc(sources: dict[Path, str]) -> int:
+    """Canonical LOC of inline `#[cfg(test)]` spans across source files.
+
+    Every future rust yield claim carries its denominator decomposition:
+    test spans stay frozen on the main track, so the reducible mass is
+    `non_test_loc`, not `loc_start` (FOLLOWUP.md policy, made automatic)."""
+    total = 0
+    for text in sources.values():
+        encoded = text.encode()
+        for start, end in test_spans(text):
+            total += measure(encoded[start:end].decode("utf-8"), "rust").code
+    return total
+
+
 def _run(
     command: tuple[str, ...], cwd: Path, timeout: int
 ) -> subprocess.CompletedProcess:
@@ -73,6 +88,9 @@ def run_corpus(
     ml_attempts: int = 3,
     ml_symbols: int = 64,
     only: str | None = None,
+    ml_file_backend=None,
+    ml_file_attempts: int = 3,
+    dedup_backend=None,
 ) -> dict:
     if not 1 <= ml_attempts <= 3:
         raise ValueError("ml_attempts must be between 1 and 3")
@@ -122,6 +140,9 @@ def run_corpus(
                         "loc_start": 0,
                         "loc_after_static": 0,
                         "loc_final": 0,
+                        "test_loc": 0,
+                        "test_share_pct": 0.0,
+                        "non_test_loc": 0,
                         "baseline_measured": False,
                         "duration_s": round(time.monotonic() - started, 3),
                         "error": (clone.stderr or prepare.stderr)[-500:],
@@ -137,6 +158,9 @@ def run_corpus(
             original_sources = {
                 path: path.read_text(encoding="utf-8") for path in project.source_files
             }
+            inline_test_loc = (
+                rust_inline_test_loc(original_sources) if item.lang == "rust" else 0
+            )
             baseline_loc = count_tree(
                 project.source_files, item.lang, format_first=True
             )
@@ -152,6 +176,8 @@ def run_corpus(
                     ml_backend=ml_backend,
                     ml_attempts=ml_attempts,
                     ml_symbols=ml_symbols,
+                    ml_file_backend=ml_file_backend,
+                    ml_file_attempts=ml_file_attempts,
                     final_validator=(
                         lambda item=item, root=root: (
                             _run(item.audit, root, timeout).returncode == 0
@@ -175,6 +201,29 @@ def run_corpus(
                         f" ({stats.loc_final}); the tree changed after the"
                         " shrink - re-run"
                     )
+            # the dedup-tx arm runs AFTER the file layer; its delta is a
+            # separate stat column, never blended into the others (PLAN.md §7)
+            dedup_stats, dedup_records, dedup_loc = {}, [], 0
+            if (
+                dedup_backend is not None
+                and item.lang == "rust"
+                and stats.tests_ok
+                and stats.root is not None
+            ):
+                from .dedup_tx import dedup_tree, default_tx_gate
+
+                pre = sum(
+                    measure(p.read_text(), "rust").code for p in project.source_files
+                )
+                gate = default_tx_gate(
+                    root, {p: p.read_text() for p in project.source_files}, timeout
+                )
+                dedup_stats, dedup_records = dedup_tree(
+                    root, project.source_files, dedup_backend, gate, attempts=2
+                )
+                dedup_loc = pre - sum(
+                    measure(p.read_text(), "rust").code for p in project.source_files
+                )
             result = stats.to_json()
             valid = bool(
                 result["tests_ok"]
@@ -218,6 +267,11 @@ def run_corpus(
                     "loc_start": loc_start,
                     "loc_after_static": static_final,
                     "loc_final": hybrid_final,
+                    "test_loc": inline_test_loc,
+                    "test_share_pct": round(100.0 * inline_test_loc / loc_start, 2)
+                    if loc_start
+                    else 0.0,
+                    "non_test_loc": max(loc_start - inline_test_loc, 0),
                     "raw_pct": hybrid_pct,
                     "static_pct": static_pct,
                     "llm_extra_pct": llm_extra_pct,
@@ -227,6 +281,12 @@ def run_corpus(
                     "formatted_loc": result["formatted_loc"],
                     "ml_stats": result.get("ml_stats", {}),
                     "ml_records": result.get("ml_records", []),
+                    "ml_file_loc": result.get("ml_file_loc", 0),
+                    "ml_file_stats": result.get("ml_file_stats", {}),
+                    "ml_file_records": result.get("ml_file_records", []),
+                    "dedup_loc": dedup_loc,
+                    "dedup_stats": dedup_stats,
+                    "dedup_records": dedup_records,
                     "audit_records": result.get("audit_records", []),
                     "oracle": result.get("oracle", {}),
                     "source_diff": "".join(
@@ -278,6 +338,8 @@ def summarize(
     loc_start_total = sum(row["loc_start"] for row in rows)
     loc_after_static_total = sum(row["loc_after_static"] for row in rows)
     loc_final_total = sum(row["loc_final"] for row in rows)
+    ml_file_loc_total = sum(row.get("ml_file_loc", 0) for row in rows)
+    dedup_loc_total = sum(row.get("dedup_loc", 0) for row in rows)
     return {
         "experiment": {
             "ml_backend": getattr(ml_backend, "name", None),
@@ -313,6 +375,8 @@ def summarize(
             "raw_pct": pct(loc_start_total, loc_final_total),
             "static_pct": pct(loc_start_total, loc_after_static_total),
             "llm_extra_pct": pct(loc_after_static_total, loc_final_total),
+            "ml_file_loc": ml_file_loc_total,
+            "dedup_loc": dedup_loc_total,
             "audit_performed": bool(rows)
             and all(row.get("audit_ok") is not None for row in rows),
             "audited_projects": sum(row.get("audit_ok") is not None for row in rows),
