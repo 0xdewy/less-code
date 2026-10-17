@@ -59,14 +59,46 @@ own yield.
 - The rule library covers candidate rewrites no general tool covers
   (accumulator -> `sum()`, append loops -> comprehensions, manual max ->
   `max(key=..., default=None)` with sentinel refusal, local self-defaults ->
-  conditional assignments, adjacent from-import packing with execution order
-  retained, consecutive independent assignments packed into one tuple
+  conditional assignments, adjacent from-import and plain-import packing with
+  execution order retained, search loops -> `next(<genexp>, <literal>)`, consecutive independent assignments packed into one tuple
   assignment up to the canonical width, and single-use temps inlined across
   provably bound name and attribute lookups). Ruff runs a second time after
   the rule layers, since their output exposes shapes it fixes (superfluous
   else, useless trailing return).
 - An optional LLM backend handles residual per-symbol simplifications; every
   proposal passes the same formatter, tests, API, and documentation gates.
+
+## Aggressive profile (`--aggressive`, Python)
+
+`lc shrink --aggressive` and `lc corpus --aggressive` add opt-in layers that
+trade idiom for density. They are semantics-preserving and pass through the
+same gates (suite, API, documentation, shadow oracle), but they are not what a
+reviewer would always choose, so they never run by default and their yield is
+reported separately (`aggressive_loc`, and the corpus prints the
+default-profile figure alongside):
+
+- `join-call-statements`: `f()` + `g()` -> `f(), g()` (left-to-right, same calls).
+- `guard-call-to-and`: `if c: f()` -> `c and f()` (`or`/ternary tests parenthesized).
+- `conditional-rebind`: `if c: x = v` -> `x = v if c else x`, only when `x` is
+  provably bound.
+- `dict-repeated-values`: runs of literal entries sharing one constant value ->
+  `**dict.fromkeys(...)` / a comprehension over the varying key part (order and
+  duplicate-key resolution kept).
+- `walrus-inline`: a temp read twice by the next statement, first in
+  evaluation order, becomes `(t := e)` there; only for Python >= 3.8 targets.
+- `UP031`/`UP032` (printf/format -> f-strings) at the project's minimum Python,
+  read from `requires-python`/`python_requires`/classifiers.
+- In-package fallbacks: `try: from .sibling import x ... except ImportError:
+  <fallback>` is unwrapped when the sibling is an in-tree module that binds
+  `x` and does not import this module back, and a vendored definition that
+  such an import overrides is deleted when the sibling's public API for it is
+  a superset with identical signatures. This drops the "copy one file out of
+  the package" use case, which is why it is opt-in. The documentation gate
+  allows exactly the comments/docstrings inside deleted code to go
+  (`docs_removed_with_dead_code` counts them); nothing else may change.
+- String-statement notes that are not docstrings (nor attribute docstrings
+  right after an assignment, which Sphinx reads) become `#` comments with the
+  same text; the gate allows exactly those added comments.
 
 ## Shadow oracle (Python)
 
@@ -237,7 +269,7 @@ uv run lc propose path/to/app --apply 1,3     # consented groups only
 | command | purpose |
 |---|---|
 | `lc analyze <path>` | language, source/test files, canonical code-LOC baseline |
-| `lc shrink <path>` | run the layered pipeline; report per-layer yield |
+| `lc shrink <path>` | run the layered pipeline; report per-layer yield (`--aggressive` adds the opt-in density layers) |
 | `lc propose <path>` | mine consented deletion proposals; apply only by group id |
 | `lc report --json <file>` | render a shrink report as markdown |
 | `lc corpus` | clone and score the pinned Python/JavaScript/Rust corpus |

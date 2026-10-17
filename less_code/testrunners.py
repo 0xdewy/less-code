@@ -44,7 +44,8 @@ def _parse_tests_run(output: str) -> int | None:
     cargo = re.findall(r"test result: \w+\.\s*(\d+) passed(?:.*?(\d+) failed)?", output)
     if cargo:
         return sum(int(p) + int(f or 0) for p, f in cargo)
-    node = re.findall(r"\u2139 tests\s+(\d+)", output)  # node --test summary
+    # node --test summary: spec reporter on a TTY, TAP ("# tests N") otherwise
+    node = re.findall(r"(?:\u2139|^#) tests\s+(\d+)", output, re.MULTILINE)
     if node:
         return int(node[-1])
     jest = re.findall(r"(?:^|\n)\s*Tests:\s*(\d+)", output)  # jest / vitest

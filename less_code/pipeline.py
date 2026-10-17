@@ -24,6 +24,7 @@ import shutil
 import signal
 import subprocess
 import sys
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,6 +66,9 @@ class ShrinkStats:
     audit_records: list[dict] = field(default_factory=list)
     oracle: dict = field(default_factory=dict)
     gate_tests_run: int | None = None
+    aggressive: bool = False
+    aggressive_loc: int = 0
+    docs_removed_with_dead_code: int = 0
     root: Path | None = None  # not serialized: lets report time re-measure disk
     exclude: tuple[str, ...] = ()  # not serialized: same mapping as the run
 
@@ -95,6 +99,9 @@ class ShrinkStats:
             "audit_records": self.audit_records,
             "oracle": self.oracle,
             "gate_tests_run": self.gate_tests_run,
+            "aggressive": self.aggressive,
+            "aggressive_loc": self.aggressive_loc,
+            "docs_removed_with_dead_code": self.docs_removed_with_dead_code,
         }
 
 
@@ -217,13 +224,18 @@ def shrink_project(
     final_validator: Callable[[], bool] | None = None,
     ml_file_backend: object | None = None,
     ml_file_attempts: int = 3,
+    aggressive: bool = False,
 ) -> ShrinkStats:
     if not 1 <= ml_attempts <= 3:
         raise ValueError("ml_attempts must be between 1 and 3")
     if not 1 <= ml_symbols <= 64:
         raise ValueError("ml_symbols must be between 1 and 64")
     project = map_project(root, lang, exclude)
-    stats = ShrinkStats(lang=project.lang, files_considered=len(project.source_files))
+    stats = ShrinkStats(
+        lang=project.lang,
+        files_considered=len(project.source_files),
+        aggressive=aggressive,
+    )
     stats.root, stats.exclude = root, exclude
     stats.static_notes += project.notes
     # Measured before any early return so a failed baseline still reports LOC.
@@ -314,11 +326,25 @@ def shrink_project(
         root_, lang_, timeout=test_timeout, command=test_command
     )
 
-    def docs_preserved(sources: dict[Path, str]) -> bool:
-        return {
-            path: documentation_layout(text, project.lang)
-            for path, text in sources.items()
-        } == docs_baseline
+    def docs_preserved(
+        sources: dict[Path, str],
+        allowed: dict[Path, tuple[Counter, Counter]] | None = None,
+    ) -> bool:
+        """Exact documentation per file. `allowed` maps a file to the exact
+        (removed, added) documentation multisets a layer declared - the
+        docstrings of deleted dead code, or notes turned into comments - and
+        nothing else may differ."""
+        if set(sources) != set(docs_baseline):
+            return False
+        for path, text in sources.items():
+            now = documentation_layout(text, project.lang)
+            if allowed and path in allowed:
+                removed, added = allowed[path]
+                if Counter(now) + removed != Counter(docs_baseline[path]) + added:
+                    return False
+            elif now != docs_baseline[path]:
+                return False
+        return True
 
     def project_style_ok(paths: list[Path]) -> bool:
         """Run configured format/lint checks on the files a layer changed."""
@@ -386,6 +412,7 @@ def shrink_project(
         proposed_sources: dict[Path, str],
         notes: list[str],
         api_baseline=None,
+        allowed_docs: dict[Path, tuple[Counter, Counter]] | None = None,
     ) -> tuple[int, list[str], bool, str]:
         """Apply `proposed_sources`, run the suite, revert on red OR no-shrink.
 
@@ -482,7 +509,7 @@ def shrink_project(
             reason = "no canonical LOC reduction under the project's rustfmt config"
         elif not project_style_ok([Path(path) for path in changes]):
             reason = "project lint/format failed"
-        elif not docs_preserved(_snapshot(project.source_files)):
+        elif not docs_preserved(_snapshot(project.source_files), allowed_docs):
             reason = "documentation changed"
         elif api_baseline:
             violations = api_violations(
@@ -615,6 +642,161 @@ def shrink_project(
             visit(batch)
         return salvage_notes, accepted
 
+    def _record(name: str, pre: int, post: int, notes: list[str]) -> None:
+        stats.static_notes.extend(notes)
+        stats.layer_records.append(
+            {
+                "layer": name,
+                "loc_before": pre,
+                "loc_after": post,
+                "committed": post < pre,
+                "aggressive": True,
+                "notes": list(notes),
+            }
+        )
+        stats.aggressive_loc += max(0, pre - post)
+
+    def _gate_or_salvage(name: str, proposed: dict[Path, str], notes: list[str]):
+        post, notes, committed, _ = _gate_layer(name, proposed, notes, api_pre_layers)
+        if not committed:
+            current = _snapshot(project.source_files)
+            edits = sorted((p, t) for p, t in proposed.items() if t != current[p])
+            middle = len(edits) // 2
+            salvage, _ = _salvage_file_batches(
+                f"{name} subset", [edits[:middle], edits[middle:]], api_pre_layers
+            )
+            notes += salvage
+            post = _tree_loc(project.source_files, project.lang)
+        return post, notes, committed
+
+    def _aggressive_layers() -> None:
+        """Opt-in density rewrites (`--aggressive`), each gated like any layer
+        and reported in `aggressive_loc`, never hidden in the default figure."""
+        from .fallbacks import strip_in_package_fallbacks
+        from .notes import notes_to_comments
+        from .rules import AGGRESSIVE_RULES, RULES
+        from .static import project_min_python, ruff_aggressive_fix
+
+        target = project_min_python(root)
+        rules = set(AGGRESSIVE_RULES)
+        if target is None or int(target[3:]) < 8:
+            rules.discard("walrus-inline")  # `:=` needs Python 3.8
+
+        # 1. aggressive rules (the default library rides along for follow-ons)
+        pre = _tree_loc(project.source_files, project.lang)
+        proposed, notes = _apply_rules(
+            _snapshot(project.source_files), rules | set(RULES)
+        )
+        post, notes, committed = _gate_or_salvage("aggressive-rules", proposed, notes)
+        if not committed:
+            notes.append("combined aggressive rules failed; narrowing rule by rule")
+            for rule in sorted(rules):
+                trial, trial_notes = _apply_rules(
+                    _snapshot(project.source_files), {rule}
+                )
+                _, narrowed, _ = _gate_or_salvage(
+                    f"aggressive:{rule}", trial, trial_notes
+                )
+                notes += narrowed
+            post = _tree_loc(project.source_files, project.lang)
+        _record("aggressive-rules", pre, post, notes)
+
+        # 2. printf/format -> f-strings within the project's supported Pythons
+        if target is not None:
+            pre = _tree_loc(project.source_files, project.lang)
+            proposed = {
+                path: ruff_aggressive_fix(text, path.name, target)
+                for path, text in _snapshot(project.source_files).items()
+            }
+            post, notes, _ = _gate_or_salvage(
+                "aggressive-ruff", proposed, [f"ruff UP031/UP032 at {target}"]
+            )
+            _record("aggressive-ruff", pre, post, notes)
+
+        # 3. in-package import fallbacks and the definitions they override
+        parsed: dict = {}
+        proposed, allowed, notes, waived = {}, {}, [], {}
+        for path, text in _snapshot(project.source_files).items():
+            new, file_notes, removed, api_waived = strip_in_package_fallbacks(
+                text, path, root, parsed
+            )
+            if new != text:
+                proposed[path] = new
+                notes += file_notes
+                if removed:
+                    allowed[path] = (removed, Counter())
+                if api_waived:
+                    waived[str(path)] = api_waived
+        if proposed:
+            _gate_with_docs("in-package-fallbacks", proposed, allowed, notes, waived)
+
+        # 4. string-statement notes become comments (text kept verbatim)
+        proposed, allowed, notes = {}, {}, []
+        for path, text in _snapshot(project.source_files).items():
+            new, count, added = notes_to_comments(text)
+            if count:
+                proposed[path] = new
+                allowed[path] = (Counter(), added)
+                notes.append(f"{path.name}: {count} string note(s) -> comments")
+        if proposed:
+            _gate_with_docs("notes-to-comments", proposed, allowed, notes)
+
+    def _gate_with_docs(
+        name: str,
+        proposed: dict[Path, str],
+        allowed: dict[Path, tuple[Counter, Counter]],
+        notes: list[str],
+        waived: dict[str, set[str]] | None = None,
+    ) -> None:
+        """Gate a layer that declares exact documentation (and API) deltas.
+
+        `waived` names API entries of a file that a deleted vendored copy
+        defined and an import now supplies with the identical surface; they
+        leave the baseline only for that file and only once accepted."""
+        waived = waived or {}
+
+        def api_for(paths) -> dict:
+            keys = {str(p) for p in paths}
+            return {
+                file: {
+                    k: v
+                    for k, v in api.items()
+                    if not (file in keys and k in waived.get(file, ()))
+                }
+                for file, api in api_pre_layers.items()
+            }
+
+        pre = _tree_loc(project.source_files, project.lang)
+        post, notes, committed, _ = _gate_layer(
+            name, proposed, notes, api_for(proposed), allowed
+        )
+        accepted = list(proposed) if committed else []
+        if not committed:
+            # per-file salvage, each file with its own documentation allowance
+            for path, text in sorted(proposed.items()):
+                _, file_notes, ok, _ = _gate_layer(
+                    name,
+                    {path: text},
+                    [],
+                    api_for([path]),
+                    {path: allowed[path]} if path in allowed else None,
+                )
+                notes += file_notes
+                if ok:
+                    accepted.append(path)
+            post = _tree_loc(project.source_files, project.lang)
+        for path in accepted:
+            docs_baseline[path] = documentation_layout(
+                path.read_text(encoding="utf-8"), project.lang
+            )
+            for key in waived.get(str(path), ()):
+                api_pre_layers[str(path)].pop(key, None)
+                notes.append(f"{path.name}: {key} is now provided by an import")
+            stats.docs_removed_with_dead_code += sum(
+                allowed.get(path, (Counter(), Counter()))[0].values()
+            )
+        _record(name, pre, post, notes)
+
     # ---- L1 external static ----
     pre_loc = _tree_loc(project.source_files, project.lang)
     static = static_pass(
@@ -728,6 +910,9 @@ def shrink_project(
             stats.comma_collapse_loc = (
                 comma_record["loc_before"] - comma_record["loc_after"]
             )
+
+    if aggressive and project.lang == "python":
+        _aggressive_layers()
 
     # `loc_after_static` now means "after every deterministic rewrite":
     # external-static + rules both reduce without external state.

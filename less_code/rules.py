@@ -41,9 +41,11 @@ RULES = (
     "inline-return-temp",
     "inline-single-use-temp",
     "merge-from-imports",
+    "merge-imports",
     "hoist-common-tail",
     "dict-build-to-literal",
     "boolean-loop-to-any-all",
+    "search-loop-to-next",
     "append-loop-to-comprehension",
     "accumulate-to-sum",
     "sort-to-sorted",
@@ -53,6 +55,17 @@ RULES = (
     "merge-del",
     "pack-assignments",
     "else-after-terminator",
+)
+
+# Opt-in (`--aggressive`): line-count rewrites that are semantics-preserving
+# but trade idiom for density, so they never run by default. Each one is
+# still gated by the suite, the API/docs checks and the shadow oracle.
+AGGRESSIVE_RULES = (
+    "join-call-statements",
+    "guard-call-to-and",
+    "conditional-rebind",
+    "dict-repeated-values",
+    "walrus-inline",  # the pipeline enables it only for Python >= 3.8 targets
 )
 
 MAX_PASSES = 6
@@ -2082,6 +2095,481 @@ def _collapse_else(source: str) -> tuple[str, list[str]]:
     return new_source, ["else-after-terminator"] * len(accepted)
 
 
+def _rule_merge_imports(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """Consecutive `import a` + `import b` become `import a, b` per 88 columns.
+
+    `import a, b` is defined as importing and binding each module in order,
+    exactly like the separate statements, so nothing observable changes.
+    Packing is greedy and width-bounded, like `merge-from-imports`.
+    """
+    first = body[i]
+    if not isinstance(first, ast.Import):
+        return None
+    run, j = [first], i + 1
+    while j < len(body) and isinstance(body[j], ast.Import):
+        run.append(body[j])
+        j += 1
+    if len(run) < 2:
+        return None
+    width = 88 - first.col_offset
+    chunks: list[list[ast.alias]] = []
+    for alias in (alias for stmt in run for alias in stmt.names):
+        if chunks and len(ast.unparse(ast.Import(names=chunks[-1] + [alias]))) <= width:
+            chunks[-1].append(alias)
+        else:
+            chunks.append([alias])
+    if len(chunks) >= len(run):
+        return None
+    start, end = _span(run)
+    return Rewrite(
+        "merge-imports",
+        start,
+        end,
+        [ast.Import(names=chunk) for chunk in chunks],
+        first.col_offset,
+        _end_col(run, end),
+    )
+
+
+def _rule_search_loop(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """`for t in it: if c: return v` + `return d` -> `return next((v for t in it
+    if c), d)`.
+
+    The generator evaluates `it` once up front and `c`/`v` once per item in
+    the same order, stopping at the first hit, exactly like the loop. What
+    the generator changes is guarded against: the default must be a literal
+    (it is now evaluated before the search instead of after it), and `c`/`v`
+    may not contain `await`/`yield` (they would change the generator's kind),
+    a walrus (it would bind in the generator's scope), zero-argument `super()`
+    (it needs the method's frame), or an explicit `next()` call (a
+    StopIteration escaping a generator becomes a RuntimeError). The target
+    stays unbound after the rewrite, so it must not be declared
+    global/nonlocal or read anywhere else in the scope.
+    """
+    loop = body[i]
+    if class_body or not (
+        isinstance(loop, ast.For)
+        and not loop.orelse
+        and len(loop.body) == 1
+        and isinstance(loop.body[0], ast.If)
+        and not loop.body[0].orelse
+        and len(loop.body[0].body) == 1
+        and isinstance(loop.body[0].body[0], ast.Return)
+        and loop.body[0].body[0].value is not None
+        and i + 1 < len(body)
+        and isinstance(body[i + 1], ast.Return)
+    ):
+        return None
+    test, value = loop.body[0].test, loop.body[0].body[0].value
+    fallback = body[i + 1].value or ast.Constant(value=None)
+    literal = fallback.operand if isinstance(fallback, ast.UnaryOp) else fallback
+    if not isinstance(literal, ast.Constant) or (
+        literal is not fallback
+        and not (
+            isinstance(fallback.op, (ast.USub, ast.UAdd))
+            and type(literal.value) in (int, float, complex)
+        )
+    ):
+        return None
+    if isinstance(value, ast.Constant) and isinstance(value.value, bool):
+        return None  # boolean-loop-to-any-all owns the boolean search
+    for node in ast.walk(ast.Tuple(elts=[test, value], ctx=ast.Load())):
+        if isinstance(node, (ast.Await, ast.Yield, ast.YieldFrom, ast.NamedExpr)):
+            return None
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"super", "next"}
+        ):
+            return None
+    targets = _target_names(loop.target)
+    if any(f"!declared:{name}" in scope_lines for name in targets) or _leaks(
+        scope_lines, targets, loop.lineno, loop.end_lineno
+    ):
+        return None
+    generator = ast.GeneratorExp(
+        elt=value, generators=[_comprehension(loop.target, loop.iter, [test])]
+    )
+    covered = [loop, body[i + 1]]
+    start, end = _span(covered)
+    return Rewrite(
+        "search-loop-to-next",
+        start,
+        end,
+        [ast.Return(value=_call("next", [generator, fallback]))],
+        loop.col_offset,
+        _end_col(covered, end),
+    )
+
+
+# ---- aggressive profile (opt-in) ------------------------------------------
+
+
+def _single_line_call(stmt: ast.stmt) -> bool:
+    return (
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, (ast.Call, ast.Await))
+        and stmt.lineno == stmt.end_lineno
+    )
+
+
+def _rule_join_call_statements(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """`f()` + `g()` -> `f(), g()` (aggressive).
+
+    A tuple display evaluates its elements left to right and the statement
+    discards the tuple, so the calls run in the same order with the same
+    arguments; an exception in one still prevents the next. Joined greedily
+    up to the canonical width.
+    """
+    if not _single_line_call(body[i]):
+        return None
+    first, run = body[i], [body[i]]
+    width = 88 - first.col_offset
+    while i + len(run) < len(body) and _single_line_call(body[i + len(run)]):
+        trial = run + [body[i + len(run)]]
+        if len(", ".join(ast.unparse(s.value) for s in trial)) > width:
+            break
+        run.append(body[i + len(run)])
+    if len(run) < 2:
+        return None
+    joined = ", ".join(ast.unparse(s.value) for s in run)
+    start, end = _span(run)
+    return Rewrite(
+        "join-call-statements",
+        start,
+        end,
+        [],
+        first.col_offset,
+        _end_col(run, end),
+        text=[joined],
+    )
+
+
+def _rule_guard_call_to_and(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """`if c: f()` (no else) -> `c and f()` (aggressive).
+
+    `and` evaluates `bool(c)` exactly once, like the `if`, and evaluates
+    `f()` only when that is true; the value is discarded either way. `or`,
+    conditional expressions, lambdas and walruses in `c` are parenthesized so
+    `and` cannot rebind them.
+    """
+    stmt = body[i]
+    if not (
+        isinstance(stmt, ast.If)
+        and not stmt.orelse
+        and len(stmt.body) == 1
+        and _single_line_call(stmt.body[0])
+        and stmt.test.lineno == stmt.test.end_lineno
+    ):
+        return None
+    test = ast.unparse(stmt.test)
+    if isinstance(
+        stmt.test, (ast.BoolOp, ast.IfExp, ast.Lambda, ast.NamedExpr)
+    ) and not (isinstance(stmt.test, ast.BoolOp) and isinstance(stmt.test.op, ast.And)):
+        test = f"({test})"
+    text = f"{test} and {ast.unparse(stmt.body[0].value)}"
+    if stmt.col_offset + len(text) > 88:
+        return None
+    return Rewrite(
+        "guard-call-to-and",
+        stmt.lineno,
+        stmt.end_lineno,
+        [],
+        stmt.col_offset,
+        stmt.end_col_offset,
+        text=[text],
+    )
+
+
+def _rule_conditional_rebind(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """`if c: x = v` (no else) -> `x = v if c else x` (aggressive).
+
+    Only for a plain name that is provably bound before the `if` (so the
+    `else x` load cannot raise) and not declared global/nonlocal. Evaluation
+    order is unchanged: `c` first, then `v` only when it holds.
+    """
+    stmt = body[i]
+    if not (
+        isinstance(stmt, ast.If)
+        and not stmt.orelse
+        and len(stmt.body) == 1
+        and isinstance(stmt.body[0], ast.Assign)
+        and len(stmt.body[0].targets) == 1
+        and _is_name(stmt.body[0].targets[0])
+    ):
+        return None
+    name = stmt.body[0].targets[0].id
+    if f"!declared:{name}" in scope_lines or not _provably_bound(
+        name, _bound_at(body, i, scope_lines), scope_lines
+    ):
+        return None
+    if any(isinstance(n, ast.NamedExpr) for n in ast.walk(stmt.test)):
+        return None
+    new = ast.Assign(
+        targets=[ast.Name(id=name, ctx=ast.Store())],
+        value=ast.IfExp(
+            test=stmt.test,
+            body=stmt.body[0].value,
+            orelse=ast.Name(id=name, ctx=ast.Load()),
+        ),
+    )
+    if stmt.col_offset + len(_unparse_stmt(new)) > 88:
+        return None
+    return Rewrite(
+        "conditional-rebind",
+        stmt.lineno,
+        stmt.end_lineno,
+        [new],
+        stmt.col_offset,
+        stmt.end_col_offset,
+    )
+
+
+def _leftmost_load(node: ast.expr, name: str) -> ast.Name | None:
+    """The `Name` node `_first_evaluated_name` reasons about, if it is `name`.
+
+    Follows exactly the same leftmost evaluation path, so the node returned
+    is the one evaluated first - not merely the first in field order (which
+    differs for conditional expressions)."""
+    while True:
+        if isinstance(node, ast.Name):
+            return node if node.id == name and isinstance(node.ctx, ast.Load) else None
+        if isinstance(node, ast.BoolOp):
+            node = node.values[0]
+        elif isinstance(node, (ast.Compare, ast.BinOp)):
+            node = node.left
+        elif isinstance(node, ast.UnaryOp):
+            node = node.operand
+        elif isinstance(node, (ast.Attribute, ast.Subscript)):
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.func
+        elif isinstance(node, ast.IfExp):
+            node = node.test
+        else:
+            return None
+
+
+class _ReplaceNode(ast.NodeTransformer):
+    def __init__(self, old: ast.AST, new: ast.AST) -> None:
+        self.old, self.new = old, new
+
+    def generic_visit(self, node):
+        if node is self.old:
+            return self.new
+        return super().generic_visit(node)
+
+    def visit_Name(self, node):
+        return self.new if node is self.old else node
+
+
+def _rule_walrus_inline(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """`t = e` + `<stmt reading t first, and again>` -> `<stmt with (t := e)>`
+    (aggressive, Python >= 3.8).
+
+    The binding moves to the next statement's first-evaluated position, so
+    `e` still runs before anything else that statement evaluates, and `t`
+    stays bound afterwards exactly as before. Statements that re-evaluate
+    their head (`while`) or load their target first (`x += ...`) are out.
+    """
+    assign = body[i]
+    if (
+        class_body
+        or i + 1 >= len(body)
+        or not (
+            isinstance(assign, ast.Assign)
+            and len(assign.targets) == 1
+            and _is_name(assign.targets[0])
+        )
+    ):
+        return None
+    name = assign.targets[0].id
+    if f"!declared:{name}" in scope_lines or _guarded(scope_lines, assign):
+        return None
+    nxt = body[i + 1]
+    if (
+        isinstance(nxt, (ast.Return, ast.Expr))
+        and nxt.value is not None
+        or isinstance(nxt, ast.Assign)
+    ):
+        head = nxt.value
+    elif isinstance(nxt, ast.If):
+        head = nxt.test
+    else:
+        return None
+    first = _leftmost_load(head, name)
+    if first is None or _load_count([head], name) < 2:
+        return None  # single use is inline-single-use-temp's job
+    if any(
+        isinstance(
+            n, (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+        )
+        and any(x is first for x in ast.walk(n))
+        for n in ast.walk(head)
+    ):
+        return None
+    walrus = ast.NamedExpr(
+        target=ast.Name(id=name, ctx=ast.Store()), value=assign.value
+    )
+    # work on a reparsed copy (the tree is shared with other rules) and
+    # re-locate the leftmost load there, so the replacement hits that node
+    copy = ast.parse(ast.unparse(head), mode="eval").body
+    target = _leftmost_load(copy, name)
+    new_head = _ReplaceNode(target, walrus).visit(copy)
+    if isinstance(nxt, ast.If):
+        if nxt.lineno != nxt.test.lineno or nxt.test.end_lineno != nxt.lineno:
+            return None
+        rendered = "if " + ast.unparse(new_head) + ":"
+        lines = [rendered]
+        start, end = assign.lineno, nxt.lineno
+        return Rewrite(
+            "walrus-inline",
+            start,
+            end,
+            [],
+            assign.col_offset,
+            nxt.test.end_col_offset + 1,
+            text=lines,
+        )
+    if isinstance(nxt, ast.Return):
+        new = ast.Return(value=new_head)
+    elif isinstance(nxt, ast.Expr):
+        new = ast.Expr(value=new_head)
+    else:
+        new = ast.Assign(targets=nxt.targets, value=new_head)
+    covered = [assign, nxt]
+    start, end = _span(covered)
+    return Rewrite(
+        "walrus-inline", start, end, [new], assign.col_offset, _end_col(covered, end)
+    )
+
+
+def _dict_runs(node: ast.Dict) -> list[tuple[int, int]]:
+    """[start, end) index runs of >= 3 adjacent entries with one constant value
+    and keys that are constants or 2-tuples sharing their first element."""
+    runs, i = [], 0
+
+    def kind(k):
+        if isinstance(k, ast.Constant):
+            return ("const",)
+        if (
+            isinstance(k, ast.Tuple)
+            and len(k.elts) == 2
+            and all(isinstance(e, ast.Constant) for e in k.elts)
+        ):
+            return ("pair", repr(k.elts[0].value))
+        return None
+
+    while i < len(node.keys):
+        key, value = node.keys[i], node.values[i]
+        if key is None or kind(key) is None or not isinstance(value, ast.Constant):
+            i += 1
+            continue
+        j = i + 1
+        while (
+            j < len(node.keys)
+            and node.keys[j] is not None
+            and kind(node.keys[j]) == kind(key)
+            and isinstance(node.values[j], ast.Constant)
+            and repr(node.values[j].value) == repr(value.value)
+            and type(node.values[j].value) is type(value.value)
+        ):
+            j += 1
+        if j - i >= 3:
+            runs.append((i, j))
+        i = max(j, i + 1)
+    return runs
+
+
+def _rule_dict_repeated_values(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """Runs of literal dict entries sharing one constant value collapse into
+    `**dict.fromkeys((k1, k2, ...), v)` or, for 2-tuple keys sharing their
+    first element, `**{(a, n): v for n in (x1, x2, ...)}` (aggressive).
+
+    Key order, duplicate-key resolution and every key/value object are the
+    same: the keys and values are immutable constants, the unpacking runs
+    in display order, and later entries still win.
+    """
+    stmt = body[i]
+    if not (
+        isinstance(stmt, (ast.Assign, ast.AnnAssign))
+        and isinstance(stmt.value, ast.Dict)
+        and stmt.value.end_lineno > stmt.value.lineno
+    ):
+        return None
+    node = stmt.value
+    runs = _dict_runs(node)
+    if not runs:
+        return None
+    parts, k = [], 0
+    for start, end in runs:
+        for idx in range(k, start):
+            parts.append((node.keys[idx], node.values[idx]))
+        keys, value = node.keys[start:end], node.values[start]
+        if isinstance(keys[0], ast.Tuple):
+            unpacked = ast.DictComp(
+                key=ast.Tuple(
+                    elts=[keys[0].elts[0], ast.Name(id="key", ctx=ast.Load())],
+                    ctx=ast.Load(),
+                ),
+                value=value,
+                generators=[
+                    _comprehension(
+                        ast.Name(id="key", ctx=ast.Store()),
+                        ast.Tuple(elts=[k.elts[1] for k in keys], ctx=ast.Load()),
+                    )
+                ],
+            )
+        else:
+            unpacked = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id="dict", ctx=ast.Load()),
+                    attr="fromkeys",
+                    ctx=ast.Load(),
+                ),
+                args=[ast.Tuple(elts=list(keys), ctx=ast.Load()), value],
+                keywords=[],
+            )
+        parts.append((None, unpacked))
+        k = end
+    for idx in range(k, len(node.keys)):
+        parts.append((node.keys[idx], node.values[idx]))
+    if "!stored:dict" in scope_lines or "!bound:dict" in scope_lines:
+        return None  # `dict` must be the builtin
+    new_dict = ast.Dict(keys=[p[0] for p in parts], values=[p[1] for p in parts])
+    if isinstance(stmt, ast.Assign):
+        new = ast.Assign(targets=stmt.targets, value=new_dict)
+    else:
+        new = ast.AnnAssign(
+            target=stmt.target,
+            annotation=stmt.annotation,
+            value=new_dict,
+            simple=stmt.simple,
+        )
+    return Rewrite(
+        "dict-repeated-values",
+        stmt.lineno,
+        stmt.end_lineno,
+        [new],
+        stmt.col_offset,
+        stmt.end_col_offset,
+    )
+
+
 _RULE_FNS = {
     "bool-return": _rule_bool_return,
     "merge-same-branch": _rule_merge_same_branch,
@@ -2103,6 +2591,13 @@ _RULE_FNS = {
     "max-loop-to-max": _rule_max_loop,
     "merge-del": _rule_merge_del,
     "pack-assignments": _rule_pack_assignments,
+    "merge-imports": _rule_merge_imports,
+    "search-loop-to-next": _rule_search_loop,
+    "join-call-statements": _rule_join_call_statements,
+    "guard-call-to-and": _rule_guard_call_to_and,
+    "conditional-rebind": _rule_conditional_rebind,
+    "walrus-inline": _rule_walrus_inline,
+    "dict-repeated-values": _rule_dict_repeated_values,
 }
 
 
@@ -2157,7 +2652,7 @@ def _collect(
         i = 0
         while i < len(block):
             hit = None
-            for name in RULES:
+            for name in RULES + AGGRESSIVE_RULES:
                 if name not in only or name not in _RULE_FNS:
                     continue  # textual rules (else-after-terminator) run outside _collect
                 hit = _RULE_FNS[name](block, i, scope_lines, class_body)
@@ -2274,6 +2769,7 @@ def _one_pass(source: str, only: set[str]) -> tuple[str, list[str]]:
             "self-default-assignment",
             "inline-single-use-temp",
             "merge-from-imports",
+            "merge-imports",
             "hoist-common-tail",
             "merge-del",
             "pack-assignments",
@@ -2310,8 +2806,11 @@ def _one_pass(source: str, only: set[str]) -> tuple[str, list[str]]:
             "self-default-assignment",
             "inline-single-use-temp",
             "merge-from-imports",
+            "merge-imports",
             "hoist-common-tail",
             "pack-assignments",
+            "search-loop-to-next",
+            *AGGRESSIVE_RULES,
         }:
             from .loc import measure
 
@@ -2343,7 +2842,9 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
     Returns `(new_source, rule_names_applied)`. Never returns a source that
     fails to parse; on any doubt it returns the input unchanged.
     """
-    selected = set(RULES) if only is None else (set(only) & set(RULES))
+    selected = (
+        set(RULES) if only is None else (set(only) & set(RULES + AGGRESSIVE_RULES))
+    )
     if not selected:
         return source, []
     applied: list[str] = []

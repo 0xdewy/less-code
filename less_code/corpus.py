@@ -91,6 +91,7 @@ def run_corpus(
     ml_file_backend=None,
     ml_file_attempts: int = 3,
     dedup_backend=None,
+    aggressive: bool = False,
 ) -> dict:
     if not 1 <= ml_attempts <= 3:
         raise ValueError("ml_attempts must be between 1 and 3")
@@ -178,6 +179,7 @@ def run_corpus(
                     ml_symbols=ml_symbols,
                     ml_file_backend=ml_file_backend,
                     ml_file_attempts=ml_file_attempts,
+                    aggressive=aggressive,
                     final_validator=(
                         lambda item=item, root=root: (
                             _run(item.audit, root, timeout).returncode == 0
@@ -282,6 +284,10 @@ def run_corpus(
                     "ml_file_stats": result.get("ml_file_stats", {}),
                     "ml_file_records": result.get("ml_file_records", []),
                     "dedup_loc": dedup_loc,
+                    "aggressive_loc": result.get("aggressive_loc", 0) if valid else 0,
+                    "docs_removed_with_dead_code": result.get(
+                        "docs_removed_with_dead_code", 0
+                    ),
                     "dedup_stats": dedup_stats,
                     "dedup_records": dedup_records,
                     "audit_records": result.get("audit_records", []),
@@ -325,11 +331,15 @@ def run_corpus(
                 file=sys.stderr,
                 flush=True,
             )
-    return summarize(rows, ml_backend, ml_attempts, ml_symbols)
+    return summarize(rows, ml_backend, ml_attempts, ml_symbols, aggressive)
 
 
 def summarize(
-    rows: list[dict], ml_backend=None, ml_attempts: int = 3, ml_symbols: int = 64
+    rows: list[dict],
+    ml_backend=None,
+    ml_attempts: int = 3,
+    ml_symbols: int = 64,
+    aggressive: bool = False,
 ) -> dict:
     """Aggregate saved rows as well as fresh runs without changing denominators."""
     loc_start_total = sum(row["loc_start"] for row in rows)
@@ -337,8 +347,10 @@ def summarize(
     loc_final_total = sum(row["loc_final"] for row in rows)
     ml_file_loc_total = sum(row.get("ml_file_loc", 0) for row in rows)
     dedup_loc_total = sum(row.get("dedup_loc", 0) for row in rows)
+    aggressive_loc_total = sum(row.get("aggressive_loc", 0) for row in rows)
     return {
         "experiment": {
+            "profile": "aggressive" if aggressive else "default",
             "ml_backend": getattr(ml_backend, "name", None),
             "ml_attempts": ml_attempts if ml_backend else 0,
             "ml_symbols": ml_symbols if ml_backend else 0,
@@ -374,6 +386,12 @@ def summarize(
             "llm_extra_pct": pct(loc_after_static_total, loc_final_total),
             "ml_file_loc": ml_file_loc_total,
             "dedup_loc": dedup_loc_total,
+            "aggressive_loc": aggressive_loc_total,
+            # the aggressive layers run last and only ever remove lines, so the
+            # same run without them would have ended at loc_final + their share
+            "default_profile_pct": pct(
+                loc_start_total, loc_final_total + aggressive_loc_total
+            ),
             "audit_performed": bool(rows)
             and all(row.get("audit_ok") is not None for row in rows),
             "audited_projects": sum(row.get("audit_ok") is not None for row in rows),
@@ -401,6 +419,19 @@ def write_corpus_report(result: dict, json_path: Path, markdown_path: Path) -> N
             f"Weighted post-formatter code LOC: "
             f"**{aggregate['loc_start']} → {aggregate['loc_final']}** "
             f"({aggregate['raw_pct']}% reduction)"
+        ),
+        *(
+            [
+                "",
+                (
+                    f"Profile: **aggressive** (`--aggressive`). Opt-in density layers"
+                    f" removed {aggregate['aggressive_loc']} of those lines; the"
+                    f" default profile alone reaches"
+                    f" {aggregate['default_profile_pct']}%."
+                ),
+            ]
+            if result.get("experiment", {}).get("profile") == "aggressive"
+            else []
         ),
         "",
         "| Project | Language | LOC | static % | total % | Tests/API/docs | Shadow oracle |",

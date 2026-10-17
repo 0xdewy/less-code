@@ -107,6 +107,7 @@ def cmd_shrink(args: argparse.Namespace) -> int:
         test_command=test_command,
         ml_file_backend=ml_file_backend,
         ml_file_attempts=args.ml_attempts,
+        aggressive=args.aggressive,
     )
     write_report(stats, Path(args.out))
     payload = stats.to_json()
@@ -431,6 +432,7 @@ def cmd_corpus(args: argparse.Namespace) -> int:
         only=getattr(args, "only", None),
         ml_file_backend=file_backend,
         dedup_backend=dedup_backend,
+        aggressive=args.aggressive,
     )
     write_corpus_report(result, Path(args.out), Path(args.markdown))
     print(json.dumps(result["aggregate"], indent=2))
@@ -499,6 +501,16 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=60.0,
         help="per-call timeout for the ML backend (seconds)",
+    )
+    p.add_argument(
+        "--aggressive",
+        action="store_true",
+        help=(
+            "also run the opt-in density layers (call-statement joins, guard"
+            " calls as `and`, conditional rebinds, f-string conversion, removal"
+            " of in-package import fallbacks); every edit is still gated and"
+            " their yield is reported separately as aggressive_loc"
+        ),
     )
     p.set_defaults(func=cmd_shrink)
     p.add_argument(
@@ -671,6 +683,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--ml-symbols", type=int, choices=range(1, 65), default=64, metavar="1..64"
+    )
+    p.add_argument(
+        "--aggressive",
+        action="store_true",
+        help=(
+            "also run the opt-in density layers (call-statement joins, guard"
+            " calls as `and`, conditional rebinds, f-string conversion, removal"
+            " of in-package import fallbacks); every edit is still gated and"
+            " their yield is reported separately as aggressive_loc"
+        ),
     )
     p.set_defaults(func=cmd_corpus)
 

@@ -366,6 +366,71 @@ def _ruff_fix(text: str, filename: str, unsafe: bool = False) -> str:
     return out
 
 
+def project_min_python(root: Path) -> str | None:
+    """The oldest Python a project supports, as a ruff target ("py38"), or None.
+
+    Read from `requires-python` / `python_requires` (the lower bound of a
+    `>=` spec) or, failing that, the lowest `Programming Language :: Python ::
+    3.N` classifier. Unknown means a version-sensitive fix must not run.
+    """
+    texts = []
+    for name in ("pyproject.toml", "setup.cfg", "setup.py"):
+        candidate = root / name
+        if candidate.is_file():
+            texts.append(candidate.read_text(encoding="utf-8", errors="replace"))
+    text = "\n".join(texts)
+    spec = re.search(
+        r"(?:requires-python|python_requires)\s*[=:]\s*['\"]?\s*>=\s*3\.(\d+)", text
+    )
+    if spec:
+        return f"py3{spec.group(1)}"
+    minors = [
+        int(m) for m in re.findall(r"Programming Language :: Python :: 3\.(\d+)", text)
+    ]
+    return f"py3{min(minors)}" if minors else None
+
+
+# Aggressive profile only: printf/format -> f-string style. Behavior can
+# differ for objects with a custom __format__, so the gate and the shadow
+# oracle decide; the target version keeps the syntax within the project's
+# supported Pythons.
+RUFF_AGGRESSIVE_SELECT = "UP031,UP032"
+
+
+def ruff_aggressive_fix(text: str, filename: str, target: str) -> str:
+    if shutil.which("ruff") is None:
+        return text
+    cmd = [
+        "ruff",
+        "check",
+        "--isolated",
+        "--target-version",
+        target,
+        "--select",
+        RUFF_AGGRESSIVE_SELECT,
+        "--fix",
+        "--unsafe-fixes",
+        "--quiet",
+        "--stdin-filename",
+        filename,
+        "-",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, input=text, capture_output=True, text=True, timeout=120, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return text
+    out = proc.stdout
+    if not out.strip():
+        return text
+    try:
+        ast.parse(out)
+    except SyntaxError:
+        return text
+    return out
+
+
 _TERMINATORS = (ast.Return, ast.Raise, ast.Continue, ast.Break)
 
 

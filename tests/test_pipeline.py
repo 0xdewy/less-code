@@ -817,3 +817,52 @@ def test_write_report_fails_loud_when_disk_truth_differs(tmp_path):
     import json
 
     assert json.loads(out.read_text())["reduce"]["loc_final"] == stats.loc_final
+
+
+def test_aggressive_profile_is_opt_in_gated_and_reported(tmp_path):
+    root = tmp_path / "agg"
+    pkg = root / "pkg"
+    (root / "tests").mkdir(parents=True)
+    pkg.mkdir()
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "agg"\nrequires-python = ">=3.10"\n'
+    )
+    (pkg / "__init__.py").write_text("")
+    (pkg / "typeutils.py").write_text(
+        "def make_sentinel(name='_MISSING'):\n    return object()\n"
+    )
+    module = (
+        "try:\n"
+        "    from .typeutils import make_sentinel\n"
+        "    _MISSING = make_sentinel()\n"
+        "except ImportError:\n"
+        "    _MISSING = object()\n"
+        "\n\n"
+        "def record(log, x):\n"
+        "    log.append('start')\n"
+        '    "the log is a list"\n'
+        "    log.append(x)\n"
+        "    if x:\n"
+        "        log.append('truthy')\n"
+        "    return len(log)\n"
+    )
+    (pkg / "mod.py").write_text(module)
+    (root / "tests" / "test_mod.py").write_text(
+        "from pkg.mod import record\n\n\n"
+        "def test_record():\n"
+        "    log = []\n"
+        "    assert record(log, 1) == 3 and log == ['start', 1, 'truthy']\n"
+        "    assert record([], 0) == 2\n"
+    )
+    default = shrink_project(root, "python")
+    assert default.aggressive_loc == 0
+    assert (pkg / "mod.py").read_text() == module  # nothing to do by default
+    stats = shrink_project(root, "python", aggressive=True)
+    assert stats.tests_ok and stats.api_ok and stats.docs_ok
+    assert stats.aggressive_loc > 0
+    assert stats.loc_final == stats.loc_start - stats.aggressive_loc
+    text = (pkg / "mod.py").read_text()
+    assert "except ImportError" not in text
+    assert "# the log is a list" in text  # the note survives as a comment
+    layers = {r["layer"] for r in stats.layer_records if r.get("aggressive")}
+    assert {"aggressive-rules", "in-package-fallbacks", "notes-to-comments"} <= layers

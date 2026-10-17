@@ -1054,9 +1054,11 @@ def test_every_rule_name_is_reachable():
         "inline-return-temp",
         "inline-single-use-temp",
         "merge-from-imports",
+        "merge-imports",
         "hoist-common-tail",
         "dict-build-to-literal",
         "boolean-loop-to-any-all",
+        "search-loop-to-next",
         "append-loop-to-comprehension",
         "accumulate-to-sum",
         "sort-to-sorted",
@@ -1910,3 +1912,126 @@ def test_pack_assignments_never_crosses_a_blank_line():
     source = "def f():\n    a = 1\n\n    b = 2\n    return a, b\n"
     reduced, _ = apply_rules(source, {"pack-assignments"})
     assert "a, b = 1, 2" not in reduced
+
+
+# ---- merge-imports / search-loop-to-next -----------------------------------
+
+
+def test_merge_imports_packs_in_order_within_width():
+    source = "import os\nimport sys\nimport re as regex\n"
+    reduced, applied = apply_rules(source, {"merge-imports"})
+    assert applied == ["merge-imports"]
+    assert reduced == "import os, sys, re as regex\n"
+
+
+def test_merge_imports_never_exceeds_the_canonical_width():
+    names = [f"module_with_a_rather_long_name_{n}" for n in range(6)]
+    source = "".join(f"import {name}\n" for name in names)
+    reduced, _ = apply_rules(source, {"merge-imports"})
+    assert all(len(line) <= 88 for line in reduced.splitlines())
+    assert [a for line in reduced.splitlines() for a in line[7:].split(", ")] == names
+
+
+def _run(source: str, name: str, *args):
+    namespace: dict = {}
+    exec(source, namespace)  # noqa: S102 - running the rewrite is the test
+    return namespace[name](*args)
+
+
+def test_search_loop_becomes_next_with_same_results():
+    source = textwrap.dedent(
+        """\
+        def find(items, key):
+            for item in items:
+                if item[0] == key:
+                    return item[1]
+            return -1
+        """
+    )
+    reduced, applied = apply_rules(source, {"search-loop-to-next"})
+    assert applied == ["search-loop-to-next"]
+    assert "next(" in reduced and "for item" in reduced
+    data = [("a", 1), ("b", 2), ("b", 3)]
+    for key in ("a", "b", "z"):
+        assert _run(reduced, "find", data, key) == _run(source, "find", data, key)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # target read after the loop: it would stay unbound
+        "for x in xs:\n        if x:\n            return x\n    print(x)\n    return None\n",
+        # non-literal default: evaluation would move before the search
+        "for x in xs:\n        if x:\n            return x\n    return make()\n",
+        # zero-argument super() needs the method frame
+        "for x in xs:\n        if super().ok(x):\n            return x\n    return None\n",
+        # StopIteration from next() would become RuntimeError in a generator
+        "for x in xs:\n        if next(x):\n            return x\n    return None\n",
+        # a walrus would bind inside the generator scope
+        "for x in xs:\n        if (y := x):\n            return y\n    return None\n",
+    ],
+)
+def test_search_loop_declines_unsafe_shapes(body):
+    source = "def f(xs):\n    " + body
+    assert apply_rules(source, {"search-loop-to-next"}) == (source, [])
+
+
+# ---- aggressive profile ------------------------------------------------------
+
+
+def test_aggressive_rules_never_run_by_default():
+    from less_code.rules import AGGRESSIVE_RULES
+
+    source = "def f(log, x):\n    log.a()\n    log.b()\n    if x:\n        log.c()\n"
+    assert apply_rules(source) == (source, [])
+    _, applied = apply_rules(source, set(AGGRESSIVE_RULES))
+    assert set(applied) == {"join-call-statements", "guard-call-to-and"}
+
+
+def test_aggressive_rules_preserve_calls_order_and_values():
+    from less_code.rules import AGGRESSIVE_RULES
+
+    source = textwrap.dedent(
+        """\
+        def f(x, log, items):
+            log("a")
+            log("b", x)
+            if x:
+                items.append(x)
+            if x or items:
+                log("c")
+            y = 1
+            if x > 2:
+                y = x * 2
+            return y
+        """
+    )
+    reduced, applied = apply_rules(source, set(AGGRESSIVE_RULES))
+    assert set(applied) == {
+        "join-call-statements",
+        "guard-call-to-and",
+        "conditional-rebind",
+    }
+    for x in (0, 1, 3):
+        calls_a, calls_b, items_a, items_b = [], [], [], []
+        a = _run(source, "f", x, lambda *v, c=calls_a: c.append(v), items_a)
+        b = _run(reduced, "f", x, lambda *v, c=calls_b: c.append(v), items_b)
+        assert (a, calls_a, items_a) == (b, calls_b, items_b)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # `total` may be unbound: `else total` would raise NameError
+        "if n:\n        total = 5\n    return total\n",
+        # an `or` test must be parenthesized, never re-associated
+        "if n or m:\n        g()\n",
+    ],
+)
+def test_aggressive_rules_decline_or_parenthesize(body):
+    from less_code.rules import AGGRESSIVE_RULES
+
+    source = "def f(n, m, g):\n    " + body
+    reduced, _ = apply_rules(source, set(AGGRESSIVE_RULES))
+    assert "else total" not in reduced
+    assert "n or m and" not in reduced
