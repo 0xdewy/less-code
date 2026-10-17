@@ -60,15 +60,12 @@ def _faithful_copy(value):
             raise ValueError("argument too large to copy")
     except TypeError:
         pass  # unsized
-    if type(value) is set:
-        # `deepcopy` re-inserts in iteration order, which lands differently
-        # in the hash table than the original's own insertion history — the
-        # copy then ITERATES in a different order. The oracle compares
-        # sequences, so a set copy must iterate exactly like its source:
-        # `set.copy()` duplicates the table structure and does.
-        duplicate = value.copy()
-    else:
-        duplicate = copy.deepcopy(value)
+    # `deepcopy` re-inserts in iteration order, which lands differently
+    # in the hash table than the original's own insertion history — the
+    # copy then ITERATES in a different order. The oracle compares
+    # sequences, so a set copy must iterate exactly like its source:
+    # `set.copy()` duplicates the table structure and does.
+    duplicate = value.copy() if type(value) is set else copy.deepcopy(value)
     if _same(duplicate, value) is False or (
         isinstance(value, (set, frozenset)) and list(duplicate) != list(value)
     ):
@@ -76,13 +73,11 @@ def _faithful_copy(value):
     return duplicate
 
 
-_MAX_EXAMPLES = 3
-_MAX_DEPTH = 24
+_MAX_EXAMPLES, _MAX_DEPTH = 3, 24
 #: Calls verified per function before shadowing stops; a hot function called
 #: a million times with a large `self` would otherwise turn the suite
 #: quadratic, and the first few hundred calls carry the evidence anyway.
-_BUDGET = int(os.environ.get("LC_SHADOW_BUDGET", "400"))
-_ITER_BUDGET = 10000
+_BUDGET, _ITER_BUDGET = int(os.environ.get("LC_SHADOW_BUDGET", "400")), 10000
 #: Arguments larger than this (by `len`) are not copied: three faithful
 #: copies of a 50k-element container per call would dominate the suite.
 _MAX_SIZE = 2000
@@ -131,13 +126,12 @@ def _uncopyable(value, depth: int = 0) -> bool:
     """
     if depth > 6:
         return False
-    if isinstance(value, _WEAK_TYPES):
-        return True
-    if isinstance(value, types.MethodType) or (
-        isinstance(value, types.FunctionType) and value.__closure__
+    # a bound method or a closure reaches state the copy does not own:
+    # the original body would then read and write the *real* objects
+    if isinstance(value, _WEAK_TYPES) or (
+        isinstance(value, types.MethodType)
+        or (isinstance(value, types.FunctionType) and value.__closure__)
     ):
-        # a bound method or a closure reaches state the copy does not own:
-        # the original body would then read and write the *real* objects
         return True
     if isinstance(value, functools.partial) and (value.args or value.keywords):
         return True
@@ -216,15 +210,12 @@ def _same(a, b, depth: int = 0):
         return None
     if isinstance(a, BaseException):
         return _same(a.args, b.args, depth + 1)
-    custom_eq = type(a).__eq__ is not object.__eq__
-    if custom_eq:
+    if type(a).__eq__ is not object.__eq__:
         try:
             equal = a == b
         except Exception:  # noqa: BLE001
             return None
-        if isinstance(equal, bool):
-            return equal
-        return None
+        return equal if isinstance(equal, bool) else None
     d1, d2 = getattr(a, "__dict__", None), getattr(b, "__dict__", None)
     if isinstance(d1, dict) and isinstance(d2, dict):
         return _same(d1, d2, depth + 1)
@@ -280,8 +271,7 @@ class _Oracle:
 
     def entry(self, key: str) -> dict:
         return self.stats.setdefault(
-            key,
-            {"verified": 0, "skipped": 0, "mismatches": 0, "examples": []},
+            key, {"verified": 0, "skipped": 0, "mismatches": 0, "examples": []}
         )
 
     def mismatch(self, key: str, kind: str, new, old) -> None:
@@ -347,10 +337,9 @@ class _Oracle:
                 if recheck is not None and not rechecked:
                     rechecked = True
                     old_items.append(other)
-                    first_run = old_items[:-1] + list(
-                        itertools.islice(old_iter, _ITER_BUDGET)
-                    )
-                    if recheck(first_run):
+                    if recheck(
+                        old_items[:-1] + list(itertools.islice(old_iter, _ITER_BUDGET))
+                    ):
                         self.entry(key)["nondeterministic"] = (
                             self.entry(key).get("nondeterministic", 0) + 1
                         )
@@ -386,8 +375,7 @@ class _Oracle:
             for name, value in kwargs.items():
                 if _is_iterator(value):
                     first, second, third = itertools.tee(value, 3)
-                    new_kwargs[name] = first
-                    old_kwargs[name] = second
+                    new_kwargs[name], old_kwargs[name] = first, second
                     spare_kwargs[name] = third
                 else:
                     new_kwargs[name] = value
@@ -492,11 +480,10 @@ class _Oracle:
                 after_new = _faithful_copy(real)
             except Exception:  # noqa: BLE001, S112 - uncopyable after-state
                 continue
-            new_mutated = _same(after_new, spare)
-            old_mutated = _same(old_copy, spare)
-            if new_mutated is None or old_mutated is None:
-                continue
-            if new_mutated and old_mutated:
+            new_mutated, old_mutated = _same(after_new, spare), _same(old_copy, spare)
+            if (new_mutated is None or old_mutated is None) or (
+                new_mutated and old_mutated
+            ):
                 continue
             if _same(after_new, old_copy) is False:
                 self.mismatch(key, f"argument-{label}-mutation", real, old_copy)
@@ -513,13 +500,11 @@ class _Oracle:
 
     def _install_one(self, module, qualname: str, info: dict) -> None:
         key = f"{module.__file__}::{qualname}"
-        parts = qualname.split(".")
-        container = module
+        parts, container = qualname.split("."), module
         for part in parts[:-1]:
             container = getattr(container, part)
         name = parts[-1]
-        raw = vars(container)[name]
-        wrap = None
+        raw, wrap = vars(container)[name], None
         if isinstance(raw, property):
             wrap, raw = raw, raw.fget
         elif isinstance(raw, (classmethod, staticmethod)):
@@ -532,8 +517,7 @@ class _Oracle:
         namespace: dict = {}
         code = compile(info["source"], module.__file__ + "#original", "exec")
         exec(code, module.__dict__, namespace)  # noqa: S102 - the original body
-        original = namespace[name]
-        oracle = self
+        original, oracle = namespace[name], self
 
         @functools.wraps(raw)
         def shadowed(*args, **kwargs):

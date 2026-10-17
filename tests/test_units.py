@@ -27,6 +27,25 @@ class TestEntryPointTreesAreNotLibraries:
         project = map_project(root)
         assert [p.name for p in project.source_files] == ["__init__.py"]
 
+    def test_exclude_drops_named_dir_and_nested_subtree(self, tmp_path):
+        root = tmp_path / "proj"
+        pkg = root / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("")
+        for rel in (
+            "fixtures/inventory.py",
+            "training/crates/lib.py",
+            "training/sft.py",
+        ):
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x = 1\n")
+        project = map_project(root, exclude=("fixtures", "training/crates"))
+        assert sorted(p.name for p in project.source_files) == [
+            "__init__.py",
+            "sft.py",
+        ]
+
 
 class TestIsTestFile:
     """Convention-based classification. click's `testing.py` (public API,

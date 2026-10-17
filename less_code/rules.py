@@ -335,8 +335,7 @@ def _flatten_body(body: list[ast.stmt]) -> tuple[ast.stmt, set[str]] | None:
             return None
     merged = final
     for stmt in reversed(prefix):
-        sub = _Substitute(stmt.targets[0].id, stmt.value)
-        merged = sub.visit(merged)
+        merged = _Substitute(stmt.targets[0].id, stmt.value).visit(merged)
     return merged, names
 
 
@@ -418,8 +417,7 @@ class _SubstituteFirst(ast.NodeTransformer):
 
 
 def _collapse_loop_body(
-    body: list[ast.stmt],
-    class_body: bool = False,
+    body: list[ast.stmt], class_body: bool = False
 ) -> tuple[ast.stmt, ast.expr | None, set[str]] | None:
     """`(final_stmt, condition_or_None, bound_names)` for a loop body.
 
@@ -450,8 +448,7 @@ def _collapse_loop_body(
     if flat is None:
         return None
     final, names = flat
-    bound = set(names)
-    walruses = 0
+    bound, walruses = set(names), 0
     for stmt in reversed(prefix):
         if not (
             isinstance(stmt, ast.Assign)
@@ -492,16 +489,17 @@ def _fresh_list(value: ast.expr) -> ast.expr | None:
     `[..]`, `[e for ..]` and `list(x)` all produce a list nobody else aliases,
     so re-ordering it in place is unobservable.
     """
-    if isinstance(value, (ast.List, ast.ListComp)):
-        return value
-    if (
-        isinstance(value, ast.Call)
+    # sorted(list(x)) == sorted(x)
+    return (
+        value
+        if isinstance(value, (ast.List, ast.ListComp))
+        else value.args[0]
+        if isinstance(value, ast.Call)
         and _is_name(value.func, "list")
-        and len(value.args) == 1
-        and not value.keywords
-    ):
-        return value.args[0]  # sorted(list(x)) == sorted(x)
-    return None
+        and (len(value.args) == 1)
+        and (not value.keywords)
+        else None
+    )
 
 
 # ---- rules -----------------------------------------------------------------
@@ -584,12 +582,12 @@ def _rule_merge_same_branch(
         other = body[i + 1]
         covered.append(other)
         adjacent = True
-    if other is None or len(stmt.body) != len(other.body):
-        return None
-    if any(
-        ast.dump(left, include_attributes=False)
-        != ast.dump(right, include_attributes=False)
-        for left, right in zip(stmt.body, other.body)
+    if (other is None or len(stmt.body) != len(other.body)) or any(
+        (
+            ast.dump(left, include_attributes=False)
+            != ast.dump(right, include_attributes=False)
+            for left, right in zip(stmt.body, other.body)
+        )
     ):
         return None
 
@@ -774,9 +772,7 @@ def _rule_self_default_assignment(
     if _first_evaluated_name(stmt.test) != name or f"!declared:{name}" in scope_lines:
         return None
     value = ast.IfExp(
-        test=stmt.test,
-        body=assignment.value,
-        orelse=ast.Name(id=name, ctx=ast.Load()),
+        test=stmt.test, body=assignment.value, orelse=ast.Name(id=name, ctx=ast.Load())
     )
     start, end = _span([stmt])
     return Rewrite(
@@ -830,12 +826,7 @@ def _rule_dict_build_literal(
         "dict-build-to-literal",
         start_line,
         end_line,
-        [
-            ast.Assign(
-                targets=assign.targets,
-                value=ast.Dict(keys=keys, values=values),
-            )
-        ],
+        [ast.Assign(targets=assign.targets, value=ast.Dict(keys=keys, values=values))],
         assign.col_offset,
         _end_col(covered, end_line),
     )
@@ -858,8 +849,7 @@ def _rule_boolean_loop(
         and isinstance(body[i + 1], ast.Return)
     ):
         return None
-    branch = loop.body[0].body[0].value
-    fallback = body[i + 1].value
+    branch, fallback = loop.body[0].body[0].value, body[i + 1].value
     if not (
         isinstance(branch, ast.Constant)
         and isinstance(branch.value, bool)
@@ -874,8 +864,7 @@ def _rule_boolean_loop(
     else:
         func, element = "all", ast.UnaryOp(op=ast.Not(), operand=test)
     generator = ast.GeneratorExp(
-        elt=element,
-        generators=[_comprehension(loop.target, loop.iter)],
+        elt=element, generators=[_comprehension(loop.target, loop.iter)]
     )
     covered = [loop, body[i + 1]]
     start, end = _span(covered)
@@ -895,9 +884,9 @@ def _append_target(stmt: ast.stmt, name: str) -> ast.expr | None:
         return None
     call = stmt.value
     func = call.func
-    if not isinstance(func, ast.Attribute) or func.attr != "append":
-        return None
-    if not _is_name(func.value, name) or len(call.args) != 1 or call.keywords:
+    if (not isinstance(func, ast.Attribute) or func.attr != "append") or (
+        not _is_name(func.value, name) or len(call.args) != 1 or call.keywords
+    ):
         return None
     return call.args[0]
 
@@ -912,10 +901,8 @@ def _rule_append_loop(
         and len(assign.targets) == 1
         and _is_name(assign.targets[0])
         and isinstance(assign.value, ast.List)
-        and not assign.value.elts
-    ):
-        return None
-    if i + 1 >= len(body):
+        and (not assign.value.elts)
+    ) or i + 1 >= len(body):
         return None
     loop = body[i + 1]
     if not isinstance(loop, ast.For) or loop.orelse or not loop.body:
@@ -933,12 +920,12 @@ def _rule_append_loop(
     leaked = _target_names(loop.target) | temps
     # the accumulator must not appear in the element expression (that would be
     # a self-referential build) and the loop variable must be dead afterwards
-    if name in _names(element) or name in _names(loop.iter):
-        return None
-    if cond is not None and name in _names(cond):
-        return None
-    if leaked & _names(loop.iter) or _leaks(
-        scope_lines, leaked, loop.lineno, loop.end_lineno
+    if (
+        (name in _names(element) or name in _names(loop.iter))
+        or (cond is not None and name in _names(cond))
+    ) or (
+        leaked & _names(loop.iter)
+        or _leaks(scope_lines, leaked, loop.lineno, loop.end_lineno)
     ):
         return None
     generator = _comprehension(
@@ -962,18 +949,18 @@ def _rule_append_loop(
 
 def _added_expr(stmt: ast.stmt, name: str) -> ast.expr | None:
     """The addend when `stmt` is `name += e` or the legacy `name = name + e`."""
-    if isinstance(stmt, ast.AugAssign) and isinstance(stmt.op, ast.Add):
-        return stmt.value if _is_name(stmt.target, name) else None
-    if (
-        isinstance(stmt, ast.Assign)
+    return (
+        (stmt.value if _is_name(stmt.target, name) else None)
+        if isinstance(stmt, ast.AugAssign) and isinstance(stmt.op, ast.Add)
+        else stmt.value.right
+        if isinstance(stmt, ast.Assign)
         and len(stmt.targets) == 1
         and _is_name(stmt.targets[0], name)
         and isinstance(stmt.value, ast.BinOp)
         and isinstance(stmt.value.op, ast.Add)
         and _is_name(stmt.value.left, name)
-    ):
-        return stmt.value.right
-    return None
+        else None
+    )
 
 
 def _rule_accumulate_sum(
@@ -986,11 +973,9 @@ def _rule_accumulate_sum(
         and len(assign.targets) == 1
         and _is_name(assign.targets[0])
         and isinstance(assign.value, ast.Constant)
-        and assign.value.value == 0
-        and not isinstance(assign.value.value, bool)
-    ):
-        return None
-    if i + 1 >= len(body):
+        and (assign.value.value == 0)
+        and (not isinstance(assign.value.value, bool))
+    ) or i + 1 >= len(body):
         return None
     loop = body[i + 1]
     if not isinstance(loop, ast.For) or loop.orelse or not loop.body:
@@ -1006,12 +991,12 @@ def _rule_accumulate_sum(
     if added is None:
         return None
     leaked = _target_names(loop.target) | temps
-    if name in _names(added) or name in _names(loop.iter):
-        return None
-    if cond is not None and name in _names(cond):
-        return None
-    if leaked & _names(loop.iter) or _leaks(
-        scope_lines, leaked, loop.lineno, loop.end_lineno
+    if (
+        (name in _names(added) or name in _names(loop.iter))
+        or (cond is not None and name in _names(cond))
+    ) or (
+        leaked & _names(loop.iter)
+        or _leaks(scope_lines, leaked, loop.lineno, loop.end_lineno)
     ):
         return None
     gen = ast.GeneratorExp(
@@ -1056,22 +1041,19 @@ def _rule_sort_to_sorted(
     ):
         return None
     inner = _fresh_list(assign.value)
-    if inner is None:
-        return None
-    if i + 1 >= len(body):
+    if inner is None or i + 1 >= len(body):
         return None
     call_stmt = body[i + 1]
     if not isinstance(call_stmt, ast.Expr) or not isinstance(call_stmt.value, ast.Call):
         return None
-    call = call_stmt.value
-    name = assign.targets[0].id
-    if _guarded(scope_lines, assign, call_stmt):
-        return None
-    if not isinstance(call.func, ast.Attribute) or call.func.attr != "sort":
-        return None
-    if not _is_name(call.func.value, name) or call.args:
-        return None
-    if any(kw.arg not in ("key", "reverse") for kw in call.keywords):
+    call, name = call_stmt.value, assign.targets[0].id
+    if (
+        _guarded(scope_lines, assign, call_stmt)
+        or (not isinstance(call.func, ast.Attribute) or call.func.attr != "sort")
+    ) or (
+        (not _is_name(call.func.value, name) or call.args)
+        or any(kw.arg not in ("key", "reverse") for kw in call.keywords)
+    ):
         return None
     new = ast.Assign(
         targets=[ast.Name(id=name, ctx=ast.Store())],
@@ -1093,18 +1075,19 @@ def _rule_bare_reraise(
 ) -> Rewrite | None:
     """`try: B except X: raise` -> `B` (every handler a bare re-raise)."""
     stmt = body[i]
-    if not isinstance(stmt, ast.Try) or stmt.orelse or stmt.finalbody:
-        return None
-    if not stmt.handlers:
+    if (
+        not isinstance(stmt, ast.Try) or stmt.orelse or stmt.finalbody
+    ) or not stmt.handlers:
         return None
     for handler in stmt.handlers:
         if handler.name is not None or len(handler.body) != 1:
             return None
         raise_stmt = handler.body[0]
-        if not isinstance(raise_stmt, ast.Raise) or raise_stmt.exc is not None:
+        # bare `except:` also swallows BaseException control flow
+        if (
+            not isinstance(raise_stmt, ast.Raise) or raise_stmt.exc is not None
+        ) or handler.type is None:
             return None
-        if handler.type is None:
-            return None  # bare `except:` also swallows BaseException control flow
     # a `try` body containing `continue`/`break`/`return` is still equivalent:
     # the handlers re-raise unchanged, so the try adds no observable behaviour.
     start, end = _span([stmt])
@@ -1142,9 +1125,9 @@ def _return_ladder(body: list[ast.stmt], i: int):
     covered: list[ast.stmt] = [stmt]
     node = stmt
     while True:
-        if len(node.body) != 1 or not isinstance(node.body[0], ast.Return):
-            return None
-        if node.body[0].value is None:
+        if (
+            len(node.body) != 1 or not isinstance(node.body[0], ast.Return)
+        ) or node.body[0].value is None:
             return None
         tests.append(node.test)
         values.append(node.body[0].value)
@@ -1160,9 +1143,9 @@ def _return_ladder(body: list[ast.stmt], i: int):
     j = i + 1
     while j < len(body) and isinstance(body[j], ast.If) and not body[j].orelse:
         inner = body[j]
-        if len(inner.body) != 1 or not isinstance(inner.body[0], ast.Return):
-            break
-        if inner.body[0].value is None:
+        if (
+            len(inner.body) != 1 or not isinstance(inner.body[0], ast.Return)
+        ) or inner.body[0].value is None:
             break
         tests.append(inner.test)
         values.append(inner.body[0].value)
@@ -1178,11 +1161,10 @@ def _same_subject(tests: list[ast.expr], ops: tuple) -> ast.expr | None:
     """The shared left operand when every test is `<subject> <op> <const>`."""
     subject = None
     for test in tests:
-        if not isinstance(test, ast.Compare) or len(test.ops) != 1:
-            return None
-        if not isinstance(test.ops[0], ops):
-            return None
-        if not isinstance(test.comparators[0], ast.Constant):
+        if (
+            (not isinstance(test, ast.Compare) or len(test.ops) != 1)
+            or not isinstance(test.ops[0], ops)
+        ) or not isinstance(test.comparators[0], ast.Constant):
             return None
         if subject is None:
             subject = test.left
@@ -1226,11 +1208,10 @@ def _rule_threshold_ladder(
     if op_type not in _ORDER_OPS:
         return None
     subject = _same_subject(tests, (op_type,))
-    if subject is None or not _all_constants(values + [default]):
-        return None
-    if not all(isinstance(t.comparators[0].value, (int, float)) for t in tests):
-        return None
-    if any(isinstance(t.comparators[0].value, bool) for t in tests):
+    if (
+        (subject is None or not _all_constants(values + [default]))
+        or not all(isinstance(t.comparators[0].value, (int, float)) for t in tests)
+    ) or any(isinstance(t.comparators[0].value, bool) for t in tests):
         return None
     taken = _names(ast.Module(body=list(covered), type_ignores=[]))
     key, val = _fresh("_t", taken), _fresh("_v", taken)
@@ -1273,8 +1254,7 @@ def _rule_threshold_ladder(
 
 
 def _fresh(base: str, taken: set[str]) -> str:
-    name = base
-    n = 2
+    name, n = base, 2
     while name in taken:
         name = f"{base}{n}"
         n += 1
@@ -1323,9 +1303,9 @@ def _rule_max_loop(
     if not (_is_const(first.value, None) and _is_const(second.value, None)):
         return None
     best, best_v = first.targets[0].id, second.targets[0].id
-    if best == best_v or not isinstance(loop, ast.For) or loop.orelse:
-        return None
-    if not _is_name(loop.target):
+    if (best == best_v or not isinstance(loop, ast.For) or loop.orelse) or not _is_name(
+        loop.target
+    ):
         return None
     item = loop.target.id
     if len(loop.body) != 2:
@@ -1342,9 +1322,9 @@ def _rule_max_loop(
     # need not be pure; the per-item value expression becomes the `key` lambda
     # and is called once per element in the same order — kept pure anyway as
     # the conservative line the rest of this library holds.
-    if not _pure(value_stmt.value):
-        return None
-    if not isinstance(guard, ast.If) or guard.orelse or len(guard.body) != 2:
+    if not _pure(value_stmt.value) or (
+        not isinstance(guard, ast.If) or guard.orelse or len(guard.body) != 2
+    ):
         return None
     test = guard.test
     if not (
@@ -1357,15 +1337,13 @@ def _rule_max_loop(
     if not (
         isinstance(sentinel, ast.Compare)
         and _is_name(sentinel.left, best_v)
-        and len(sentinel.ops) == 1
+        and (len(sentinel.ops) == 1)
         and isinstance(sentinel.ops[0], ast.Is)
         and _is_const(sentinel.comparators[0], None)
-    ):
-        return None
-    if not (
+    ) or not (
         isinstance(compare, ast.Compare)
         and _is_name(compare.left, temp)
-        and len(compare.ops) == 1
+        and (len(compare.ops) == 1)
         and isinstance(compare.ops[0], ast.Gt)
         and _is_name(compare.comparators[0], best_v)
     ):
@@ -1379,9 +1357,9 @@ def _rule_max_loop(
         ):
             return None
         assigns[stmt.targets[0].id] = stmt.value
-    if set(assigns) != {best, best_v}:
-        return None
-    if not _is_name(assigns[best], item) or not _is_name(assigns[best_v], temp):
+    if set(assigns) != {best, best_v} or (
+        not _is_name(assigns[best], item) or not _is_name(assigns[best_v], temp)
+    ):
         return None
     # `best_v` must be dead after the loop: the rewrite stops maintaining it
     covered = [first, second, loop]
@@ -1602,8 +1580,7 @@ def _rule_inline_single_use_temp(
         return None
     if isinstance(use, ast.Return) and _is_name(use.value, name):
         return None  # inline-return-temp owns this shape
-    found = False
-    earlier = _bound_at(body, i, scope_lines)
+    found, earlier = False, _bound_at(body, i, scope_lines)
     imports = frozenset(
         key[len("!import:") :]
         for key in scope_lines
@@ -1633,21 +1610,17 @@ def _rule_inline_single_use_temp(
             if _provably_bound(leaf.id, earlier, scope_lines):
                 continue
             break
-    if not found:
-        return None
-    if _load_count([use], name) != 1:
+    if not found or _load_count([use], name) != 1:
         return None
     import copy
 
     replaced = _Substitute(name, assign.value).visit(copy.deepcopy(use))
     if isinstance(replaced, _HEADER_STMTS):
-        header = copy.copy(replaced)
-        header.body = [ast.Pass()]
-        header.orelse = []
+        header, header.body, header.orelse = copy.copy(replaced), [ast.Pass()], []
         module = ast.Module(body=[header], type_ignores=[])
         ast.fix_missing_locations(module)
-        lines = ast.unparse(module).splitlines()
-        text = lines[:-1]  # drop the `pass`
+        # drop the `pass`
+        text = ast.unparse(module).splitlines()[:-1]
         if not text or not text[-1].rstrip().endswith(":"):
             return None
         return Rewrite(
@@ -1687,8 +1660,7 @@ def _rule_merge_from_imports(
     first = body[i]
     if not isinstance(first, ast.ImportFrom) or any(a.name == "*" for a in first.names):
         return None
-    run = [first]
-    j = i + 1
+    run, j = [first], i + 1
     while j < len(body):
         nxt = body[j]
         if not (
@@ -1722,12 +1694,7 @@ def _rule_merge_from_imports(
     ]
     start, end = _span(run)
     return Rewrite(
-        "merge-from-imports",
-        start,
-        end,
-        stmts,
-        first.col_offset,
-        _end_col(run, end),
+        "merge-from-imports", start, end, stmts, first.col_offset, _end_col(run, end)
     )
 
 
@@ -1736,8 +1703,7 @@ def _rule_merge_from_imports(
 
 def _branch_bodies(stmt: ast.If) -> list[list[ast.stmt]] | None:
     """All leaf branch bodies of an if/elif/else chain, or None without else."""
-    bodies = [stmt.body]
-    node = stmt
+    bodies, node = [stmt.body], stmt
     while True:
         if not node.orelse:
             return None
@@ -1800,15 +1766,13 @@ def _rule_merge_del(
     first = body[i]
     if not isinstance(first, ast.Delete):
         return None
-    run = [first]
-    j = i + 1
+    run, j = [first], i + 1
     while j < len(body) and isinstance(body[j], ast.Delete):
         run.append(body[j])
         j += 1
     if len(run) < 2:
         return None
-    targets = [target for stmt in run for target in stmt.targets]
-    merged = ast.Delete(targets=targets)
+    merged = ast.Delete(targets=[target for stmt in run for target in stmt.targets])
     if first.col_offset + len(_unparse_stmt(merged)) > 88:
         return None
     start, end = _span(run)
@@ -1850,17 +1814,17 @@ def _pack_target(target: ast.expr) -> tuple[str, bool] | None:
     stores may run user code (a property setter, `__setitem__`), so they
     pack only when every later right-hand side is `_simple_value`.
     """
-    if isinstance(target, ast.Name):
-        return target.id, False
-    if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name):
-        return f"{target.value.id}.{target.attr}", True
-    if (
-        isinstance(target, ast.Subscript)
+    return (
+        (target.id, False)
+        if isinstance(target, ast.Name)
+        else (f"{target.value.id}.{target.attr}", True)
+        if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)
+        else (f"{target.value.id}[{ast.unparse(target.slice)}]", True)
+        if isinstance(target, ast.Subscript)
         and isinstance(target.value, ast.Name)
         and isinstance(target.slice, (ast.Name, ast.Constant))
-    ):
-        return f"{target.value.id}[{ast.unparse(target.slice)}]", True
-    return None
+        else None
+    )
 
 
 _PACK_UNSAFE = (ast.Yield, ast.YieldFrom, ast.Await, ast.NamedExpr, ast.Starred)
@@ -2075,8 +2039,7 @@ def _collapse_else(source: str) -> tuple[str, list[str]]:
         unit = first.col_offset - node.col_offset
         if unit <= 0:
             continue
-        span_end = node.end_lineno - 1
-        ok = True
+        span_end, ok = node.end_lineno - 1, True
         for j in range(idx + 1, span_end + 1):
             if j in string_continuations:
                 continue  # these leading spaces belong to the literal value
@@ -2182,8 +2145,7 @@ def _collect(
             for key in scope_lines
             if key.startswith("!import:") and key[len("!import:") :] in inherited
         }
-        scope_lines = scope_name_lines(node, inherited)
-        class_body = False
+        scope_lines, class_body = scope_name_lines(node, inherited), False
     if isinstance(node, ast.ClassDef):
         class_body = True
     for field in _BLOCK_FIELDS:
@@ -2257,8 +2219,7 @@ def _restore_literal_text(original: str, rendered: str) -> str:
     each rendered spelling is replaced by the original text; any mismatch
     aborts and leaves the unparse output as is.
     """
-    src = _string_tokens(original)
-    dst = _string_tokens(rendered)
+    src, dst = _string_tokens(original), _string_tokens(rendered)
     if len(src) != len(dst) or any(a[2] != b[2] for a, b in zip(src, dst)):
         return rendered
     for (start, end, _), (rstart, rend, _) in reversed(list(zip(src, dst))):
@@ -2279,9 +2240,9 @@ def _render(rw: Rewrite) -> list[str]:
 def _line_aligned(lines: list[str], rw: Rewrite) -> bool:
     """The rewrite must own whole lines: nothing shares them but whitespace
     and a trailing comment. (`a = 1; b = 2` on one line would be clobbered.)"""
-    if rw.start - 1 >= len(lines) or rw.end - 1 >= len(lines):
-        return False
-    if lines[rw.start - 1][: rw.col].strip():
+    if (rw.start - 1 >= len(lines) or rw.end - 1 >= len(lines)) or lines[rw.start - 1][
+        : rw.col
+    ].strip():
         return False
     trailer = "" if rw.end_col < 0 else lines[rw.end - 1][rw.end_col :].strip()
     return trailer == "" or trailer.startswith("#")
@@ -2301,9 +2262,7 @@ def _one_pass(source: str, only: set[str]) -> tuple[str, list[str]]:
         for token in tokenize.generate_tokens(io.StringIO(source).readline)
         if token.type == tokenize.COMMENT
     }
-    comment_lines = set(comment_tokens)
-    lines = source.splitlines()
-    applied = []
+    comment_lines, lines, applied = set(comment_tokens), source.splitlines(), []
     for rw in sorted(rewrites, key=lambda r: r.start, reverse=True):
         comments = sorted(comment_lines.intersection(range(rw.start, rw.end + 1)))
         movable_comments = rw.rule in {

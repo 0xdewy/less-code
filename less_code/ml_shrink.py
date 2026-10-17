@@ -35,8 +35,7 @@ class CliBackend:
     name = "cli"
 
     def __init__(self, command: str, timeout: float = 60.0):
-        self.command = command
-        self.timeout = timeout
+        self.command, self.timeout = command, timeout
 
     def propose(self, lang: str, symbol: dict) -> ProposedEdit | None:
         try:
@@ -87,9 +86,7 @@ def _extract_symbols_python(source: str, *, private_only: bool = True) -> list[d
         tree = ast.parse(source)
     except SyntaxError:
         return []
-    out = []
-    lines = source.splitlines()
-    offsets = [0]
+    out, lines, offsets = [], source.splitlines(), [0]
     for line in source.splitlines(keepends=True):
         offsets.append(offsets[-1] + len(line.encode()))
 
@@ -123,11 +120,7 @@ def _extract_symbols_python(source: str, *, private_only: bool = True) -> list[d
                     not private_only or method_is_private(node.name, child.name)
                 ):
                     out.append(
-                        _symbol(
-                            source,
-                            f"{node.name}.{child.name}",
-                            *span(child),
-                        )
+                        _symbol(source, f"{node.name}.{child.name}", *span(child))
                     )
     return out
 
@@ -168,8 +161,7 @@ def _extract_symbols_tree_sitter(
     def walk(node, owner: str = "", parent_public: bool = False) -> None:
         if any(start <= node.start_byte < end for start, end in frozen):
             return
-        public = parent_public or is_public(node)
-        next_owner = owner
+        public, next_owner = parent_public or is_public(node), owner
         if node.type in {"class_declaration", "impl_item"}:
             name = node.child_by_field_name("name") or node.child_by_field_name("type")
             if name is not None:
@@ -181,12 +173,7 @@ def _extract_symbols_tree_sitter(
                 qualified = f"{owner}.{name}" if owner else name
                 if not private_only or not public:
                     out.append(
-                        _symbol(
-                            source,
-                            qualified,
-                            node.start_byte,
-                            node.end_byte,
-                        )
+                        _symbol(source, qualified, node.start_byte, node.end_byte)
                     )
             return
         for child in node.children:
@@ -197,11 +184,7 @@ def _extract_symbols_tree_sitter(
 
 
 def extract_symbols(
-    source: str,
-    lang: str,
-    *,
-    private_only: bool = True,
-    max_per_file: int = 0,
+    source: str, lang: str, *, private_only: bool = True, max_per_file: int = 0
 ) -> list[dict]:
     """Return symbols of `source`, optionally restricted to private ones.
 
@@ -229,16 +212,13 @@ def apply_edit(source: str, symbol: dict, edit: ProposedEdit) -> str:
         raise ValueError("proposal does not match the requested symbol")
     if not isinstance(edit.replacement, str):
         raise ValueError("replacement must be text")  # noqa: TRY004 - edit validation API
-    encoded = source.encode()
-    start, end = symbol["start_byte"], symbol["end_byte"]
+    encoded, start, end = source.encode(), symbol["start_byte"], symbol["end_byte"]
     if not (0 <= start < end <= len(encoded)) or not edit.replacement.strip():
         raise ValueError("invalid symbol replacement")
     if encoded[start:end].decode() != symbol["text"]:
         raise ValueError("symbol source has changed; re-extract before editing")
-    line_start = encoded.rfind(b"\n", 0, start) + 1
-    indent = encoded[line_start:start]
-    if indent.strip():
-        indent = b""
+    indent = encoded[encoded.rfind(b"\n", 0, start) + 1 : start]
+    indent = b"" if indent.strip() else indent
     replacement_lines = textwrap.dedent(edit.replacement).strip("\n").splitlines()
     replacement = "\n".join(
         line if index == 0 or not line else indent.decode() + line
@@ -297,15 +277,13 @@ def apply_body_edit(source: str, symbol: dict, body_text: str) -> str:
 
     if not isinstance(body_text, str):
         raise ValueError("replacement must be text")  # noqa: TRY004 - edit validation API
-    encoded = source.encode()
-    start, end = symbol["start_byte"], symbol["end_byte"]
+    encoded, start, end = source.encode(), symbol["start_byte"], symbol["end_byte"]
     if not (0 <= start < end <= len(encoded)):
         raise ValueError("invalid symbol span")
     if encoded[start:end].decode() != symbol["text"]:
         raise ValueError("symbol source has changed; re-extract before editing")
     root = ts.Parser(ts.Language(grammar.language())).parse(encoded).root_node
-    item = None
-    pending = [root]
+    item, pending = None, [root]
     while pending:
         node = pending.pop()
         if node.start_byte > start or node.end_byte < end:
@@ -321,10 +299,8 @@ def apply_body_edit(source: str, symbol: dict, body_text: str) -> str:
     if body is None or body.type != "block":
         raise ValueError("symbol is not a function with a block body")
     body_text = _rust_body_from_reply(body_text, symbol["name"].rsplit(".", 1)[-1])
-    line_start = encoded.rfind(b"\n", 0, start) + 1
-    indent = encoded[line_start:start]
-    if indent.strip():
-        indent = b""
+    indent = encoded[encoded.rfind(b"\n", 0, start) + 1 : start]
+    indent = b"" if indent.strip() else indent
     pad = indent.decode() + "    "
     rendered = "\n".join(
         (pad + line) if line.strip() else line
@@ -498,10 +474,9 @@ def symbol_context(
             )
             remaining -= len(excerpt)
 
-    lines = sources[path].splitlines()
     imports = [
         (i, line)
-        for i, line in enumerate(lines, 1)
+        for i, line in enumerate(sources[path].splitlines(), 1)
         if re.match(r"\s*(?:from |import |use |const .*require\()", line)
     ]
     if imports:
@@ -511,8 +486,7 @@ def symbol_context(
     dependencies = set(re.findall(r"\b[A-Za-z_]\w*\b", symbol["text"])) - {name}
     for kind, files in (("test reference", tests), ("source reference", sources)):
         for file, text in sorted(files.items()):
-            file_lines = text.splitlines()
-            covered = -1
+            file_lines, covered = text.splitlines(), -1
             for index, line in enumerate(file_lines):
                 if remaining <= 0:
                     return context
@@ -578,9 +552,7 @@ def declaration_preserved(before: str, after: str, lang: str) -> bool:
                         if part == body:
                             return ()
                         if not part.children:
-                            return (
-                                (part.type, encoded[part.start_byte : part.end_byte]),
-                            )
+                            return (part.type, encoded[part.start_byte : part.end_byte])
                         return tuple(
                             token for child in part.children for token in tokens(child)
                         )
@@ -611,8 +583,7 @@ def search(
     counters = Counter(
         symbols_considered=len(targets), proposed=0, accepted=0, accepted_loc=0, calls=0
     )
-    records, notes = [], []
-    loc = loc_before
+    records, notes, loc = [], [], loc_before
     for path, name in targets:
         # An earlier accepted rewrite may have moved this symbol's byte span.
         current = sources[path]
@@ -627,8 +598,7 @@ def search(
         symbol["context"] = symbol_context(root, path, symbol, sources, tests)
         seen = set()
         for attempt in range(1, attempts + 1):
-            started = time.monotonic()
-            prompt = build_prompt(lang, symbol)
+            started, prompt = time.monotonic(), build_prompt(lang, symbol)
             counters["calls"] += 1
             edit = None
             try:
@@ -636,8 +606,7 @@ def search(
                 reason = "abstained" if edit is None else ""
             except Exception as exc:  # noqa: BLE001 - external backend boundary
                 reason = f"model error: {type(exc).__name__}: {exc}"
-            accepted = False
-            after_loc = loc
+            accepted, after_loc = False, loc
             if not reason:
                 counters["proposed"] += 1
                 try:

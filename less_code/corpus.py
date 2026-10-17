@@ -249,11 +249,8 @@ def run_corpus(
                 hybrid_pct = pct(loc_start, hybrid_final)
                 llm_extra_pct = pct(static_final, hybrid_final)
             else:
-                static_pct = 0.0
-                hybrid_pct = 0.0
-                llm_extra_pct = 0.0
-                static_final = loc_start
-                hybrid_final = loc_start
+                static_pct, hybrid_pct, llm_extra_pct = 0.0, 0.0, 0.0
+                static_final, hybrid_final = loc_start, loc_start
             rows.append(
                 {
                     "name": item.name,

@@ -76,9 +76,7 @@ def is_test_file(path: Path) -> bool:
     worse still: the reducer may never rewrite its own oracle, so the name
     patterns err toward classifying as test (`*_test.py`, `-spec.ts`, ...).
     """
-    parts = path.parts
-    name = path.name.lower()
-    suffix = path.suffix.lower()
+    parts, name, suffix = path.parts, path.name.lower(), path.suffix.lower()
     if any(part in TEST_DIRS for part in parts[:-1]):
         return True
     if suffix == ".py":
@@ -102,12 +100,29 @@ def is_test_file(path: Path) -> bool:
     return False
 
 
-def detect_language(root: Path) -> str | None:
+def _is_excluded(root: Path, path: Path, exclude: tuple[str, ...]) -> bool:
+    """True when a target path lies under any excluded dir or exact path.
+
+    Entries are relative to `root`; a bare name (`fixtures`) matches that
+    directory anywhere, a slash entry (`training/crates`) matches that subtree.
+    """
+    if not exclude:
+        return False
+    rel, parts = path.relative_to(root).as_posix(), path.relative_to(root).parts
+    for entry in exclude:
+        entry = entry.strip().strip("/")
+        if entry and (entry in parts or rel == entry or rel.startswith(entry + "/")):
+            return True
+    return False
+
+
+def detect_language(root: Path, exclude: tuple[str, ...] = ()) -> str | None:
     counts: dict[str, int] = {}
     for path in root.rglob("*"):
         if (
             path.is_file()
             and not any(p in SKIP_DIRS for p in path.parts)
+            and not _is_excluded(root, path, exclude)
             and path.suffix in EXT_LANG
         ):
             lang = EXT_LANG[path.suffix]
@@ -130,8 +145,10 @@ def detect_language(root: Path) -> str | None:
     return max(counts, key=lambda k: counts[k] * priority.get(k, 1.0))
 
 
-def map_project(root: Path, lang: str | None = None) -> ProjectMap:
-    lang = lang or detect_language(root)
+def map_project(
+    root: Path, lang: str | None = None, exclude: tuple[str, ...] = ()
+) -> ProjectMap:
+    lang = lang or detect_language(root, exclude)
     if lang is None:
         raise SystemExit(f"cannot detect language of {root}")
     exts = [ext for ext, l in EXT_LANG.items() if l == lang]
@@ -139,9 +156,10 @@ def map_project(root: Path, lang: str | None = None) -> ProjectMap:
     tests: list[Path] = []
     notes: list[str] = []
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.suffix not in exts:
-            continue
-        if any(p in SKIP_DIRS for p in path.parts):
+        if (
+            (not path.is_file() or path.suffix not in exts)
+            or any(p in SKIP_DIRS for p in path.parts)
+        ) or _is_excluded(root, path, exclude):
             continue
         compiled_beside = _COMPILED_BESIDE_SOURCE.get(path.suffix, set())
         if compiled_beside and any(

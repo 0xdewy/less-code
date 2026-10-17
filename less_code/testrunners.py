@@ -53,9 +53,8 @@ def _parse_tests_run(output: str) -> int | None:
     pytest_counts = re.findall(r"(\d+) passed", output) + re.findall(
         r"(\d+) failed", output
     )
-    if pytest_counts:
-        return sum(map(int, pytest_counts))  # a failed test still ran
-    return None
+    # a failed test still ran
+    return sum(map(int, pytest_counts)) if pytest_counts else None
 
 
 _RUSTC_ERROR_RE = re.compile(r"^error(?:\[E\d{4}\])?: .*$", re.MULTILINE)
@@ -80,9 +79,7 @@ def compile_feedback(output: str, limit: int = 400) -> str:
         pairs.append(pair)
         if len(pairs) == 3:
             break
-    if not pairs:
-        return output[-200:]
-    return "; ".join(pairs)[:limit]
+    return output[-200:] if not pairs else "; ".join(pairs)[:limit]
 
 
 def _run(
@@ -175,8 +172,7 @@ def shadowed_imports(root: Path, probe=None) -> list[str]:
     """
     from .langdetect import SKIP_DIRS, is_test_file
 
-    if probe is None:
-        probe = _probe_import
+    probe = _probe_import if probe is None else probe
     names: list[str] = []
     for base in (root, root / "src"):
         if not base.is_dir():

@@ -263,3 +263,251 @@ def test_rules_only_fire_when_canonical_loc_drops():
     out, applied = rule(source, "vec-push-run")
     if applied:
         assert measure(out, "rust").code < measure(source, "rust").code
+
+
+def test_for_push_to_collect_positive():
+    source = textwrap.dedent(
+        """\
+        pub fn doubled(items: &[u64]) -> Vec<u64> {
+            let mut out = Vec::new();
+            for item in items {
+                out.push(item * 2);
+            }
+            out
+        }
+        """
+    )
+    out, applied = rule(source, "for-push-to-collect")
+    assert applied == ["for-push-to-collect"]
+    assert "items.into_iter().map(|item| item * 2).collect()" in out
+    assert "Vec::new()" not in out
+    # idempotent
+    again, applied2 = rule(out, "for-push-to-collect")
+    assert applied2 == [] and again == out
+
+
+def test_for_push_to_collect_keeps_annotation_and_tuple_pattern():
+    source = textwrap.dedent(
+        """\
+        pub fn keys(map: &std::collections::HashMap<String, u64>) -> Vec<String> {
+            let mut out: Vec<String> = Vec::new();
+            for (key, _) in map {
+                out.push(key.clone());
+            }
+            out
+        }
+        """
+    )
+    out, applied = rule(source, "for-push-to-collect")
+    assert applied == ["for-push-to-collect"]
+    assert "let out: Vec<String> = " in out
+    assert ".collect();" in out
+
+
+def test_for_push_to_collect_refuses_later_mutation():
+    source = textwrap.dedent(
+        """\
+        pub fn items(items: &[u64]) -> Vec<u64> {
+            let mut out = Vec::new();
+            for item in items {
+                out.push(item * 2);
+            }
+            out.push(0);
+            out
+        }
+        """
+    )
+    _, applied = rule(source, "for-push-to-collect")
+    assert applied == []
+
+
+def test_for_push_to_collect_refuses_divergent_pushed_expr():
+    source = textwrap.dedent(
+        """\
+        pub fn first(items: &[u64]) -> Vec<u64> {
+            let mut out = Vec::new();
+            for item in items {
+                out.push(item.checked_add(1)?);
+            }
+            out
+        }
+        """
+    )
+    _, applied = rule(source, "for-push-to-collect")
+    assert applied == []
+
+
+def test_for_push_to_collect_refuses_self_reference():
+    source = textwrap.dedent(
+        """\
+        pub fn counts(items: &[u64]) -> Vec<usize> {
+            let mut out = Vec::new();
+            for item in items {
+                out.push(out.len());
+            }
+            out
+        }
+        """
+    )
+    _, applied = rule(source, "for-push-to-collect")
+    assert applied == []
+
+
+def test_use_merge_positive():
+    source = textwrap.dedent(
+        """\
+        use std::collections::HashMap;
+        use std::collections::HashSet;
+        use std::io::Read;
+
+        pub fn f() {}
+        """
+    )
+    out, applied = rule(source, "use-merge")
+    assert applied == ["use-merge"]
+    assert "use std::collections::{HashMap, HashSet};" in out
+    assert "use std::io::Read;" in out
+    # idempotent
+    again, applied2 = rule(out, "use-merge")
+    assert applied2 == [] and again == out
+
+
+def test_use_merge_keeps_self_and_alias_and_visibility():
+    source = textwrap.dedent(
+        """\
+        pub use foo::bar as baz;
+        pub use foo::qux;
+        use foo;
+        use foo::other;
+        """
+    )
+    out, applied = rule(source, "use-merge")
+    assert applied == ["use-merge", "use-merge"]
+    assert "pub use foo::{bar as baz, qux};" in out
+    assert "use foo::{self, other};" in out
+
+
+def test_use_merge_refuses_across_other_imports():
+    source = textwrap.dedent(
+        """\
+        use a::b;
+        use c::d;
+        use a::e;
+        """
+    )
+    _, applied = rule(source, "use-merge")
+    assert applied == []
+
+
+def test_use_merge_refuses_comment_gap_and_duplicates_only():
+    source = textwrap.dedent(
+        """\
+        use a::b;
+        // kept apart on purpose
+        use a::c;
+        """
+    )
+    _, applied = rule(source, "use-merge")
+    assert applied == []
+    dupes = "use a::b;\nuse a::b;\n"
+    _, applied = rule(dupes, "use-merge")
+    assert applied == []
+
+
+def test_match_question_result_positive():
+    source = textwrap.dedent(
+        """\
+        pub fn load(path: &str) -> std::io::Result<String> {
+            let text = match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(error) => return Err(error),
+            };
+            Ok(text)
+        }
+        """
+    )
+    out, applied = rule(source, "match-early-return-to-question")
+    assert applied == ["match-early-return-to-question"]
+    assert "std::fs::read_to_string(path)?" in out
+    # idempotent
+    again, applied2 = rule(out, "match-early-return-to-question")
+    assert applied2 == [] and again == out
+
+
+def test_match_question_into_and_map_err():
+    source = textwrap.dedent(
+        """\
+        pub fn load(path: &str) -> anyhow::Result<String> {
+            let text = match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(error) => return Err(error.into()),
+            };
+            Ok(text)
+        }
+        pub fn strict(path: &str) -> std::io::Result<String> {
+            let text = match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(error) => return Err(std::io::Error::other(error.to_string())),
+            };
+            Ok(text)
+        }
+        """
+    )
+    out, applied = rule(source, "match-early-return-to-question")
+    assert applied == [
+        "match-early-return-to-question",
+        "match-early-return-to-question",
+    ]
+    assert "std::fs::read_to_string(path)?" in out
+    assert ".map_err(|error| std::io::Error::other(error.to_string()))?" in out
+
+
+def test_match_question_option_positive():
+    source = textwrap.dedent(
+        """\
+        pub fn head(items: &[u64]) -> Option<u64> {
+            let first = match items.first() {
+                Some(first) => first,
+                None => return None,
+            };
+            Some(first + 1)
+        }
+        pub fn head_or(items: &[u64], fallback: u64) -> u64 {
+            let first = match items.first() {
+                Some(first) => first,
+                None => return fallback,
+            };
+            first + 1
+        }
+        """
+    )
+    out, applied = rule(source, "match-early-return-to-question")
+    assert applied == ["match-early-return-to-question"]
+    assert "items.first()?" in out
+    assert "return fallback" in out, "non-Err payloads are refused"
+
+
+def test_match_question_refuses_guards_and_bare_returns():
+    source = textwrap.dedent(
+        """\
+        pub fn load(path: &str) -> std::io::Result<String> {
+            let text = match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(error)
+                }
+                Err(error) => return Err(error),
+            };
+            Ok(text)
+        }
+        pub fn other(path: &str) -> std::io::Result<String> {
+            let text = match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(error) => return other(error),
+            };
+            Ok(text)
+        }
+        """
+    )
+    _, applied = rule(source, "match-early-return-to-question")
+    assert applied == []

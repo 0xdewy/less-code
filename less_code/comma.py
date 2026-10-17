@@ -68,8 +68,7 @@ def collapse_magic_commas(source: str) -> tuple[str, int]:
                 and last_logical.start[0] < tok.start[0]
             ):
                 comma_end = offset(*last_logical.end)
-                line_end = line_starts[last_logical.end[0]]
-                if source[comma_end:line_end].isspace():
+                if source[comma_end : line_starts[last_logical.end[0]]].isspace():
                     deletions.append((offset(*last_logical.start), comma_end))
         elif tok.type == tokenize.OP and tok.string in _OPENERS:
             opener_rows.append(tok.start[0])

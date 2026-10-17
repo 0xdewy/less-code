@@ -68,13 +68,7 @@ def _names_referenced_outside(
 #: the hard way: the layer deleted noxfile sessions (lint, release_build)
 #: from pypa/packaging. These files are still scanned for references.
 _ENTRY_POINT_FILES = frozenset(
-    {
-        "noxfile.py",
-        "setup.py",
-        "asv.conf.py",
-        "tasks.py",
-        "manage.py",
-    }
+    {"noxfile.py", "setup.py", "asv.conf.py", "tasks.py", "manage.py"}
 )
 
 
@@ -85,8 +79,7 @@ def _attached_kill_lines(lines: list[str], start: int, end: int) -> set[int]:
     header. The header only goes when a blank line (or the file top) bounds it
     from above, else it is a trailing comment of the previous statement and
     stays."""
-    kill = set(range(start, end))
-    i = start - 1
+    kill, i = set(range(start, end)), start - 1
     while i >= 0 and not lines[i].strip():
         kill.add(i)
         i -= 1
@@ -124,22 +117,21 @@ def _python_remove_dead(
                 annotated.append(args.vararg)
             if args.kwarg:
                 annotated.append(args.kwarg)
-            definition_can_execute = (
-                node.decorator_list
-                or args.defaults
-                or any(default is not None for default in args.kw_defaults)
-                or node.returns is not None
-                or any(arg.annotation is not None for arg in annotated)
-                or getattr(node, "type_params", ())
-            )
             # A repository scan cannot prove external callers or safely erase
             # decorators, defaults, annotations, class bodies, or type bounds:
             # all can execute at import time. Only plain private functions are
             # deletion candidates; dunders remain protocol surface.
             if (
-                not definition_can_execute
+                not (
+                    node.decorator_list
+                    or args.defaults
+                    or any(default is not None for default in args.kw_defaults)
+                    or (node.returns is not None)
+                    or any(arg.annotation is not None for arg in annotated)
+                    or getattr(node, "type_params", ())
+                )
                 and node.name.startswith("_")
-                and not node.name.startswith("__")
+                and (not node.name.startswith("__"))
             ):
                 defs.add(node.name)
         if defs:
@@ -251,9 +243,8 @@ def _js_remove_dead_internal(
         dead: list[tuple[str, int, int]] = []
         for name, start, end in spans:
             pattern = re.compile(rf"\b{re.escape(name)}\b")
-            own = "\n".join(lines[:start] + lines[end:])
-            elsewhere = pattern.search(own) or any(
-                pattern.search(other) for q, other in all_texts.items() if q != path
+            elsewhere = pattern.search("\n".join(lines[:start] + lines[end:])) or any(
+                (pattern.search(other) for q, other in all_texts.items() if q != path)
             )
             if not elsewhere:
                 dead.append((name, start, end))
@@ -263,8 +254,7 @@ def _js_remove_dead_internal(
         for name, start, end in sorted(dead, key=lambda t: -t[1]):
             del kept[start:end]
             result.notes.append(f"{path.name}: dropped unreferenced internal {name}")
-        new_text = "\n".join(kept) + "\n"
-        before = measure(text, "javascript").code
+        new_text, before = "\n".join(kept) + "\n", measure(text, "javascript").code
         after = measure(new_text, "javascript").code
         if after < before:
             result.changed_files[str(path)] = new_text
@@ -273,10 +263,7 @@ def _js_remove_dead_internal(
 
 
 def _js_static(
-    root: Path,
-    source_files: list[Path],
-    all_project_files: list[Path],
-    runner=None,
+    root: Path, source_files: list[Path], all_project_files: list[Path], runner=None
 ) -> StaticResult:
     """Dead internal functions plus explicit, reviewable rewrites.
 
@@ -316,15 +303,11 @@ def _js_static(
         notes=js_rule_notes,
     )
 
-    combined = StaticResult(
-        changed_files={
-            **internal.changed_files,
-            **js_rules.changed_files,
-        },
+    return StaticResult(
+        changed_files={**internal.changed_files, **js_rules.changed_files},
         loc_removed=internal.loc_removed + js_rules.loc_removed,
         notes=internal.notes + js_rules.notes,
     )
-    return combined
 
 
 # ---- D1: ruff --fix tiers and unreachable code ------------------------------
@@ -369,12 +352,7 @@ def _ruff_fix(text: str, filename: str, unsafe: bool = False) -> str:
     cmd += ["--stdin-filename", filename, "-"]
     try:
         proc = subprocess.run(
-            cmd,
-            input=text,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
+            cmd, input=text, capture_output=True, text=True, timeout=120, check=False
         )
     except (OSError, subprocess.SubprocessError):
         return text
@@ -415,9 +393,9 @@ def _unreachable_line_spans(source: str) -> list[tuple[int, int]]:
         for node in ast.walk(func):
             for field_name in ("body", "orelse", "finalbody"):
                 block = getattr(node, field_name, None)
-                if not isinstance(block, list) or len(block) < 2:
-                    continue
-                if not all(isinstance(st, ast.stmt) for st in block):
+                if (not isinstance(block, list) or len(block) < 2) or not all(
+                    isinstance(st, ast.stmt) for st in block
+                ):
                     continue
                 for index, stmt in enumerate(block[:-1]):
                     if isinstance(stmt, _TERMINATORS):
@@ -500,10 +478,7 @@ def _python_layers(dead: StaticResult) -> list[tuple[str, object]]:
 
 
 def _python_static(
-    root: Path,
-    source_files: list[Path],
-    all_project_files: list[Path],
-    runner=None,
+    root: Path, source_files: list[Path], all_project_files: list[Path], runner=None
 ) -> StaticResult:
     """Dead code, the C4 rule library, unreachable-code removal and safe
     `ruff --fix` rules (roadmap D1), narrowed layer by layer under the gate.
@@ -525,11 +500,10 @@ def _python_static(
     for _name, transform in layers:
         current, layer_notes = transform(current)
         notes += layer_notes
-    combined_changes = {
-        str(p): text for p, text in current.items() if text != originals[p]
-    }
     combined = StaticResult(
-        changed_files=combined_changes,
+        changed_files={
+            str(p): text for p, text in current.items() if text != originals[p]
+        },
         loc_removed=dead.loc_removed,
         notes=notes,
     )

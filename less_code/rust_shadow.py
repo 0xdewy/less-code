@@ -84,35 +84,26 @@ def _int_values(name: str) -> list[str]:
 
 def _classify(node, src: bytes) -> tuple | None:
     """Whitelist descriptor for a type node, or None when refused."""
-    kind = node.type
-    text = src[node.start_byte : node.end_byte].decode()
+    kind, text = node.type, src[node.start_byte : node.end_byte].decode()
     if kind == "primitive_type":
-        if text in ("bool", "char"):
+        if text in ("bool", "char") or text in _INT_TYPES:
             return ("scalar", text)
-        if text in _INT_TYPES:
-            return ("scalar", text)
-        if text == "str":
-            return ("str",)
-        return None  # f32, f64: NaN breaks exact comparison
+        # f32, f64: NaN breaks exact comparison
+        return ("str",) if text == "str" else None
     if kind == "reference_type":
         inner = None
         for child in node.named_children:
             if child.type == "lifetime":
                 continue
-            if child.type == "mutable_specifier":
-                return None  # no &mut parameters
-            if inner is not None:
+            # no &mut parameters
+            if child.type == "mutable_specifier" or inner is not None:
                 return None
             inner = _classify(child, src)
-        if inner is None:
-            return None
-        return ("ref", inner, text)
+        return None if inner is None else ("ref", inner, text)
     if kind == "type_identifier":
         if text == "String":
             return ("string",)
-        if text == "Duration":
-            return ("duration",)
-        return None
+        return ("duration",) if text == "Duration" else None
     if kind == "scoped_type_identifier":
         last = node.named_children[-1] if node.named_children else None
         if last is not None:
@@ -134,11 +125,10 @@ def _classify(node, src: bytes) -> tuple | None:
             inner = _classify(arg_nodes[0], src)
             return None if inner is None else ("vec", inner, text)
         if name == "Result" and len(arg_nodes) == 2:
-            ok_t = _classify(arg_nodes[0], src)
-            err_t = _classify(arg_nodes[1], src)
-            if ok_t is None or err_t is None:
-                return None
-            return ("result", ok_t, err_t, text)
+            ok_t, err_t = _classify(arg_nodes[0], src), _classify(arg_nodes[1], src)
+            return (
+                None if ok_t is None or err_t is None else ("result", ok_t, err_t, text)
+            )
         return None
     if kind == "tuple_type":
         fields = [_classify(child, src) for child in node.named_children]
@@ -157,9 +147,7 @@ def _classify(node, src: bytes) -> tuple | None:
             count = int(src[length.start_byte : length.end_byte])
         except ValueError:
             return None
-        if not 1 <= count <= 4:
-            return None
-        return ("array", inner, count, text)
+        return None if not 1 <= count <= 4 else ("array", inner, count, text)
     return None
 
 
@@ -168,15 +156,9 @@ def _param_ok(desc: tuple) -> bool:
     kind = desc[0]
     if kind in ("result", "unit"):
         return False
-    if kind == "ref":
+    if (kind == "ref" or kind in ("option", "vec")) or kind == "array":
         return _param_ok(desc[1])
-    if kind in ("option", "vec"):
-        return _param_ok(desc[1])
-    if kind == "array":
-        return _param_ok(desc[1])
-    if kind == "tuple":
-        return all(_param_ok(field) for field in desc[1])
-    return True
+    return all(_param_ok(field) for field in desc[1]) if kind == "tuple" else True
 
 
 def _eligible(item, src: bytes) -> tuple[bool, list[tuple], tuple | None]:
@@ -191,15 +173,12 @@ def _eligible(item, src: bytes) -> tuple[bool, list[tuple], tuple | None]:
         return False, [], None
     if item.child_by_field_name("where_clause") is not None:
         return False, [], None
-    params = []
-    parameters = item.child_by_field_name("parameters")
+    params, parameters = [], item.child_by_field_name("parameters")
     if parameters is None:
         return False, [], None
     for child in parameters.named_children:
-        if child.type == "self_parameter":
-            return False, [], None
-        if child.type != "parameter":
-            return False, [], None
+        if child.type == "self_parameter" or child.type != "parameter":
+            return (False, [], None)
         pattern = child.child_by_field_name("pattern")
         type_node = child.child_by_field_name("type")
         if pattern is None or pattern.type != "identifier" or type_node is None:
@@ -210,9 +189,7 @@ def _eligible(item, src: bytes) -> tuple[bool, list[tuple], tuple | None]:
         params.append(desc)
     return_node = item.child_by_field_name("return_type")
     ret = _classify(return_node, src) if return_node is not None else ("unit",)
-    if ret is None:
-        return False, [], None
-    return True, params, ret
+    return (False, [], None) if ret is None else (True, params, ret)
 
 
 # ---- deterministic input generation ----
@@ -227,9 +204,7 @@ def _values(desc: tuple) -> list[str]:
     if kind == "scalar":
         if desc[1] == "bool":
             return ["true", "false"]
-        if desc[1] == "char":
-            return list(_CHAR_VALUES)
-        return _int_values(desc[1])
+        return list(_CHAR_VALUES) if desc[1] == "char" else _int_values(desc[1])
     if kind == "str":
         return list(_STR_VALUES)
     if kind == "string":
@@ -275,8 +250,7 @@ def _cases(param_descs: list[tuple], limit: int = 48) -> list[tuple[str, ...]]:
     budget, otherwise the all-boundary case plus seeded-LCG picks."""
     if not param_descs:
         return []
-    per = [_values(desc) for desc in param_descs]
-    total = 1
+    per, total = [_values(desc) for desc in param_descs], 1
     for values in per:
         total *= len(values)
     if total <= limit:
@@ -319,10 +293,7 @@ def _function_index(source: str) -> dict[str, tuple[object, object]]:
             name = node.child_by_field_name("name")
             if name is not None:
                 key = encoded[name.start_byte : name.end_byte].decode()
-                if key in index:
-                    index[key] = (None, None)
-                else:
-                    index[key] = (node, root)
+                index[key] = (None, None) if key in index else (node, root)
         stack.extend(node.named_children)
     return index
 
@@ -347,11 +318,9 @@ def changed_functions(
         after_root = parser.parse(after_text.encode()).root_node
         if before_root.has_error or after_root.has_error:
             continue
-        old_index = _function_index(before_text)
-        new_index = _function_index(after_text)
+        old_index, new_index = _function_index(before_text), _function_index(after_text)
         functions: dict[str, dict] = {}
-        before_src = before_text.encode()
-        after_src = after_text.encode()
+        before_src, after_src = before_text.encode(), after_text.encode()
         for name, (node, tree) in old_index.items():
             if node is None:
                 continue
@@ -359,13 +328,12 @@ def changed_functions(
             if other is None or (other[0], other[1]) == (None, None):
                 continue
             other_node = other[0]
+            # impl methods are the v2 walk's business, never a v1 refusal
             if (
                 before_src[node.start_byte : node.end_byte]
                 == after_src[other_node.start_byte : other_node.end_byte]
+                or node.parent.type != "source_file"
             ):
-                continue
-            # impl methods are the v2 walk's business, never a v1 refusal
-            if node.parent.type != "source_file":
                 continue
             ok_before, params, ret = _eligible(node, before_src)
             ok_after, _, _ = _eligible(other_node, after_src)
@@ -379,16 +347,14 @@ def changed_functions(
                 "return": ret,
             }
         # v2: methods on constructible local structs
-        before_facts = _Facts(before_text)
-        after_facts = _Facts(after_text)
+        before_facts, after_facts = _Facts(before_text), _Facts(after_text)
         old_methods = _impl_method_index(before_text)
         new_methods = _impl_method_index(after_text)
         for (trait_text, type_name, fname), node in old_methods.items():
             other = new_methods.get((trait_text, type_name, fname))
-            if other is None:
-                continue
             if (
-                before_src[node.start_byte : node.end_byte]
+                other is None
+                or before_src[node.start_byte : node.end_byte]
                 == after_src[other.start_byte : other.end_byte]
             ):
                 continue
@@ -421,8 +387,7 @@ def _renamed_original(item_text: str) -> str:
     encoded = item_text.encode()
     root = ts.Parser(ts.Language(grammar.language())).parse(encoded).root_node
     item = next(c for c in root.named_children if c.type == "function_item")
-    name = item.child_by_field_name("name")
-    offset = name.start_byte
+    offset = item.child_by_field_name("name").start_byte
     return item_text[:offset] + "__lc_orig_" + item_text[offset:]
 
 
@@ -452,13 +417,11 @@ def _shadow_test(name: str, info: dict) -> str:
     module of a no_std crate because the test harness links std either way.
     """
     params = info["params"]
-    receiver = info.get("receiver")
-    if receiver is not None:
+    if info.get("receiver") is not None:
         return _shadow_test_method(name, info)
     # unqualified: __lc_orig_* is a sibling item of the test inside
     # __lc_shadow; `super::` from here would be the crate root
-    original_call = f"__lc_orig_{name}({{}})"
-    rewritten_call = f"super::{name}({{}})"
+    original_call, rewritten_call = f"__lc_orig_{name}({{}})", f"super::{name}({{}})"
     marker = (
         f'    __lc_mark(&format!("__LC_SHADOW_VERIFIED name={name} '
         'cases={}", verified));'
@@ -533,7 +496,6 @@ def _shadow_test(name: str, info: dict) -> str:
 
 
 def _shadow_mod(functions: dict[str, dict], marker_path: Path) -> str:
-    path_literal = _rust_string_literal(str(marker_path))
     parts = [
         "#[cfg(test)]",
         "mod __lc_shadow {",
@@ -546,7 +508,7 @@ def _shadow_mod(functions: dict[str, dict], marker_path: Path) -> str:
         "        if let Ok(mut file) = std::fs::OpenOptions::new()",
         "            .append(true)",
         "            .create(true)",
-        f"            .open({path_literal})",
+        f"            .open({_rust_string_literal(str(marker_path))})",
         "        {",
         "            let _ = file.write_all(line.as_bytes());",
         '            let _ = file.write_all(b"\n");',
@@ -578,15 +540,7 @@ def _shadow_mod(functions: dict[str, dict], marker_path: Path) -> str:
 
 def _shadow_command(root: Path, test_command: list[str] | None) -> list[str]:
     """The project's own cargo test command narrowed to the shadow module."""
-    cmd = (
-        list(test_command)
-        if test_command
-        else [
-            "cargo",
-            "test",
-            "--quiet",
-        ]
-    )
+    cmd = list(test_command) if test_command else ["cargo", "test", "--quiet"]
     if cmd[0] != "cargo" or "test" not in cmd[:2]:
         return cmd  # a wrapper script: run it whole, markers still surface
     tail = cmd[2:]
@@ -725,10 +679,9 @@ def _alias_map(source: str) -> dict[str, str]:
                 full = encoded[arg.start_byte : arg.end_byte].decode()
                 alias_node = arg.child_by_field_name("alias")
                 if alias_node is not None:
-                    head = encoded[arg.start_byte : alias_node.start_byte].decode()
                     aliases[
                         encoded[alias_node.start_byte : alias_node.end_byte].decode()
-                    ] = head.strip()
+                    ] = encoded[arg.start_byte : alias_node.start_byte].decode().strip()
                 else:
                     last = arg.named_children[-1]
                     if last.type == "identifier":
@@ -741,13 +694,10 @@ def _alias_map(source: str) -> dict[str, str]:
 
 def _std_leaf(text: str, aliases: dict[str, str]) -> tuple | None:
     leaf = text.split("::")[-1]
-    resolved = aliases.get(leaf, leaf)
-    leaf = resolved.split("::")[-1]
+    leaf = aliases.get(leaf, leaf).split("::")[-1]
     if leaf == "Duration":
         return ("duration",)
-    if leaf == "String":
-        return ("string",)
-    return None
+    return ("string",) if leaf == "String" else None
 
 
 class _Facts:
@@ -808,14 +758,13 @@ class _Facts:
         type_params = node.child_by_field_name("type_parameters")
         if name_node is None or body is None or type_params is not None:
             return
-        name = self._text(name_node)
-        fields = []
+        name, fields = self._text(name_node), []
         for field in body.named_children:
             if body.type == "ordered_field_declaration_list":
                 # tuple struct: the field IS the (possibly pub-wrapped) type
-                if field.type == "visibility_modifier":
-                    continue
-                if field.type in ("visibility_modifier",):
+                if field.type == "visibility_modifier" or field.type in (
+                    "visibility_modifier"
+                ):
                     continue
                 type_node = field
                 if field.type == "field_declaration":
@@ -870,15 +819,14 @@ class _Facts:
 
     def _collect_new_ctor(self, item, type_name: str) -> None:
         name_node = item.child_by_field_name("name")
-        if name_node is None or self._text(name_node) != "new":
-            return
-        if item.child_by_field_name("type_parameters") is not None:
+        if (
+            name_node is None or self._text(name_node) != "new"
+        ) or item.child_by_field_name("type_parameters") is not None:
             return
         params = self._param_texts(item)
         if params is None:
             return
-        ret = self._return_text(item)
-        if ret in (None, type_name, "Self"):
+        if self._return_text(item) in (None, type_name, "Self"):
             self.new_ctors.setdefault(type_name, []).append(params)
 
     def _text(self, node) -> str:
@@ -919,32 +867,25 @@ class _Facts:
         """Whitelist descriptor for a raw type string, local structs included."""
         if _MUTABILITY_TOKENS.search(type_text):
             return None
-        wrapped = self._WRAP.format(type_text)
-        encoded = wrapped.encode()
+        encoded = self._WRAP.format(type_text).encode()
         root = self.parser.parse(encoded).root_node
         if root.has_error:
             return None
-        item = root.named_children[0]
-        body = item.child_by_field_name("body")
+        body = root.named_children[0].child_by_field_name("body")
         field = body.named_children[0] if body.named_children else None
         node = field.child_by_field_name("type") if field else None
-        if node is None:
-            return None
-        return self._classify_node(node, encoded, visiting)
+        return None if node is None else self._classify_node(node, encoded, visiting)
 
     def _classify_node(
         self, node, src: bytes, visiting: frozenset[str]
     ) -> tuple | None:
-        kind = node.type
-        text = src[node.start_byte : node.end_byte].decode()
+        kind, text = node.type, src[node.start_byte : node.end_byte].decode()
         if kind == "type_identifier":
             if text in self.raw:
                 if text in visiting:
                     return None
                 descriptor = self._descriptor(text, visiting | {text})
-                if descriptor is None:
-                    return None
-                return ("local", text, descriptor)
+                return None if descriptor is None else ("local", text, descriptor)
             return _std_leaf(text, self.aliases)
         if kind == "scoped_type_identifier":
             return _std_leaf(text, self.aliases)
@@ -955,9 +896,7 @@ class _Facts:
             for child in node.named_children:
                 if child.type == "lifetime":
                     continue
-                if child.type == "mutable_specifier":
-                    return None
-                if inner is not None:
+                if child.type == "mutable_specifier" or inner is not None:
                     return None
                 inner = child
             if inner is None:
@@ -969,8 +908,7 @@ class _Facts:
             args = node.child_by_field_name("arguments")
             if base is None or args is None:
                 return None
-            leaf = self._text(base).split("::")[-1]
-            inner_nodes = args.named_children
+            leaf, inner_nodes = self._text(base).split("::")[-1], args.named_children
             if leaf == "Option" and len(inner_nodes) == 1:
                 sub = self._classify_node(inner_nodes[0], src, visiting)
                 return None if sub is None else ("option", sub, text)
@@ -1000,8 +938,6 @@ class _Facts:
             if inner is None or not 1 <= count <= 4:
                 return None
             return ("array", inner, count, text)
-        return None
-
         return None
 
     def _descriptor(self, name: str, visiting: frozenset[str]) -> dict | None:
@@ -1052,8 +988,7 @@ class _Facts:
             )
             return f"{name} {{{pairs}}}"
 
-        first = [_first_value(d) for _l, _t, d in fields]
-        variants = [construct]
+        first, variants = [_first_value(d) for _l, _t, d in fields], [construct]
         for index in range(len(fields)):
             values = list(first)
             options = _values(fields[index][2])
@@ -1078,13 +1013,18 @@ class _Facts:
         if default:
             return f"{name}::default()"
         if name in self.new_ctors:
-            args = []
-            for _pattern, type_text in self.new_ctors[name]:
-                desc = self.classify(type_text)
-                if desc is None or not _param_ok(desc):
-                    return None
-                args.append(_first_value(desc))
-            return f"{name}::new({', '.join(args)})"
+            # one entry per `new` definition (cfg-split impls can define
+            # several); each entry is that definition's own param list.
+            for params in self.new_ctors[name]:
+                args = []
+                for _pattern, type_text in params:
+                    desc = self.classify(type_text)
+                    if desc is None or not _param_ok(desc):
+                        break
+                    args.append(_first_value(desc))
+                else:
+                    return f"{name}::new({', '.join(args)})"
+            return None
         if not fields:
             return None  # no way to distinguish an empty tuple struct's intent
         if tuple_struct:
@@ -1148,11 +1088,10 @@ def _v2_method_entry(
     """Spec entry for one `&self` method on a constructible local struct,
     or None when v2 must refuse (every refusal stays unverified)."""
     text = facts._text(item)
-    if trait_text or re.search(r"\b(?:unsafe|async|extern)\b", text):
-        return None
-    if item.child_by_field_name("type_parameters") is not None:
-        return None
-    if item.child_by_field_name("where_clause") is not None:
+    if (
+        (trait_text or re.search(r"\b(?:unsafe|async|extern)\b", text))
+        or item.child_by_field_name("type_parameters") is not None
+    ) or item.child_by_field_name("where_clause") is not None:
         return None
     parameters = item.child_by_field_name("parameters")
     if parameters is None:
@@ -1206,10 +1145,8 @@ def _shadow_test_method(name: str, info: dict) -> str:
     """Differential test for one `&self` method: two freshly constructed
     receivers per case, the original body riding in a test-only impl block."""
 
-    receiver = info["receiver"]
-    construct = receiver["construct"]
-    method = info["method_name"]
-    params = info["params"]
+    construct = info["receiver"]["construct"]
+    method, params = info["method_name"], info["params"]
 
     original_call = f"__lc_recv_a.__lc_orig_{method}({{}})"
     rewritten_call = f"__lc_recv_b.{method}({{}})"
@@ -1219,7 +1156,7 @@ def _shadow_test_method(name: str, info: dict) -> str:
     )
 
     def body(call_original: str, call_rewritten: str, args_original: str) -> list[str]:
-        lines = [
+        return [
             "        let __lc_recv_a = " + construct + ";",
             "        let __lc_recv_b = " + construct + ";",
             "        let original = std::panic::catch_unwind(",
@@ -1258,7 +1195,6 @@ def _shadow_test_method(name: str, info: dict) -> str:
             "            (Err(_), Err(_)) => {}",
             "        }",
         ]
-        return lines
 
     lines = [
         "#[test]",

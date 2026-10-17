@@ -129,9 +129,9 @@ class _Sym:
 def _corpus_files(root: Path, exclude: Path | None = None) -> list[Path]:
     out = []
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.suffix not in _TEXT_SUFFIXES:
-            continue
-        if exclude is not None and path == exclude:
+        if (not path.is_file() or path.suffix not in _TEXT_SUFFIXES) or (
+            exclude is not None and path == exclude
+        ):
             continue
         parts = path.relative_to(root).parts
         if any(part in SKIP_DIRS or part.startswith(".") for part in parts):
@@ -213,18 +213,9 @@ def _string_literals(texts: dict[Path, str]) -> list[str]:
 class _Miner:
     """Phase A: candidates, rails, mentions, groups. No edits, ever."""
 
-    def __init__(
-        self,
-        root: Path,
-        lang: str,
-        app: bool,
-        exclude: Path | None = None,
-    ):
-        self.root = root
-        self.lang = lang
-        self.app = app
-        self.project = map_project(root, lang)
-        self.exclude = exclude
+    def __init__(self, root: Path, lang: str, app: bool, exclude: Path | None = None):
+        self.root, self.lang, self.app = root, lang, app
+        self.project, self.exclude = map_project(root, lang), exclude
         self.corpus = _corpus_files(root, exclude)
         self.texts: dict[Path, str] = {
             path: path.read_text(encoding="utf-8", errors="replace")
@@ -310,8 +301,7 @@ class _Miner:
             start = min(
                 [node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])]
             )
-            end = node.end_lineno
-            decorated = bool(getattr(node, "decorator_list", []))
+            end, decorated = node.end_lineno, bool(getattr(node, "decorator_list", []))
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 syms.append(
                     _Sym("function", node.name, node.name, start, end, decorated)
@@ -345,16 +335,12 @@ class _Miner:
 
     def collect_candidates(self) -> None:
         for path in self.project.source_files:
-            text = self.texts.get(path, "")
-            rel = str(path.relative_to(self.root))
+            text, rel = self.texts.get(path, ""), str(path.relative_to(self.root))
             if (
                 path in self.entry_files
                 or path.name == "__init__.py"
                 or self._rail_file_blocked(path)
-            ):
-                self.syms[path] = self._top_level_syms(path, text)
-                continue
-            if any(
+            ) or any(
                 isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and node.name in ("__getattr__", "__dir__")
                 for node in _parse_or_none(text)
@@ -625,9 +611,9 @@ def coverage_overlay(
     for group in groups:
         flags = []
         for cand in group.candidates:
-            lines = executed.get(str((root / cand.file).resolve()), set())
             cand.covered_by_tests = bool(
-                lines & set(range(cand.start_line, cand.end_line + 1))
+                executed.get(str((root / cand.file).resolve()), set())
+                & set(range(cand.start_line, cand.end_line + 1))
             )
             flags.append(cand.covered_by_tests)
         group.covered_by_tests = any(flags) if flags else None
@@ -900,18 +886,17 @@ def propose_tree(
         for number, group in enumerate(groups, 1):
             group.id = str(number)
     _, runs = _load_runs(out) if out is not None else ({}, [])
-    consent = {
-        "command": " ".join(shlex.quote(part) for part in sys.argv),
-        "path": str(root),
-        "lang": "python",
-        "app": app,
-        "test_command": list(test_command or []),
-        "timeout": timeout,
-        "tree_hash": tree_hash(root, "python"),
-        "timestamp": datetime.now(UTC).isoformat(),
-    }
     payload = {
-        "consent": consent,
+        "consent": {
+            "command": " ".join(shlex.quote(part) for part in sys.argv),
+            "path": str(root),
+            "lang": "python",
+            "app": app,
+            "test_command": list(test_command or []),
+            "timeout": timeout,
+            "tree_hash": tree_hash(root, "python"),
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
         "groups": [_group_json(root, group, "python") for group in groups],
         "runs": runs,
     }
@@ -939,20 +924,13 @@ def print_table(payload: dict, target: Path) -> None:
 
 
 def apply_proposals(
-    root: Path,
-    ids: list[str],
-    test_command: list[str] | None,
-    timeout: int,
-    out: Path,
+    root: Path, ids: list[str], test_command: list[str] | None, timeout: int, out: Path
 ) -> tuple[dict, int]:
     """Apply consented groups by id: apply -> verify -> revert on any red.
     A proposals file older than the tree is rejected (exit 3)."""
     data, runs = _load_runs(out)
     if not data or not data.get("groups"):
-        print(
-            f"no proposals at {out}; re-run lc propose first",
-            file=sys.stderr,
-        )
+        print(f"no proposals at {out}; re-run lc propose first", file=sys.stderr)
         return data, 3
     consent = data.get("consent", {})
     lang = consent.get("lang", "python")
@@ -980,8 +958,7 @@ def apply_proposals(
     removed: dict[Path, set[int]] = {}
     results = []
     for gid in ids:
-        group = by_id[gid]
-        snapshot = _snapshot(project.source_files)
+        group, snapshot = by_id[gid], _snapshot(project.source_files)
         try:
             _, killed = apply_group(root, project, _group_from_json(group), removed)
         except SyntaxError as exc:
@@ -1028,9 +1005,9 @@ def apply_proposals(
         print(f"group {gid}: {'applied' if ok else f'reverted ({why})'}")
     if results and all(ok for _, ok, _ in results):
         return data, 0
-    if results and not any(ok for _, ok, _ in results):
-        return data, 1
-    return data, 0
+    return (
+        (data, 1) if results and (not any((ok for _, ok, _ in results))) else (data, 0)
+    )
 
 
 def _group_from_json(group: dict) -> Group:

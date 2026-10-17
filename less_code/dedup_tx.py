@@ -30,9 +30,7 @@ from .loc import TOKEN_RE, measure, project_measure
 from .ml_file import _category, rustfmt_check_clean
 from .ml_shrink import extract_symbols, syntax_ok
 
-TRANSACTION_CAP = 16
-SHINGLE_K = 8
-JAFFARD_THRESHOLD = 0.7
+TRANSACTION_CAP, SHINGLE_K, JAFFARD_THRESHOLD = 16, 8, 0.7
 
 SYSTEM_PROMPT_TX = (
     "You are looking at cloned Rust functions that differ only in small "
@@ -61,9 +59,7 @@ def shingles(text: str, k: int = SHINGLE_K) -> set[tuple[str, ...]]:
 
 
 def jaccard(a: set, b: set) -> float:
-    if not a or not b:
-        return 0.0
-    return len(a & b) / len(a | b)
+    return 0.0 if not a or not b else len(a & b) / len(a | b)
 
 
 def clone_groups(
@@ -117,9 +113,7 @@ class TxBackend:
     name = "tx-cli"
 
     def __init__(self, command: str, timeout: float = 240.0, digest: str | None = None):
-        self.command = command
-        self.timeout = timeout
-        self.digest = digest
+        self.command, self.timeout, self.digest = command, timeout, digest
         self.system = SYSTEM_PROMPT_TX
 
     def propose_transaction(
@@ -162,8 +156,7 @@ def validate_transaction(
 ) -> tuple[dict[Path, str], str]:
     """Validate the proposal; returns (candidate texts per touched file, '')
     or ({}, reason). Pure-text checks only - the cascade owns behavior."""
-    helper = proposal.get("helper")
-    call_sites = proposal.get("call_sites")
+    helper, call_sites = proposal.get("helper"), proposal.get("call_sites")
     if not helper or not isinstance(call_sites, list) or not call_sites:
         return {}, "abstained"
     if not isinstance(helper, str) or len(helper) > 32000:
@@ -198,8 +191,7 @@ def validate_transaction(
             resolved = matches[0] if len(matches) == 1 else None
         if resolved is None or resolved not in candidates:
             return {}, f"invalid schema: unknown path {site.get('path')!r}"
-        region = site.get("replacement_region")
-        replacement = site.get("replacement")
+        region, replacement = site.get("replacement_region"), site.get("replacement")
         if not isinstance(region, str) or not isinstance(replacement, str):
             return {}, "invalid schema: region and replacement must be text"
         text = candidates[resolved]
@@ -220,10 +212,7 @@ def validate_transaction(
 
 
 def cascade_reject_tx(
-    before: dict[Path, str],
-    after: dict[Path, str],
-    helper_name: str,
-    root: Path,
+    before: dict[Path, str], after: dict[Path, str], helper_name: str, root: Path
 ) -> str:
     """Steps 2-7 of the Phase 1 cascade over the whole transaction."""
     for path, text in after.items():
@@ -270,11 +259,7 @@ def cascade_reject_tx(
 
 
 def dedup_tree(
-    root: Path,
-    files: list[Path],
-    backend,
-    gate,
-    attempts: int = 2,
+    root: Path, files: list[Path], backend, gate, attempts: int = 2
 ) -> tuple[dict[str, int], list[dict]]:
     """Mine clone groups, collect one transaction per group, gate all-or-nothing."""
     sources = {p: p.read_text(encoding="utf-8") for p in files}
@@ -319,12 +304,11 @@ def dedup_tree(
                         import tree_sitter as ts
                         import tree_sitter_rust as grammar
 
-                        parser = ts.Parser(ts.Language(grammar.language()))
                         items = [
                             c
-                            for c in parser.parse(
-                                helper.encode()
-                            ).root_node.named_children
+                            for c in ts.Parser(ts.Language(grammar.language()))
+                            .parse(helper.encode())
+                            .root_node.named_children
                             if c.type == "function_item"
                         ]
                         name_node = items[0].child_by_field_name("name")
@@ -339,10 +323,7 @@ def dedup_tree(
                                 sources = {
                                     p: p.read_text(encoding="utf-8") for p in files
                                 }
-                            if not accepted:
-                                record["reason"] = reason
-                            else:
-                                record["reason"] = ""
+                            record["reason"] = reason if not accepted else ""
                         else:
                             record["reason"] = reason
                     else:
@@ -426,12 +407,7 @@ def default_tx_gate(
         if not test.ok:
             for path, text in pristine.items():
                 path.write_text(text, encoding="utf-8")
-            return (
-                0,
-                [],
-                False,
-                f"tests failed: {compile_feedback(test.output_tail)}",
-            )
+            return (0, [], False, f"tests failed: {compile_feedback(test.output_tail)}")
         current = {p: p.read_text(encoding="utf-8") for p in pristine}
         spec = rust_changed(pristine, current)
         report = run_rust_shadow(root, spec, test_command, test_timeout)

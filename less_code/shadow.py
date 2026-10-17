@@ -117,14 +117,15 @@ def _shadowable(node: ast.FunctionDef) -> bool:
     if any(d not in _SIMPLE_DECORATORS for d in decorators):
         return False
     for inner in ast.walk(node):
-        if isinstance(inner, (ast.Await, ast.Global)):
-            return False
-        if isinstance(inner, ast.Name) and inner.id in ("super", "__class__"):
-            return False
-        if isinstance(inner, ast.Attribute) and (
-            inner.attr.startswith("__") and not inner.attr.endswith("__")
+        # name mangling needs the class body
+        if (
+            isinstance(inner, (ast.Await, ast.Global))
+            or (isinstance(inner, ast.Name) and inner.id in ("super", "__class__"))
+        ) or (
+            isinstance(inner, ast.Attribute)
+            and (inner.attr.startswith("__") and (not inner.attr.endswith("__")))
         ):
-            return False  # name mangling needs the class body
+            return False
     return True
 
 
@@ -160,9 +161,9 @@ def changed_functions(
         functions: dict[str, dict] = {}
         for qualname, node in old_index.items():
             other = new_index.get(qualname)
-            if other is None or ast.dump(node) == ast.dump(other):
-                continue
-            if not _shadowable(node) or not _shadowable(other):
+            if (other is None or ast.dump(node) == ast.dump(other)) or (
+                not _shadowable(node) or not _shadowable(other)
+            ):
                 continue
             if _effectful(node) or _effectful(other):
                 spec.setdefault("!effectful", {})[f"{Path(path).name}:{qualname}"] = {}
@@ -247,8 +248,7 @@ def run_shadow(
     by bisection, reported as `interference` (unverified), and the remaining
     functions are compared on their own.
     """
-    started = time.monotonic()
-    effectful = sorted(spec.pop("!effectful", {}))
+    started, effectful = time.monotonic(), sorted(spec.pop("!effectful", {}))
     keys = _keys(spec)
     known = [
         key for key in keys if _INTERFERING.get((*key, spec[key[0]][key[1]]["source"]))

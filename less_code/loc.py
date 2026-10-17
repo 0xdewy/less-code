@@ -101,8 +101,7 @@ def rustfmt_config(root: Path) -> tuple[str | None, str]:
     A crate pinning edition 2021 must be measured under 2021 rules; and a
     project with its own rustfmt.toml gets gate decisions under its own
     config, not under the width-88 metric default."""
-    edition = "2024"
-    cargo = root / "Cargo.toml"
+    edition, cargo = "2024", root / "Cargo.toml"
     if cargo.is_file():
         try:
             import tomllib
@@ -138,10 +137,9 @@ def format_command(lang: str, root: Path | None = None) -> list[str] | None:
     if shutil.which(cmd[0]) is not None:
         return cmd
     if lang in ("javascript", "typescript") and shutil.which("npx") is not None:
-        filename = "x.ts" if lang == "typescript" else "x.js"
         return PRETTIER_NPX + [
             "--stdin-filepath",
-            filename,
+            "x.ts" if lang == "typescript" else "x.js",
             "--print-width",
             str(PRINT_WIDTH),
         ]
@@ -167,9 +165,7 @@ def canonical_format(
         )
     except (OSError, subprocess.SubprocessError):
         return source, False
-    if proc.returncode != 0:
-        return source, False
-    return proc.stdout, True
+    return (source, False) if proc.returncode != 0 else (proc.stdout, True)
 
 
 def count_python(source: str) -> Loc:
@@ -210,16 +206,13 @@ def count_python(source: str) -> Loc:
         tokenize.ENCODING,
     }
     for tok in tokens:
-        if tok.type in skipped_types:
-            continue
-        if tok.type == tokenize.NEWLINE:
+        if tok.type in skipped_types or tok.type == tokenize.NEWLINE:
             continue
         code_lines.update(range(tok.start[0], tok.end[0] + 1))
     code_lines.difference_update(doc_lines)
     code = blank = comment = 0
     for n, line in enumerate(source.splitlines(), 1):
-        s = line.strip()
-        if not s:
+        if not line.strip():
             blank += 1
         elif n in code_lines:
             code += 1

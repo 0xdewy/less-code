@@ -161,6 +161,73 @@ def test_rust_unverified_functions_are_never_mismatches(tmp_path):
     assert not report.mismatches
 
 
+RS_NEW_CTORS = """\
+#[derive(Debug)]
+pub struct Zero {
+    pub x: u64,
+}
+
+#[derive(Debug)]
+pub struct One {
+    pub x: u64,
+}
+
+#[derive(Debug)]
+pub struct Three {
+    pub x: u64,
+    pub y: u64,
+    pub z: u64,
+}
+
+impl Zero {
+    pub fn new() -> Self {
+        Zero { x: 0 }
+    }
+
+    pub fn get(&self) -> u64 {
+        let v = self.x;
+        v
+    }
+}
+
+impl One {
+    pub fn new(x: u64) -> Self {
+        One { x: x }
+    }
+
+    pub fn get(&self) -> u64 {
+        let v = self.x;
+        v
+    }
+}
+
+impl Three {
+    pub fn new(x: u64, y: u64, z: u64) -> Self {
+        Three { x: x, y: y, z: z }
+    }
+
+    pub fn get(&self) -> u64 {
+        let v = self.x;
+        v
+    }
+}
+"""
+
+
+def test_rust_new_ctor_arity_never_crashes_fact_collection():
+    """`new` definitions with 0, 1, or 3 params once crashed the fact
+    collector (`expected 2, got 1`): each definition holds its own param
+    list, not one (pattern, type) pair."""
+    pristine = {Path("/unused/lib.rs"): RS_NEW_CTORS}
+    current = {Path("/unused/lib.rs"): RS_NEW_CTORS.replace("let v = self.x;", "")}
+    spec = rust_changed_functions(pristine, current)
+    assert set(spec[str(Path("/unused/lib.rs"))]) == {
+        "Zero::get",
+        "One::get",
+        "Three::get",
+    }
+
+
 def test_rust_gate_reverts_shadow_mismatch(tmp_path, monkeypatch):
     """End to end: a wrong rewrite the frozen suite cannot see is caught by
     the rust oracle, and the layer reverts."""

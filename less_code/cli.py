@@ -25,7 +25,7 @@ from .pipeline import shrink_project, write_report
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
-    project = map_project(Path(args.path), args.lang)
+    project = map_project(Path(args.path), args.lang, tuple(args.exclude or ()))
     loc = count_tree(project.source_files, project.lang, format_first=True)
     print(
         json.dumps(
@@ -99,6 +99,7 @@ def cmd_shrink(args: argparse.Namespace) -> int:
     stats = shrink_project(
         target,
         lang=args.lang,
+        exclude=tuple(args.exclude or ()),
         test_timeout=args.timeout,
         ml_backend=ml_backend,
         ml_attempts=args.ml_attempts,
@@ -133,8 +134,7 @@ def cmd_shrink(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     print(f"report: {args.out}")
-    ok = stats.tests_ok and stats.api_ok and stats.docs_ok
-    return 0 if ok else 1
+    return 0 if stats.tests_ok and stats.api_ok and stats.docs_ok else 1
 
 
 def tests_run_text(count) -> str:
@@ -169,13 +169,11 @@ def _propose_target(
 
 
 def cmd_propose(args: argparse.Namespace) -> int:
-    target = Path(args.path)
-    applying = bool(args.apply)
+    target, applying = Path(args.path), bool(args.apply)
     work = _propose_target(target, args.copy_to, args.in_place, fresh=not applying)
     if args.in_place and applying:
         print(
-            f"WARNING: applying deletion groups IN PLACE on {target}",
-            file=sys.stderr,
+            f"WARNING: applying deletion groups IN PLACE on {target}", file=sys.stderr
         )
     out = Path(args.out) if args.out else work / "proposals.json"
     test_command = shlex.split(args.test_command) if args.test_command else None
@@ -224,13 +222,12 @@ def cmd_rewrite(args: argparse.Namespace) -> int:
             )
         target = dest
     backend = FileBackend(args.ml_cli, timeout=args.ml_timeout)
-    test_command = shlex.split(args.test_command) if args.test_command else None
     stats, records, tests_ok = rewrite_project(
         target,
         backend,
         attempts=args.attempts,
         test_timeout=args.timeout,
-        test_command=test_command,
+        test_command=shlex.split(args.test_command) if args.test_command else None,
         lang=args.lang,
     )
     payload = {
@@ -313,12 +310,7 @@ def cmd_dedup(args: argparse.Namespace) -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(
-        json.dumps(
-            {"stats": stats, "tests_ok": tests_ok},
-            indent=2,
-        )
-    )
+    print(json.dumps({"stats": stats, "tests_ok": tests_ok}, indent=2))
     print(f"report: {out}")
     return 0 if tests_ok else 1
 
@@ -366,11 +358,7 @@ def cmd_compact_tests(args: argparse.Namespace) -> int:
     backend = FileBackend(args.ml_cli, timeout=args.ml_timeout)
     backend.name = "compact-cli"
     proposals = propose_compaction(
-        target,
-        project.source_files,
-        backend,
-        attempts=2,
-        timeout=args.timeout,
+        target, project.source_files, backend, attempts=2, timeout=args.timeout
     )
     out = write_proposals(target, proposals)
     print(
@@ -386,8 +374,7 @@ def cmd_compact_tests(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     """Render the JSON report as a small markdown summary (no separate bench)."""
-    data = json.loads(Path(args.json).read_text())
-    r = data["reduce"]
+    r = json.loads(Path(args.json).read_text())["reduce"]
     lines = [
         "# less-code report",
         "",
@@ -450,6 +437,19 @@ def cmd_corpus(args: argparse.Namespace) -> int:
     return 0 if result["aggregate"]["valid"] == result["aggregate"]["projects"] else 1
 
 
+def _add_exclude_arg(p: argparse.ArgumentParser) -> None:
+    """Relative dir or file to leave out of the mapped target. Repeatable:
+    `--exclude fixtures --exclude training/crates`. Lets a project keep its
+    benchmark inputs and vendored data out of the shrink target."""
+    p.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="relative path to exclude from the target (repeatable)",
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="lc",
@@ -462,11 +462,13 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("analyze", help="map project + LOC baseline")
     p.add_argument("path")
     p.add_argument("--lang")
+    _add_exclude_arg(p)
     p.set_defaults(func=cmd_analyze)
 
     p = sub.add_parser("shrink", help="shrink the codebase")
     p.add_argument("path")
     p.add_argument("--lang")
+    _add_exclude_arg(p)
     p.add_argument("--timeout", type=int, default=600)
     p.add_argument(
         "--copy-to",
@@ -574,8 +576,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_rewrite)
 
     p = sub.add_parser(
-        "dedup",
-        help="cross-function dedup transactions for Rust, all-or-nothing gated",
+        "dedup", help="cross-function dedup transactions for Rust, all-or-nothing gated"
     )
     p.add_argument("path")
     p.add_argument("--lang")
@@ -621,11 +622,7 @@ def main(argv: list[str] | None = None) -> int:
         metavar="DIR",
         help="work on a copy at DIR instead of the sibling <path>-compact",
     )
-    p.add_argument(
-        "--in-place",
-        action="store_true",
-        help="operate on path directly",
-    )
+    p.add_argument("--in-place", action="store_true", help="operate on path directly")
     p.add_argument(
         "--ml-cli",
         default=None,

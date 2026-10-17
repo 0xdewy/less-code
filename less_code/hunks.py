@@ -52,8 +52,7 @@ def _brace_spans(source: str, pattern: re.Pattern) -> list[tuple[int, int, str]]
         if m.start() < pos:
             continue
         name = next((v for v in m.groupdict().values() if v), "").strip()
-        brace = source.find("{", m.start())
-        semi = source.find(";", m.start())
+        brace, semi = source.find("{", m.start()), source.find(";", m.start())
         if brace == -1 or (semi != -1 and semi < brace):
             end = semi if semi != -1 else m.end()
             spans.append((m.start(), end + 1, name))
@@ -95,6 +94,4 @@ def symbol_spans(source: str, lang: str) -> list[tuple[int, int, str]]:
         return _python_spans(source)
     if lang in ("javascript", "typescript"):
         return _brace_spans(source, JS_DECL)
-    if lang == "rust":
-        return _brace_spans(source, RUST_DECL)
-    return []
+    return _brace_spans(source, RUST_DECL) if lang == "rust" else []

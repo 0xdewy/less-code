@@ -117,18 +117,16 @@ def _collect_conditional_returns(src: bytes, root):
 
     def visit(node):
         if node.type == "statement_block":
-            statements = list(node.named_children)
-            for first, second in pairwise(statements):
-                if first.type != "if_statement" or second.type != "return_statement":
-                    continue
-                if any(child.type == "else_clause" for child in first.children):
+            for first, second in pairwise(list(node.named_children)):
+                if (
+                    first.type != "if_statement" or second.type != "return_statement"
+                ) or any(child.type == "else_clause" for child in first.children):
                     continue
                 first_return = _single_return(first.child_by_field_name("consequence"))
                 condition = first.child_by_field_name("condition")
                 if first_return is None or condition is None:
                     continue
-                left = _argument(first_return)
-                right = _argument(second)
+                left, right = _argument(first_return), _argument(second)
                 # boolean-chain-collapse owns this overlap.
                 if (
                     left is not None
@@ -177,14 +175,10 @@ def _collect_inline_return_bindings(src: bytes, root):
 
     def visit(node):
         if node.type == "statement_block":
-            statements = list(node.named_children)
-            for declaration, returned in pairwise(statements):
+            for declaration, returned in pairwise(list(node.named_children)):
                 if (
                     declaration.type
-                    not in {
-                        "lexical_declaration",
-                        "variable_declaration",
-                    }
+                    not in {"lexical_declaration", "variable_declaration"}
                     or returned.type != "return_statement"
                 ):
                     continue
@@ -193,11 +187,11 @@ def _collect_inline_return_bindings(src: bytes, root):
                     for child in declaration.named_children
                     if child.type == "variable_declarator"
                 ]
-                if len(declarators) != 1:
-                    continue
                 # `var`/`let` bindings can be observable through direct eval;
                 # this rule is intentionally limited to immutable forwarding.
-                if not _node_text(src, declaration).lstrip().startswith("const "):
+                if len(declarators) != 1 or not _node_text(
+                    src, declaration
+                ).lstrip().startswith("const "):
                     continue
                 declarator = declarators[0]
                 name = declarator.child_by_field_name("name")
@@ -227,8 +221,7 @@ def _collect_inline_return_bindings(src: bytes, root):
                 # for another reference elsewhere in this lexical block.
                 if len(_identifier_nodes(src, node, name_text)) != 2:
                     continue
-                use = uses[0]
-                returned_text = _node_text(src, returned)
+                use, returned_text = uses[0], _node_text(src, returned)
                 offset = use.start_byte - returned.start_byte
                 value_text = _node_text(src, value)
                 if direct_return and "\n" in value_text:
@@ -330,9 +323,7 @@ def _try_ladder(src: bytes, if_node):
 
 def _build_array_lookup(src: bytes, entries) -> str | None:
     keys = [int(_node_text(src, k)) for k, _, _ in entries]
-    if keys != sorted(keys):
-        return None
-    if keys != list(range(min(keys), max(keys) + 1)):
+    if keys != sorted(keys) or keys != list(range(min(keys), max(keys) + 1)):
         return None
     offset = keys[0]
     bin_expr = next(
@@ -341,8 +332,7 @@ def _build_array_lookup(src: bytes, entries) -> str | None:
         if c.type == "binary_expression"
     )
     key_id = _node_text(src, bin_expr.child_by_field_name("left"))
-    vals = [_node_text(src, v) for _, v, _ in entries]
-    arr = "[" + ", ".join(vals) + "]"
+    arr = "[" + ", ".join([_node_text(src, v) for _, v, _ in entries]) + "]"
     if offset == 0:
         return f"return {arr}[{key_id}];"
     return f"return {arr}[{key_id} - {offset}];"
@@ -389,8 +379,7 @@ def _collect_if_ladders(src: bytes, root):
         if node.type == "if_statement":
             entries, last_if, term = _try_ladder(src, node)
             if entries is not None:
-                if term is None:
-                    term = _terminal_after(last_if)
+                term = _terminal_after(last_if) if term is None else term
                 if term is not None and term.type != "throw_statement":
                     term = None
                 replacement = _build_array_lookup(src, entries)
@@ -437,18 +426,16 @@ def _try_accumulator_direct(src: bytes, block):
     if len(decls) != 1:
         return None
     d = decls[0]
-    var_node = d.child_by_field_name("name")
-    init_node = d.child_by_field_name("value")
-    if var_node is None or init_node is None or init_node.type != "identifier":
-        return None
-    if loop_stmt.type != "while_statement":
-        return None
-    if ret_stmt.type != "return_statement":
+    var_node, init_node = d.child_by_field_name("name"), d.child_by_field_name("value")
+    if (
+        (var_node is None or init_node is None or init_node.type != "identifier")
+        or loop_stmt.type != "while_statement"
+    ) or ret_stmt.type != "return_statement":
         return None
     ret_arg = next((c for c in ret_stmt.children if c.is_named), None)
-    if not ret_arg or ret_arg.type != "identifier":
-        return None
-    if _node_text(src, ret_arg) != _node_text(src, var_node):
+    if (not ret_arg or ret_arg.type != "identifier") or _node_text(
+        src, ret_arg
+    ) != _node_text(src, var_node):
         return None
     loop_body = loop_stmt.child_by_field_name("body")
     if not loop_body or loop_body.type != "statement_block":
@@ -465,9 +452,9 @@ def _try_accumulator_direct(src: bytes, block):
     if not assign_expr:
         return None
     lhs = assign_expr.child_by_field_name("left")
-    if not lhs or lhs.type != "identifier":
-        return None
-    if _node_text(src, lhs) != _node_text(src, var_node):
+    if (not lhs or lhs.type != "identifier") or _node_text(src, lhs) != _node_text(
+        src, var_node
+    ):
         return None
     return decl, var_node, init_node, loop_stmt, ret_stmt, assign_expr
 
@@ -487,8 +474,7 @@ def _assignment_op(src: bytes, assign_expr) -> str:
 def _rewrite_accumulator_direct(
     src: bytes, var_node, init_node, loop_stmt, ret_stmt, assign_expr
 ) -> str:
-    var_name = _node_text(src, var_node)
-    init_name = _node_text(src, init_node)
+    var_name, init_name = _node_text(src, var_node), _node_text(src, init_node)
     cond_text = _node_text(src, loop_stmt.child_by_field_name("condition"))[1:-1]
     cond_text = cond_text.replace(var_name, init_name)
     op = _assignment_op(src, assign_expr)
@@ -503,8 +489,7 @@ def _rewrite_accumulator_direct(
             body = f"{init_name} {op} {rhs_text}"
         else:
             body = f"{init_name} {op} {rhs_text}"
-    loop_text = f"while ({cond_text}) {body};"
-    return f"{loop_text}\nreturn {init_name};"
+    return f"{f'while ({cond_text}) {body};'}\nreturn {init_name};"
 
 
 def _collect_accumulators(src: bytes, root):
@@ -515,8 +500,7 @@ def _collect_accumulators(src: bytes, root):
             result = _try_accumulator_direct(src, node)
             if result is not None:
                 decl, var_node, init_node, loop_stmt, ret_stmt, assign_expr = result
-                start = decl.start_point[0] + 1
-                end = ret_stmt.end_point[0] + 1
+                start, end = decl.start_point[0] + 1, ret_stmt.end_point[0] + 1
                 replacement = _rewrite_accumulator_direct(
                     src, var_node, init_node, loop_stmt, ret_stmt, assign_expr
                 )
@@ -575,9 +559,7 @@ def _try_boolean_chain(src: bytes, block):
             d = decls[0]
             name_node = d.child_by_field_name("name")
             val_node = d.child_by_field_name("value")
-            if not name_node or name_node.type != "identifier":
-                return None
-            if not val_node:
+            if (not name_node or name_node.type != "identifier") or not val_node:
                 return None
             name_text = _node_text(src, name_node)
             # only allow binding if the name isn't already bound (no shadowing)
@@ -587,9 +569,7 @@ def _try_boolean_chain(src: bytes, block):
             used_names.add(name_text)
         else:
             return None
-    if not ifs:
-        return None
-    return ifs[0][0], last, [c for _, c in ifs]
+    return None if not ifs else (ifs[0][0], last, [c for _, c in ifs])
 
 
 def ast_names(src: bytes, node) -> list[str]:
@@ -608,8 +588,7 @@ def ast_names(src: bytes, node) -> list[str]:
 
 
 def _rewrite_boolean_chain(conditions: list[str]) -> str:
-    joined = " || ".join(conditions)
-    return f"return !({joined});"
+    return f"return !({' || '.join(conditions)});"
 
 
 def _collect_boolean_chains(src: bytes, root):
@@ -620,8 +599,7 @@ def _collect_boolean_chains(src: bytes, root):
             result = _try_boolean_chain(src, node)
             if result is not None:
                 first_if, last_ret, conds = result
-                start = first_if.start_point[0] + 1
-                end = last_ret.end_point[0] + 1
+                start, end = first_if.start_point[0] + 1, last_ret.end_point[0] + 1
                 replacement = _rewrite_boolean_chain(conds)
                 out.append((start, end, replacement, "boolean-chain-collapse"))
                 return
@@ -665,8 +643,7 @@ def _collect_unbrace(src: bytes, root):
         stmts = block.named_children
         if len(stmts) != 1 or stmts[0].type not in _SIMPLE_STMTS:
             return
-        stmt = stmts[0]
-        text = _node_text(src, stmt)
+        text = _node_text(src, stmts[0])
         if not text.rstrip().endswith(";"):
             after = src[block.end_byte :].lstrip()
             if after[:1].decode("utf-8", "replace") in _ASI_HAZARD:
@@ -744,10 +721,9 @@ def _collect_hoist_common_tail(src: bytes, root):
                     # is data. Compare source exactly apart from its edges.
                     texts = {_node_text(src, t).strip() for t in tails}
                     if len(texts) == 1:
-                        line_start = src.rfind(b"\n", 0, node.start_byte) + 1
-                        indent = src[line_start : node.start_byte].decode(
-                            "utf-8", "replace"
-                        )
+                        indent = src[
+                            src.rfind(b"\n", 0, node.start_byte) + 1 : node.start_byte
+                        ].decode("utf-8", "replace")
                         for tail in tails:
                             previous = tail.prev_named_sibling
                             edits.append((previous.end_byte, tail.end_byte, ""))
@@ -872,8 +848,7 @@ def _apply_loop_idioms(source: str, selected: set[str]) -> tuple[str, list[str]]
             r"(?P=i)  (?P=out) = (?P=out) \+ (?P<char>'[^'\n]*');\n(?P=i)\}"
         )
         source, count = pattern.subn(
-            lambda m: f"{m['i']}let {m['out']} = {m['char']}.repeat({m['n']});",
-            source,
+            lambda m: f"{m['i']}let {m['out']} = {m['char']}.repeat({m['n']});", source
         )
         applied += ["repeat-loop"] * count
     if "conditional-summary-loop" in selected:
@@ -926,17 +901,10 @@ def _apply_loop_idioms(source: str, selected: set[str]) -> tuple[str, list[str]]
         )
 
         def _emit(m):
-            indent = m["i"]
-            comment = m["cmt"]
-            head = f"{indent}{comment}" if comment else ""
+            indent, comment = m["i"], m["cmt"]
             return (
-                head
-                + (
-                    f"{indent}return {m['arr']}.filter(function (row) {{ "
-                    "const d = row.date; "
-                    f"if (!isValidDate(d)) throw new TypeError({m['error']}); "
-                    f"return {m['cond']}; }});"
-                )
+                (f"{indent}{comment}" if comment else "")
+                + f"{indent}return {m['arr']}.filter(function (row) {{ const d = row.date; if (!isValidDate(d)) throw new TypeError({m['error']}); return {m['cond']}; }});"
             ).rstrip("\n") + "\n"
 
         source, count = pattern.subn(_emit, source)
@@ -1004,8 +972,7 @@ def _apply_loop_idioms(source: str, selected: set[str]) -> tuple[str, list[str]]
                 f".join({match['replace']})"
             )
 
-        before = source
-        source = pattern.sub(replace_loop, source)
+        before, source = source, pattern.sub(replace_loop, source)
         if source != before:
             applied.append("substring-replace-loop")
     if "concise-arrow-return" in selected:
@@ -1041,9 +1008,7 @@ def _try_for_loop_every(src: bytes, block):
     if len(stmts) != 2:
         return None
     for_stmt, last = stmts
-    if for_stmt.type != "for_statement":
-        return None
-    if last.type != "return_statement":
+    if for_stmt.type != "for_statement" or last.type != "return_statement":
         return None
     last_arg = next((c for c in last.children if c.is_named), None)
     if last_arg is None or last_arg.type != "true":
@@ -1059,40 +1024,35 @@ def _try_for_loop_every(src: bytes, block):
     if len(decls) != 1:
         return None
     d = decls[0]
-    name_node = d.child_by_field_name("name")
-    val_node = d.child_by_field_name("value")
-    if name_node is None or name_node.type != "identifier":
-        return None
-    if val_node is None or val_node.type != "number":
-        return None
-    if _node_text(src, val_node) != "0":
+    name_node, val_node = d.child_by_field_name("name"), d.child_by_field_name("value")
+    if (
+        (name_node is None or name_node.type != "identifier")
+        or (val_node is None or val_node.type != "number")
+    ) or _node_text(src, val_node) != "0":
         return None
     idx_name = _node_text(src, name_node)
     # cond: i < arr.length
-    if cond is None or cond.type != "binary_expression":
-        return None
-    if _node_text(src, cond.children[0]) != idx_name:
-        return None
-    op = cond.children[1]
-    if _node_text(src, op) != "<":
+    if (
+        (cond is None or cond.type != "binary_expression")
+        or _node_text(src, cond.children[0]) != idx_name
+    ) or _node_text(src, cond.children[1]) != "<":
         return None
     rhs = cond.children[2]
     if rhs.type != "member_expression":
         return None
     rhs_obj = rhs.child_by_field_name("object")
     rhs_prop = rhs.child_by_field_name("property")
-    if rhs_prop is None or rhs_prop.type != "property_identifier":
-        return None
-    if _node_text(src, rhs_prop) != "length":
+    if (rhs_prop is None or rhs_prop.type != "property_identifier") or _node_text(
+        src, rhs_prop
+    ) != "length":
         return None
     arr_name = _node_text(src, rhs_obj)
     # update: i++
-    if update is None or update.type != "update_expression":
-        return None
-    if _node_text(src, update) != f"{idx_name}++":
-        return None
     # body: single `if (!EXPR) return false;`
-    if body is None:
+    if (
+        (update is None or update.type != "update_expression")
+        or _node_text(src, update) != f"{idx_name}++"
+    ) or body is None:
         return None
     if body.type == "statement_block":
         body_stmts = [c for c in body.children if c.is_named and c.type != "comment"]
@@ -1118,9 +1078,9 @@ def _try_for_loop_every(src: bytes, block):
     if ret.type != "return_statement":
         return None
     rarg = next((c for c in ret.children if c.is_named), None)
-    if rarg is None or rarg.type != "false":
-        return None
-    if any(c.type == "else_clause" for c in inner.children):
+    if (rarg is None or rarg.type != "false") or any(
+        c.type == "else_clause" for c in inner.children
+    ):
         return None
     ic = inner.child_by_field_name("condition")
     if ic is None:
@@ -1130,8 +1090,7 @@ def _try_for_loop_every(src: bytes, block):
         ic = ic.children[1] if ic.children[1].is_named else None
     if ic is None:
         return None
-    cond_text = _node_text(src, ic)
-    pat = f"{arr_name}[{idx_name}]"
+    cond_text, pat = _node_text(src, ic), f"{arr_name}[{idx_name}]"
     if pat not in cond_text:
         return None
     new_cond = cond_text.replace(pat, "v")
@@ -1160,8 +1119,7 @@ def _try_multi_condition_ladder(src: bytes, block):
     first_if = stmts[0] if stmts and stmts[0].type == "if_statement" else None
     if first_if is None:
         return None
-    chain = []
-    cur = first_if
+    chain, cur = [], first_if
     while True:
         chain.append(cur)
         ec = next((c for c in cur.children if c.type == "else_clause"), None)
@@ -1177,8 +1135,7 @@ def _try_multi_condition_ladder(src: bytes, block):
         cur = body
     # chain may end with a throw_statement node (terminal else) — recover
     if chain and chain[-1].type == "throw_statement":
-        throw_stmt = chain[-1]
-        chain = chain[:-1]
+        throw_stmt, chain = chain[-1], chain[:-1]
     else:
         # expect a throw as the next sibling
         if len(stmts) < 2 or stmts[1].type != "throw_statement":
@@ -1212,11 +1169,11 @@ def _try_multi_condition_ladder(src: bytes, block):
         # every leaf must be `IDENT === NUMBER` with the same IDENT
         ks: list[int] = []
         for leaf in leaves:
-            if leaf.type != "binary_expression":
-                # "    FAIL: not binary_expression")
-                return None
-            if _node_text(src, leaf.children[1]) not in ("===", "=="):
-                # "    FAIL: not ===")
+            # "    FAIL: not binary_expression")
+            # "    FAIL: not ===")
+            if leaf.type != "binary_expression" or _node_text(
+                src, leaf.children[1]
+            ) not in ("===", "=="):
                 return None
             l, r = leaf.children[0], leaf.children[2]
             if l.type != "identifier" or r.type != "number":
@@ -1267,8 +1224,7 @@ def _try_multi_condition_ladder(src: bytes, block):
             return None  # two ifs disagree on the same key -> bail
         kv[k] = v
     # build array literal
-    values = [v for _, v in sorted(pairs)]
-    array_text = "[" + ", ".join(values) + "]"
+    array_text = "[" + ", ".join([v for _, v in sorted(pairs)]) + "]"
     throw_text = _node_text(src, throw_stmt).lstrip()
     replacement = (
         f"if ({key_var} < {lo} || {key_var} > {lo + len(keys) - 1}) {throw_text}\n"
@@ -1292,11 +1248,9 @@ def _try_filter_loop(src: bytes, block):
     if len(stmts) != 3:
         return None
     decl_stmt, for_stmt, ret_stmt = stmts
-    if decl_stmt.type != "lexical_declaration":
-        return None
-    if for_stmt.type != "for_statement":
-        return None
-    if ret_stmt.type != "return_statement":
+    if (
+        decl_stmt.type != "lexical_declaration" or for_stmt.type != "for_statement"
+    ) or ret_stmt.type != "return_statement":
         return None
     # decl: const out = [];
     decls = [c for c in decl_stmt.children if c.type == "variable_declarator"]
@@ -1333,9 +1287,7 @@ def _try_filter_loop(src: bytes, block):
     if len(decls2) != 1:
         return None
     idx_name = _node_text(src, decls2[0].child_by_field_name("name"))
-    if cond is None or cond.type != "binary_expression":
-        return None
-    if (
+    if (cond is None or cond.type != "binary_expression") or (
         _node_text(src, cond.children[0]) != idx_name
         or _node_text(src, cond.children[1]) != "<"
     ):
@@ -1344,20 +1296,19 @@ def _try_filter_loop(src: bytes, block):
     if rhs.type != "member_expression":
         return None
     arr_name = _node_text(src, rhs.child_by_field_name("object"))
-    if _node_text(src, rhs.child_by_field_name("property")) != "length":
-        return None
-    if update is None or _node_text(src, update) != f"{idx_name}++":
-        return None
     # body: { if (P(arr[i])) out.push(arr[i]); }
-    if body is None or body.type != "statement_block":
+    if (
+        _node_text(src, rhs.child_by_field_name("property")) != "length"
+        or (update is None or _node_text(src, update) != f"{idx_name}++")
+    ) or (body is None or body.type != "statement_block"):
         return None
     bstmts = [c for c in body.children if c.is_named]
     if len(bstmts) != 1:
         return None
     if_stmt = bstmts[0]
-    if if_stmt.type != "if_statement":
-        return None
-    if any(c.type == "else_clause" for c in if_stmt.children):
+    if if_stmt.type != "if_statement" or any(
+        c.type == "else_clause" for c in if_stmt.children
+    ):
         return None
     ic = if_stmt.child_by_field_name("consequence")
     if ic is None:
@@ -1379,9 +1330,9 @@ def _try_filter_loop(src: bytes, block):
         return None
     push_recv = fn_node.child_by_field_name("object")
     push_method = fn_node.child_by_field_name("property")
-    if push_method is None or _node_text(src, push_method) != "push":
-        return None
-    if _node_text(src, push_recv) != out_name:
+    if (push_method is None or _node_text(src, push_method) != "push") or _node_text(
+        src, push_recv
+    ) != out_name:
         return None
     # the push arg must be `arr[i]`
     push_args = push_call.child_by_field_name("arguments")
@@ -1392,9 +1343,9 @@ def _try_filter_loop(src: bytes, block):
         return None
     arg_obj = push_arg.child_by_field_name("object")
     arg_idx = push_arg.child_by_field_name("index")
-    if arg_obj is None or arg_idx is None:
-        return None
-    if _node_text(src, arg_obj) != arr_name or _node_text(src, arg_idx) != idx_name:
+    if (arg_obj is None or arg_idx is None) or (
+        _node_text(src, arg_obj) != arr_name or _node_text(src, arg_idx) != idx_name
+    ):
         return None
     # the if-condition references arr[i] only
     cond_inner = if_stmt.child_by_field_name("condition")
@@ -1402,8 +1353,7 @@ def _try_filter_loop(src: bytes, block):
         return None
     if cond_inner.type == "parenthesized_expression":
         cond_inner = cond_inner.children[1]
-    cond_text = _node_text(src, cond_inner)
-    pat = f"{arr_name}[{idx_name}]"
+    cond_text, pat = _node_text(src, cond_inner), f"{arr_name}[{idx_name}]"
     if pat not in cond_text:
         return None
     new_cond = cond_text.replace(pat, "v")
@@ -1422,8 +1372,7 @@ def _collect_filter_loops(src: bytes, root):
             r = _try_filter_loop(src, node)
             if r is not None:
                 fs, rt, repl = r
-                start = fs.start_point[0] + 1
-                end = rt.end_point[0] + 1
+                start, end = fs.start_point[0] + 1, rt.end_point[0] + 1
                 out.append((start, end, repl, "filter-loop"))
                 return
         for c in node.children:
@@ -1441,8 +1390,7 @@ def _collect_for_loop_every(src: bytes, root):
             r = _try_for_loop_every(src, node)
             if r is not None:
                 fs, rt, repl = r
-                start = fs.start_point[0] + 1
-                end = rt.end_point[0] + 1
+                start, end = fs.start_point[0] + 1, rt.end_point[0] + 1
                 out.append((start, end, repl, "for-loop-with-early-return-to-every"))
                 return
         for c in node.children:
@@ -1460,8 +1408,7 @@ def _collect_multi_condition_ladders(src: bytes, root):
             r = _try_multi_condition_ladder(src, node)
             if r is not None:
                 first, throw, repl = r
-                start = first.start_point[0] + 1
-                end = throw.end_point[0] + 1
+                start, end = first.start_point[0] + 1, throw.end_point[0] + 1
                 out.append((start, end, repl, "multi-condition-ladder"))
                 return
         for c in node.children:
@@ -1506,10 +1453,9 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
             continue
         indent = len(lines[start - 1]) - len(lines[start - 1].lstrip())
         pad = lines[start - 1][:indent]
-        new_block = [
-            (pad + ln) if ln.strip() else "" for ln in replacement.splitlines()
+        lines[start - 1 : end] = [
+            pad + ln if ln.strip() else "" for ln in replacement.splitlines()
         ]
-        lines[start - 1 : end] = new_block
         applied.append(rule_name)
 
     new_source = "\n".join(lines)
@@ -1526,6 +1472,4 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
         parsed = JS_PARSER.parse(new_source.encode("utf-8"))
     except Exception:  # noqa: BLE001 - parser bindings may raise implementation errors
         return source, []
-    if parsed.root_node.has_error:
-        return source, []
-    return new_source, applied
+    return (source, []) if parsed.root_node.has_error else (new_source, applied)

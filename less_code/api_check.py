@@ -50,8 +50,7 @@ def _signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
 def python_api(source: str) -> dict[str, str]:
     """Public top-level functions/classes plus their public methods."""
     api: dict[str, str] = {}
-    tree = ast.parse(source)
-    for node in tree.body:
+    for node in ast.parse(source).body:
         if isinstance(
             node, (ast.FunctionDef, ast.AsyncFunctionDef)
         ) and not node.name.startswith("_"):
@@ -122,8 +121,7 @@ def js_api(source: str) -> dict[str, str]:
         r"export\s+default\s+(?:async\s+)?(?:function|class)\b", source
     ):
         match = re.search(
-            r"export\s+default\s+(?:async\s+)?function\s*\*?\s*(\w+)?",
-            source,
+            r"export\s+default\s+(?:async\s+)?function\s*\*?\s*(\w+)?", source
         )
         api["default"] = (
             functions.get(match.group(1), "export-default")

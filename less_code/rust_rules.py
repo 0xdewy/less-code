@@ -34,13 +34,10 @@ RS_PARSER = ts.Parser(RS_LANGUAGE)
 
 def test_spans(source: str) -> list[tuple[int, int]]:
     """Byte ranges of inline test modules/functions, including their attributes."""
-    encoded = source.encode()
-    spans = []
+    encoded, spans = source.encode(), []
 
     def visit(node):
-        previous = node.prev_named_sibling
-        start = node.start_byte
-        attributes = b""
+        previous, start, attributes = node.prev_named_sibling, node.start_byte, b""
         while previous is not None and previous.type == "attribute_item":
             start = previous.start_byte
             attributes += encoded[previous.start_byte : previous.end_byte]
@@ -95,12 +92,10 @@ def _collect_inline_single_use_bindings(src: bytes, root):
         if node.type == "block":
             statements = list(node.named_children)
             for index, (declaration, following) in enumerate(pairwise(statements)):
-                if declaration.type != "let_declaration":
-                    continue
-                declaration_text = _node_text(src, declaration)
-                if re.match(r"\s*let\s+(?:mut|ref)\b", declaration_text):
-                    continue
-                if declaration.child_by_field_name("type") is not None:
+                if (
+                    declaration.type != "let_declaration"
+                    or re.match(r"\s*let\s+(?:mut|ref)\b", _node_text(src, declaration))
+                ) or declaration.child_by_field_name("type") is not None:
                     continue
                 pattern = declaration.child_by_field_name("pattern")
                 value = declaration.child_by_field_name("value")
@@ -108,15 +103,12 @@ def _collect_inline_single_use_bindings(src: bytes, root):
                     continue
                 name = _node_text(src, pattern)
                 uses = _identifier_nodes(src, following, name)
-                if len(uses) != 1:
-                    continue
-                if any(
+                if len(uses) != 1 or any(
                     _identifier_nodes(src, later, name)
                     for later in statements[index + 2 :]
                 ):
                     continue
-                use = uses[0]
-                deferred_or_conditional = False
+                use, deferred_or_conditional = uses[0], False
                 # `use is following` when the following statement is nothing
                 # but a bare tail expression (`x` with no semicolon): the
                 # walk below starts at `use.parent`, which is then the
@@ -165,12 +157,11 @@ def _collect_inline_single_use_bindings(src: bytes, root):
                 if (
                     use.parent is not None
                     and use.parent.type == "shorthand_field_initializer"
-                ):
-                    continue
-                if (
-                    value.start_point[0] == value.end_point[0]
-                    and following.start_point[0] == following.end_point[0]
-                    and following.start_point[1] + len(replacement) > 88
+                    or (
+                        value.start_point[0] == value.end_point[0]
+                        and following.start_point[0] == following.end_point[0]
+                        and (following.start_point[1] + len(replacement) > 88)
+                    )
                 ):
                     continue
                 replacement_lines = replacement.splitlines()
@@ -208,18 +199,15 @@ def _try_interleave(src: bytes, block) -> tuple | None:
     """
     stmts = [c for c in block.children if c.is_named]
     # find for_expression (possibly wrapped in expression_statement) and its wrapper index
-    for_stmt = None
-    for_stmt_idx = None
+    for_stmt, for_stmt_idx = None, None
     for i, s in enumerate(stmts):
         if s.type == "expression_statement":
             inner = s.child(0)
             if inner and inner.type == "for_expression":
-                for_stmt = inner
-                for_stmt_idx = i
+                for_stmt, for_stmt_idx = inner, i
                 break
         elif s.type == "for_expression":
-            for_stmt = s
-            for_stmt_idx = i
+            for_stmt, for_stmt_idx = s, i
             break
     if for_stmt is None:
         return None
@@ -229,8 +217,7 @@ def _try_interleave(src: bytes, block) -> tuple | None:
     items = [c for c in pat.children if c.is_named]
     if len(items) != 2:
         return None
-    i_name = _node_text(src, items[0])
-    x_name = _node_text(src, items[1])
+    i_name, x_name = _node_text(src, items[0]), _node_text(src, items[1])
     iterable = for_stmt.child_by_field_name("value")
     if iterable is None or iterable.type != "call_expression":
         return None
@@ -250,12 +237,11 @@ def _try_interleave(src: bytes, block) -> tuple | None:
         return None
     arr_node = inner_fexpr.child_by_field_name("value")
     arr_method = inner_fexpr.child_by_field_name("field")
-    if arr_method is None or _node_text(src, arr_method) != "iter":
+    if (
+        arr_method is None or _node_text(src, arr_method) != "iter"
+    ) or arr_node is None:
         return None
-    if arr_node is None:
-        return None
-    arr_text = _node_text(src, arr_node)
-    body = for_stmt.child_by_field_name("body")
+    arr_text, body = _node_text(src, arr_node), for_stmt.child_by_field_name("body")
     if body is None or body.type != "block":
         return None
     bstmts = [c for c in body.children if c.is_named]
@@ -263,16 +249,12 @@ def _try_interleave(src: bytes, block) -> tuple | None:
         return None
     # stmt 0: if i != 0 { out.push(SEP); }
     s0, s1 = bstmts
-    if s0.type != "expression_statement":
-        return None
-    if s0.child(0).type != "if_expression":
+    if s0.type != "expression_statement" or s0.child(0).type != "if_expression":
         return None
     if_expr = s0.child(0)
     cond = if_expr.child_by_field_name("condition")
     cons = if_expr.child_by_field_name("consequence")
-    if cond is None or cond.type != "binary_expression":
-        return None
-    if (
+    if (cond is None or cond.type != "binary_expression") or (
         _node_text(src, cond.children[0]) != i_name
         or _node_text(src, cond.children[1]) != "!="
     ):
@@ -290,20 +272,19 @@ def _try_interleave(src: bytes, block) -> tuple | None:
     if push_call.type != "call_expression":
         return None
     push_fexpr = push_call.child_by_field_name("function")
-    if push_fexpr is None or push_fexpr.type != "field_expression":
-        return None
-    if _node_text(src, push_fexpr.child_by_field_name("field")) != "push":
-        return None
     # stmt 1: out.push_str(EXPR)
-    if s1.type != "expression_statement":
+    if (
+        (push_fexpr is None or push_fexpr.type != "field_expression")
+        or _node_text(src, push_fexpr.child_by_field_name("field")) != "push"
+    ) or s1.type != "expression_statement":
         return None
     push_str_call = s1.child(0)
     if push_str_call.type != "call_expression":
         return None
     push_str_fexpr = push_str_call.child_by_field_name("function")
-    if push_str_fexpr is None or push_str_fexpr.type != "field_expression":
-        return None
-    if _node_text(src, push_str_fexpr.child_by_field_name("field")) != "push_str":
+    if (
+        push_str_fexpr is None or push_str_fexpr.type != "field_expression"
+    ) or _node_text(src, push_str_fexpr.child_by_field_name("field")) != "push_str":
         return None
     push_str_arg = push_str_call.child_by_field_name("arguments")
     if push_str_arg is None:
@@ -321,8 +302,7 @@ def _try_interleave(src: bytes, block) -> tuple | None:
     # Strip only the outer borrow accepted by `push_str`; ampersands inside the
     # expression may be operators or nested borrows and must remain untouched.
     proc_call = re.sub(rf"\b{x_name}\b", "v", arg_text).strip()
-    if proc_call.startswith("&"):
-        proc_call = proc_call[1:].lstrip()
+    proc_call = proc_call[1:].lstrip() if proc_call.startswith("&") else proc_call
     # post-loop: out.push('\n'); out — must be the two stmts immediately after for_stmt
     post = stmts[for_stmt_idx + 1 :]
     if len(post) != 2:
@@ -369,17 +349,13 @@ def _try_interleave(src: bytes, block) -> tuple | None:
     )
     if sep_arg is None:
         return None
-    sep_text = _node_text(src, sep_arg)
     # SEP is a char; join needs &str. Use delimiter.to_string().
-    sep_join = f"&{sep_text}.to_string()"
-    repl = (
-        f"{out_name} = {arr_text}.iter()"
-        f".map(|v| {proc_call})"
-        f".collect::<Vec<_>>().join({sep_join});\n"
-        f"{out_name}.push({newline_text});\n"
-        f"{out_name}"
+    sep_join = f"&{_node_text(src, sep_arg)}.to_string()"
+    return (
+        for_stmt,
+        p2,
+        f"{out_name} = {arr_text}.iter().map(|v| {proc_call}).collect::<Vec<_>>().join({sep_join});\n{out_name}.push({newline_text});\n{out_name}",
     )
-    return for_stmt, p2, repl
 
 
 def _try_contains_check(src: bytes, block):
@@ -410,11 +386,10 @@ def _try_contains_check(src: bytes, block):
         fs = fs.child(0) if fs.child(0) else None
     if fs is None or fs.type != "for_expression":
         return None
-    pat = fs.child_by_field_name("pattern")
-    iter_n = fs.child_by_field_name("value")
-    if pat is None or pat.type != "identifier":
-        return None
-    if iter_n is None or iter_n.type != "call_expression":
+    pat, iter_n = fs.child_by_field_name("pattern"), fs.child_by_field_name("value")
+    if (pat is None or pat.type != "identifier") or (
+        iter_n is None or iter_n.type != "call_expression"
+    ):
         return None
     fexpr = iter_n.child_by_field_name("function")
     if fexpr is None or fexpr.type != "field_expression":
@@ -423,8 +398,7 @@ def _try_contains_check(src: bytes, block):
     if iter_method is None or _node_text(src, iter_method) != "chars":
         return None
     s_name = _node_text(src, fexpr.child_by_field_name("value"))
-    loop_var = _node_text(src, pat)
-    body = fs.child_by_field_name("body")
+    loop_var, body = _node_text(src, pat), fs.child_by_field_name("body")
     if body is None or body.type != "block":
         return None
     bstmts = [c for c in body.children if c.is_named]
@@ -437,10 +411,10 @@ def _try_contains_check(src: bytes, block):
         return None
     inner_cond = inner.child_by_field_name("condition")
     inner_cons = inner.child_by_field_name("consequence")
-    if inner_cond is None or inner_cond.type != "binary_expression":
-        return None
     # top-level must be `==` not `||` (we'll flatten below)
-    if _node_text(src, inner_cond.children[1]) != "||":
+    if (inner_cond is None or inner_cond.type != "binary_expression") or _node_text(
+        src, inner_cond.children[1]
+    ) != "||":
         return None
 
     def flatten_or(n):
@@ -461,7 +435,7 @@ def _try_contains_check(src: bytes, block):
         if l.type != "identifier" or _node_text(src, l) != loop_var:
             return None
         # right side: char_literal OR identifier (e.g. a parameter like `delimiter`)
-        if r.type == "char_literal" or r.type == "identifier":
+        if r.type in {"char_literal", "identifier"}:
             chars.append(_node_text(src, r))
         else:
             return None
@@ -470,11 +444,10 @@ def _try_contains_check(src: bytes, block):
     if len(cstmts) != 1:
         return None
     a = cstmts[0]
-    if a.type == "expression_statement":
-        a = a.child(0) if a.child(0) else None
-    if a is None or a.type != "assignment_expression":
-        return None
-    if _node_text(src, a.children[1]) != "=":
+    a = (a.child(0) if a.child(0) else None) if a.type == "expression_statement" else a
+    if (a is None or a.type != "assignment_expression") or _node_text(
+        src, a.children[1]
+    ) != "=":
         return None
     lhs = a.children[0]
     if lhs.type != "identifier" or _node_text(src, lhs) != flag_name:
@@ -536,20 +509,14 @@ def _try_for_count(src: bytes, block):
     m = re.match(r"\s*let\s+mut\s+(\w+)\s*(?::\s*\w+\s*)?=\s*0\w*\s*;", let_text)
     if not m:
         return None
-    count_name = m.group(1)
-    fs = for_stmt
+    count_name, fs = m.group(1), for_stmt
     if fs.type == "expression_statement":
         fs = fs.child(0) if fs.child(0) else None
     if fs is None or fs.type != "for_expression":
         return None
-    pat = fs.child_by_field_name("pattern")
-    iter_n = fs.child_by_field_name("value")
-    if pat is None:
-        return None
-    pat_text = _node_text(src, pat)
-    if pat_text != "_":
-        return None  # only fire when the loop var is unused
-    if iter_n is None:
+    pat, iter_n = fs.child_by_field_name("pattern"), fs.child_by_field_name("value")
+    # only fire when the loop var is unused
+    if pat is None or (_node_text(src, pat) != "_" or iter_n is None):
         return None
     body = fs.child_by_field_name("body")
     if body is None or body.type != "block":
@@ -560,19 +527,17 @@ def _try_for_count(src: bytes, block):
     inner = bstmts[0]
     if inner.type == "expression_statement":
         inner = inner.child(0) if inner.child(0) else None
-    if inner is None or inner.type != "assignment_expression":
-        return None
-    if _node_text(src, inner.children[1]) != "=":
+    if (inner is None or inner.type != "assignment_expression") or _node_text(
+        src, inner.children[1]
+    ) != "=":
         return None
     lhs, rhs = inner.children[0], inner.children[2]
-    if lhs.type != "identifier" or _node_text(src, lhs) != count_name:
-        return None
     # rhs: `count + 1` (binary_expression with +)
-    if rhs.type != "binary_expression":
-        return None
-    if _node_text(src, rhs.children[1]) != "+":
-        return None
     if (
+        lhs.type != "identifier" or _node_text(src, lhs) != count_name
+    ) or rhs.type != "binary_expression":
+        return None
+    if _node_text(src, rhs.children[1]) != "+" or (
         rhs.children[0].type != "identifier"
         or _node_text(src, rhs.children[0]) != count_name
     ):
@@ -600,18 +565,15 @@ def _try_fold_sum(src: bytes, block):
     m = re.match(r"\s*let\s+mut\s+(\w+)\s*(?::\s*\w+\s*)?=\s*0\w*\s*;", let_text)
     if not m:
         return None
-    total_name = m.group(1)
-    fs = for_stmt
+    total_name, fs = m.group(1), for_stmt
     if fs.type == "expression_statement":
         fs = fs.child(0) if fs.child(0) else None
     if fs is None or fs.type != "for_expression":
         return None
-    pat = fs.child_by_field_name("pattern")
-    iter_n = fs.child_by_field_name("value")
+    pat, iter_n = fs.child_by_field_name("pattern"), fs.child_by_field_name("value")
     if pat is None:
         return None
-    x_name = _node_text(src, pat)
-    body = fs.child_by_field_name("body")
+    x_name, body = _node_text(src, pat), fs.child_by_field_name("body")
     if body is None or body.type != "block":
         return None
     bstmts = [c for c in body.children if c.is_named]
@@ -643,15 +605,11 @@ def _try_fold_sum(src: bytes, block):
         if fn_args is None:
             return None
         fn_args_text = _node_text(src, fn_args).strip()
-        if fn_args_text != f"({x_name})" and fn_args_text != x_name:
+        if fn_args_text not in (f"({x_name})", x_name):
             return None
         iter_text = _node_text(src, iter_n)
         return let_stmt, fs, f"let {total_name} = {iter_text}.map({fn_name}).sum();"
-    if rhs.type != "binary_expression":
-        return None
-    if _node_text(src, rhs.children[1]) != "+":
-        return None
-    if (
+    if (rhs.type != "binary_expression" or _node_text(src, rhs.children[1]) != "+") or (
         rhs.children[0].type != "identifier"
         or _node_text(src, rhs.children[0]) != total_name
     ):
@@ -669,7 +627,7 @@ def _try_fold_sum(src: bytes, block):
         return None
     # the call's args should be just `x_name`
     fn_args_text = _node_text(src, fn_args).strip()
-    if fn_args_text != f"({x_name})" and fn_args_text != x_name:
+    if fn_args_text not in (f"({x_name})", x_name):
         return None
     iter_text = _node_text(src, iter_n)
     return let_stmt, for_stmt, f"let {total_name} = {iter_text}.map({fn_name}).sum();"
@@ -683,8 +641,7 @@ def _collect_for_count(src: bytes, root):
             r = _try_for_count(src, node)
             if r is not None:
                 let_stmt, for_stmt, repl = r
-                start = let_stmt.start_point[0] + 1
-                end = for_stmt.end_point[0] + 1
+                start, end = let_stmt.start_point[0] + 1, for_stmt.end_point[0] + 1
                 out.append((start, end, repl, "for-count-to-method"))
                 return
         for c in node.children:
@@ -702,8 +659,7 @@ def _collect_fold_sum(src: bytes, root):
             r = _try_fold_sum(src, node)
             if r is not None:
                 let_stmt, for_stmt, repl = r
-                start = let_stmt.start_point[0] + 1
-                end = for_stmt.end_point[0] + 1
+                start, end = let_stmt.start_point[0] + 1, for_stmt.end_point[0] + 1
                 out.append((start, end, repl, "fold-add-to-sum"))
                 return
         for c in node.children:
@@ -721,8 +677,7 @@ def _collect_contains_check(src: bytes, root):
             r = _try_contains_check(src, node)
             if r is not None:
                 prev, nxt, repl = r
-                start = prev.start_point[0] + 1
-                end = nxt.end_point[0] + 1
+                start, end = prev.start_point[0] + 1, nxt.end_point[0] + 1
                 out.append((start, end, repl, "contains-check-loop"))
                 return
         for c in node.children:
@@ -740,8 +695,7 @@ def _collect_interleaves(src: bytes, root):
             r = _try_interleave(src, node)
             if r is not None:
                 fs, p2, repl = r
-                start = fs.start_point[0] + 1
-                end = p2.end_point[0] + 1
+                start, end = fs.start_point[0] + 1, p2.end_point[0] + 1
                 out.append((start, end, repl, "csv-interleave-to-join"))
                 return
         for c in node.children:
@@ -784,8 +738,7 @@ def _collect_arm_unbrace(src: bytes, root):
                 stmts = block.named_children
                 if len(stmts) == 1:
                     stmt = stmts[0]
-                    text = _node_text(src, stmt).strip()
-                    inner = stmt
+                    text, inner = _node_text(src, stmt).strip(), stmt
                     if stmt.type == "expression_statement" and stmt.named_children:
                         inner = stmt.named_children[0]
                     ends_with_semicolon = text.endswith(";")
@@ -796,8 +749,7 @@ def _collect_arm_unbrace(src: bytes, root):
                     )
                     if keeps_type:
                         if "\n" in text:
-                            prefix = " " * stmt.start_point[1]
-                            body = text.splitlines()
+                            prefix, body = " " * stmt.start_point[1], text.splitlines()
                             text = "\n".join(
                                 [body[0]] + [ln.removeprefix(prefix) for ln in body[1:]]
                             )
@@ -831,6 +783,9 @@ RULES = (
     "nested-if-collapse",
     "let-else",
     "any-flag-loop",
+    "for-push-to-collect",
+    "use-merge",
+    "match-early-return-to-question",
 )
 
 
@@ -867,6 +822,12 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
         rewrites.extend(_collect_let_else(src_bytes, tree.root_node))
     if "any-flag-loop" in selected:
         rewrites.extend(_collect_any_flag(src_bytes, tree.root_node))
+    if "for-push-to-collect" in selected:
+        rewrites.extend(_collect_for_push_collect(src_bytes, tree.root_node))
+    if "use-merge" in selected:
+        rewrites.extend(_collect_use_merge(src_bytes, tree.root_node))
+    if "match-early-return-to-question" in selected:
+        rewrites.extend(_collect_match_question(src_bytes, tree.root_node))
     if not rewrites:
         return source, []
 
@@ -911,8 +872,7 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
         from .loc import measure
 
         before_text = "\n".join(lines) + ("\n" if source.endswith("\n") else "")
-        after_loc = measure(candidate_text, "rust")
-        if after_loc.code >= measure(before_text, "rust").code:
+        if measure(candidate_text, "rust").code >= measure(before_text, "rust").code:
             continue
         lines = candidate_lines
         applied.append(rule_name)
@@ -927,9 +887,7 @@ def apply_rules(source: str, only: set[str] | None = None) -> tuple[str, list[st
         parsed = RS_PARSER.parse(new_source.encode("utf-8"))
     except Exception:  # noqa: BLE001 - parser bindings may raise implementation errors
         return source, []
-    if parsed.root_node.has_error:
-        return source, []
-    return new_source, applied
+    return (source, []) if parsed.root_node.has_error else (new_source, applied)
 
 
 # ---- Phase 3 rule families (census-gated at merge time) ----
@@ -954,8 +912,7 @@ def _collect_vec_push_run(src: bytes, root):
                 ):
                     continue
                 name = re.match(r"\s*let\s+mut\s+(\w+)", decl_text).group(1)
-                pushes = []
-                ok = True
+                pushes, ok = [], True
                 for follow in statements[index + 1 : index + 3]:
                     inner = follow
                     if inner.type == "expression_statement":
@@ -981,7 +938,7 @@ def _collect_vec_push_run(src: bytes, root):
                     ):
                         ok = False
                         break
-                    args = [c for c in arguments.named_children]
+                    args = list(arguments.named_children)
                     if len(args) != 1:
                         ok = False
                         break
@@ -1009,10 +966,8 @@ def _collect_vec_push_run(src: bytes, root):
                     for s in between
                 ):
                     continue
-                end = between[-1].end_point[0] + 1
-                start = decl.start_point[0] + 1
-                mut_name = name
-                replacement = f"let {mut_name} = vec![{pushes[0]}, {pushes[1]}];"
+                end, start = between[-1].end_point[0] + 1, decl.start_point[0] + 1
+                replacement = f"let {name} = vec![{pushes[0]}, {pushes[1]}];"
                 out.append((start, end, replacement, "vec-push-run"))
                 return
         for child in node.named_children:
@@ -1031,8 +986,7 @@ def _collect_string_concat_run(src: bytes, root):
         if node.type == "block":
             statements = [c for c in node.named_children if c.type != "line_comment"]
             for index in range(len(statements) - 1):
-                first, second = statements[index], statements[index + 1]
-                parts = []
+                first, second, parts = statements[index], statements[index + 1], []
                 for stmt in (first, second):
                     inner = stmt
                     if inner.type == "expression_statement":
@@ -1055,7 +1009,7 @@ def _collect_string_concat_run(src: bytes, root):
                     ):
                         parts = []
                         break
-                    args = [c for c in arguments.named_children]
+                    args = list(arguments.named_children)
                     if len(args) != 1 or args[0].type != "string_literal":
                         parts = []
                         break
@@ -1069,12 +1023,12 @@ def _collect_string_concat_run(src: bytes, root):
                 receiver_b = b_node.child_by_field_name("function").child_by_field_name(
                     "value"
                 )
-                if _node_text(src, receiver_a) != _node_text(src, receiver_b):
-                    continue
                 # adjacent string literals concatenate exactly like run-time
                 # push_str when neither literal has a raw prefix or escapes
                 # that re-split; keep it to plain "..." literals
-                if not (a_text.startswith('"') and b_text.startswith('"')):
+                if _node_text(src, receiver_a) != _node_text(src, receiver_b) or not (
+                    a_text.startswith('"') and b_text.startswith('"')
+                ):
                     continue
                 merged = a_text[:-1] + b_text[1:]
                 replacement = f"{_node_text(src, receiver_a)}.push_str({merged});"
@@ -1114,8 +1068,7 @@ def _collect_nested_if_collapse(src: bytes, root):
                 for child in node.named_children:
                     visit(child)
                 return
-            inner = consequence.named_children[0]
-            inner_stmt = inner
+            inner_stmt = consequence.named_children[0]
             if inner_stmt.type == "expression_statement":
                 inner_stmt = (
                     inner_stmt.named_children[0] if inner_stmt.named_children else None
@@ -1129,12 +1082,8 @@ def _collect_nested_if_collapse(src: bytes, root):
             inner_alternative = inner_stmt.child_by_field_name("alternative")
             # both branches must agree: an else on the outer requires an
             # else on the inner and vice versa
-            if (alternative is None) != (inner_alternative is None):
-                for child in node.named_children:
-                    visit(child)
-                return
             # comments inside either block block the merge (named-sibling rule)
-            if any(
+            if (alternative is None) != (inner_alternative is None) or any(
                 c.type in {"line_comment", "block_comment"}
                 for c in list(consequence.children) + list(inner_consequence.children)
             ):
@@ -1146,8 +1095,7 @@ def _collect_nested_if_collapse(src: bytes, root):
                 if any(op in _node_text(src, inner_condition) for op in ("&&", "||"))
                 else f"{_node_text(src, condition)} && {_node_text(src, inner_condition)}"
             )
-            consequence_text = _node_text(src, inner_consequence)
-            alternative_text = ""
+            consequence_text, alternative_text = _node_text(src, inner_consequence), ""
             if inner_alternative is not None:
                 alt_block = (
                     next(
@@ -1205,8 +1153,7 @@ def _collect_let_else(src: bytes, root):
                     visit(child)
                 return
             else_block = next(
-                (c for c in alternative.named_children if c.type == "block"),
-                None,
+                (c for c in alternative.named_children if c.type == "block"), None
             )
             if else_block is None:
                 for child in node.named_children:
@@ -1233,14 +1180,12 @@ def _collect_let_else(src: bytes, root):
                 for child in node.named_children:
                     visit(child)
                 return
-            let_text = _node_text(src, condition)
-            match = re.match(r"\s*let\s+(.*)", let_text, re.DOTALL)
+            match = re.match(r"\s*let\s+(.*)", _node_text(src, condition), re.DOTALL)
             if not match:
                 for child in node.named_children:
                     visit(child)
                 return
-            binding = match.group(1).strip()
-            body = _node_text(src, consequence)
+            binding, body = match.group(1).strip(), _node_text(src, consequence)
             else_body = _node_text(src, else_block)
             replacement = f"let {binding} else {else_body};\n{body}"
             out.append(
@@ -1286,8 +1231,7 @@ def _try_any_flag(src: bytes, block):
     if fs is None or fs.type != "for_expression":
         return None
     pattern = fs.child_by_field_name("pattern")
-    iterable = fs.child_by_field_name("value")
-    body = fs.child_by_field_name("body")
+    iterable, body = fs.child_by_field_name("value"), fs.child_by_field_name("body")
     if pattern is None or pattern.type != "identifier" or body is None:
         return None
     var = _node_text(src, pattern)
@@ -1300,9 +1244,9 @@ def _try_any_flag(src: bytes, block):
     inner = body_stmts[0]
     if inner.type == "expression_statement":
         inner = inner.named_children[0] if inner.named_children else None
-    if inner is None or inner.type != "if_expression":
-        return None
-    if inner.child_by_field_name("alternative") is not None:
+    if (inner is None or inner.type != "if_expression") or inner.child_by_field_name(
+        "alternative"
+    ) is not None:
         return None
     condition = inner.child_by_field_name("condition")
     consequence = inner.child_by_field_name("consequence")
@@ -1313,12 +1257,10 @@ def _try_any_flag(src: bytes, block):
     ]
     if len(consequence_stmts) != 1:
         return None
-    assignment = consequence_stmts[0]
-    assignment_text = _node_text(src, assignment)
+    assignment_text = _node_text(src, consequence_stmts[0])
     if not re.match(rf"\s*{flag}\s*=\s*true\s*;", assignment_text):
         return None
-    cond_text = _node_text(src, condition)
-    iter_text = _node_text(src, iterable)
+    cond_text, iter_text = _node_text(src, condition), _node_text(src, iterable)
     closure_var = var if var != "_" else "item"
     cond_subst = re.sub(rf"\b{var}\b", closure_var, cond_text)
     return (
@@ -1335,6 +1277,509 @@ def _collect_any_flag(src: bytes, root):
     def visit(node):
         if node.type == "block":
             r = _try_any_flag(src, node)
+            if r is not None:
+                out.append(r)
+                return
+        for child in node.named_children:
+            visit(child)
+
+    visit(root)
+    return out
+
+
+_PURE_VEC_INIT = re.compile(r"\s*Vec::new\(\)\s*|\s*vec!\[\]\s*|\s*Vec::default\(\)\s*")
+
+_DIVERGENT_IN_CLOSURE = {
+    "return_expression",
+    "break_expression",
+    "continue_expression",
+    "await_expression",
+    "try_expression",
+    "yield_expression",
+    "loop_expression",
+    "while_expression",
+    "for_expression",
+    "closure_expression",
+    "async_block",
+}
+
+_VEC_MUTATORS = (
+    "push",
+    "push_str",
+    "extend",
+    "clear",
+    "truncate",
+    "retain",
+    "append",
+    "insert",
+    "remove",
+    "swap_remove",
+    "pop",
+    "drain",
+    "resize",
+    "reserve",
+)
+
+
+def _comments_only_in(span_node, keep_nodes) -> bool:
+    """True when every comment inside span_node's byte range also lies
+    inside one of keep_nodes (whose text the rewrite reuses verbatim).
+    Anything else would detach or drop documentation."""
+    keep = [(n.start_byte, n.end_byte) for n in keep_nodes if n is not None]
+    stack = [span_node]
+    while stack:
+        node = stack.pop()
+        if node.type in ("line_comment", "block_comment") and not any(
+            start <= node.start_byte and node.end_byte <= end for start, end in keep
+        ):
+            return False
+        stack.extend(node.children)
+    return True
+
+
+def _anchored_hunk(src: bytes, start_node, end_node, new_text: str, rule: str):
+    """Whole-line hunk bounds that preserve in-line code around the node
+    span: the leading indent is left for apply_rules' own padding, while
+    any other same-line prefix/suffix rides inside the replacement."""
+    line_start = src.rfind(b"\n", 0, start_node.start_byte) + 1
+    line_end = src.find(b"\n", end_node.end_byte)
+    if line_end == -1:
+        line_end = len(src)
+    prefix = src[line_start : start_node.start_byte].decode("utf-8", "replace")
+    suffix = src[end_node.end_byte : line_end].decode("utf-8", "replace")
+    stripped = prefix[len(prefix) - len(prefix.lstrip(" \t")) :]
+    return (
+        start_node.start_point[0] + 1,
+        end_node.end_point[0] + 1,
+        stripped + new_text + suffix,
+        rule,
+    )
+
+
+_CLOSURE_BREAKERS = {
+    "return_expression",
+    "break_expression",
+    "continue_expression",
+    "await_expression",
+    "try_expression",
+    "yield_expression",
+}
+
+
+def _has_closure_breakers(node) -> bool:
+    """True when moving this expression inside a closure would change
+    control flow (early exits and awaits belong to the enclosing body)."""
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if current.type in _CLOSURE_BREAKERS:
+            return True
+        stack.extend(current.named_children)
+    return False
+
+
+def _pattern_binders(src: bytes, pattern) -> set[str]:
+    """All identifier bindings in a (possibly destructuring) pattern."""
+    binders = set()
+    stack = [pattern]
+    while stack:
+        node = stack.pop()
+        if node.type == "identifier":
+            binders.add(_node_text(src, node))
+        stack.extend(node.named_children)
+    return binders
+
+
+def _try_for_push_collect(src: bytes, block):
+    """`let mut acc[: T] = Vec::new(); for P in ITER { acc.push(E) }` ->
+    `let acc[: T] = ITER.into_iter().map(|P| E).collect();` when the pushed
+    expression mentions the loop binder, performs no divergent/side-channel
+    control flow, and the accumulator is only read afterwards."""
+    statements = list(block.named_children)
+    for index, (declaration, following) in enumerate(pairwise(statements)):
+        if declaration.type != "let_declaration":
+            continue
+        pattern = declaration.child_by_field_name("pattern")
+        value = declaration.child_by_field_name("value")
+        annotation = declaration.child_by_field_name("type")
+        if pattern is None or pattern.type != "identifier" or value is None:
+            continue
+        if not _PURE_VEC_INIT.fullmatch(_node_text(src, value)):
+            continue
+        name = _node_text(src, pattern)
+        loop = following
+        if loop.type == "expression_statement":
+            loop = loop.named_children[0] if loop.named_children else None
+        if loop is None or loop.type != "for_expression":
+            continue
+        loop_pattern = loop.child_by_field_name("pattern")
+        iterable = loop.child_by_field_name("value")
+        body = loop.child_by_field_name("body")
+        if loop_pattern is None or iterable is None or body is None:
+            continue
+        if not _comments_only_in(declaration, [annotation]):
+            continue
+        body_stmts = list(body.named_children)
+        if len(body_stmts) != 1:
+            continue
+        pushed = body_stmts[0]
+        if pushed.type == "expression_statement":
+            pushed = pushed.named_children[0] if pushed.named_children else None
+        if pushed is None or pushed.type != "call_expression":
+            continue
+        function = pushed.child_by_field_name("function")
+        arguments = pushed.child_by_field_name("arguments")
+        if function is None or function.type != "field_expression" or arguments is None:
+            continue
+        receiver = function.child_by_field_name("value")
+        method = function.child_by_field_name("field")
+        args = arguments.named_children
+        if (
+            receiver is None
+            or receiver.type != "identifier"
+            or _node_text(src, receiver) != name
+            or method is None
+            or _node_text(src, method) != "push"
+            or len(args) != 1
+        ):
+            continue
+        if not _comments_only_in(following, [iterable, loop_pattern, args[0]]):
+            continue
+        pushed_text = _node_text(src, args[0])
+        binders = _pattern_binders(src, loop_pattern)
+        if not any(
+            re.search(rf"\b{re.escape(binder)}\b", pushed_text)
+            for binder in binders
+            if binder != "_"
+        ) and not (len(binders) == 1 and "_" in binders):
+            continue
+        if re.search(rf"\b{re.escape(name)}\b", pushed_text):
+            continue
+        refused, stack = False, [args[0]]
+        while stack:
+            node = stack.pop()
+            if node.type in _DIVERGENT_IN_CLOSURE:
+                refused = True
+                break
+            stack.extend(node.named_children)
+        if refused:
+            continue
+        # comments between the declaration and the loop would be detached
+        gap = src[declaration.end_byte : following.start_byte]
+        if b"//" in gap or b"/*" in gap:
+            continue
+        # reads after the loop are fine; later mutation is not preserved
+        escaped = re.escape(name)
+        for later in statements[index + 2 :]:
+            later_text = _node_text(src, later)
+            if re.search(
+                rf"\b{escaped}\s*\.\s*(?:{'|'.join(_VEC_MUTATORS)})\s*\(|\b{escaped}\s*=(?![=>])|&mut\s+{escaped}\b",
+                later_text,
+            ):
+                break
+        else:
+            annotation_text = (
+                f": {_node_text(src, annotation)}" if annotation is not None else ""
+            )
+            # into_iter() mirrors the for-loop desugar exactly: the same
+            # head expression works for slices, ranges, maps, and existing
+            # iterators alike (a bare .map() would not exist on slices).
+            replacement = (
+                f"let {name}{annotation_text} = "
+                f"{_node_text(src, iterable)}.into_iter().map(|{_node_text(src, loop_pattern)}| "
+                f"{pushed_text}).collect();"
+            )
+            return _anchored_hunk(
+                src, declaration, following, replacement, "for-push-to-collect"
+            )
+    return None
+
+
+def _collect_for_push_collect(src: bytes, root):
+    out = []
+
+    def visit(node):
+        if node.type == "block":
+            r = _try_for_push_collect(src, node)
+            if r is not None:
+                out.append(r)
+                return
+        for child in node.named_children:
+            visit(child)
+
+    visit(root)
+    return out
+
+
+def _use_head_alternatives(src: bytes, tree) -> tuple | None:
+    """(head, [alternative texts]) for a use-tree node, or None when the
+    shape is too exotic to merge. `use a;` contributes a `self`
+    alternative so it merges with `use a::b;` into `use a::{self, b};`."""
+    text = _node_text(src, tree)
+    if tree.type == "identifier":
+        return text, ["self"]
+    if tree.type == "use_wildcard":
+        inner = tree.named_children[0] if tree.named_children else None
+        if inner is None:
+            return None
+        return _node_text(src, inner), ["*"]
+    if tree.type == "use_as_clause":
+        path = tree.named_children[0] if tree.named_children else None
+        if path is None:
+            return None
+        head, _ = _use_head_alternatives(src, path) or (None, None)
+        if head is None:
+            return None
+        return head, [text.split("::")[-1]]
+    if tree.type == "scoped_use_list":
+        path = tree.named_children[0] if tree.named_children else None
+        items = tree.named_children[-1] if len(tree.named_children) > 1 else None
+        if path is None or items is None or items.type != "use_list":
+            return None
+        return _node_text(src, path), [_node_text(src, c) for c in items.named_children]
+    if tree.type == "scoped_identifier":
+        segments, node = [], tree
+        while node.type == "scoped_identifier" and len(node.named_children) == 2:
+            segments.append(_node_text(src, node.named_children[1]))
+            node = node.named_children[0]
+        if node.type not in ("identifier", "crate", "self", "super"):
+            return None
+        segments.append(_node_text(src, node))
+        segments.reverse()
+        if len(segments) < 2:
+            return None
+        return "::".join(segments[:-1]), [segments[-1]]
+    return None
+
+
+def _collect_use_merge(src: bytes, root):
+    """Merge adjacent same-prefix imports: `use a::b; use a::c;` ->
+    `use a::{b, c};`. Runs form only across lines with pure-whitespace
+    gaps (attributes and comments break the run), and duplicate
+    alternatives collapse so the merge can never introduce E0252."""
+    out = []
+
+    def runs(parent):
+        items = list(parent.named_children)
+        index = 0
+        while index < len(items):
+            node = items[index]
+            if node.type != "use_declaration":
+                index += 1
+                continue
+            group = [node]
+            index += 1
+            while index < len(items) and items[index].type == "use_declaration":
+                gap = src[items[index - 1].end_byte : items[index].start_byte]
+                if b"#" in gap or b"/" in gap:
+                    break
+                group.append(items[index])
+                index += 1
+            if len(group) > 1:
+                yield group
+
+    def visit(node):
+        for group in runs(node):
+            parsed = []
+            for item in group:
+                children = [
+                    c for c in item.named_children if c.type != "visibility_modifier"
+                ]
+                if len(children) != 1:
+                    break
+                vis = next(
+                    (
+                        _node_text(src, c)
+                        for c in item.named_children
+                        if c.type == "visibility_modifier"
+                    ),
+                    "",
+                )
+                split = _use_head_alternatives(src, children[0])
+                if split is None:
+                    break
+                parsed.append((vis, split[0], split[1], item))
+            else:
+                # only contiguous same-key entries merge: a different import
+                # sitting between two same-prefix ones must survive
+                runs2, current = [], []
+                for entry in parsed:
+                    if current and current[-1][:2] != entry[:2]:
+                        runs2.append(current)
+                        current = []
+                    current.append(entry)
+                runs2.append(current)
+                for run in runs2:
+                    if len(run) < 2:
+                        continue
+                    vis, head = run[0][:2]
+                    if not head:
+                        continue
+                    seen, merged = set(), []
+                    for _, _, alts, _ in run:
+                        for alt in alts:
+                            if alt not in seen:
+                                seen.add(alt)
+                                merged.append(alt)
+                    if len(merged) < 2:
+                        continue
+                    first, last = run[0][3], run[-1][3]
+                    if not all(_comments_only_in(item, []) for _, _, _, item in run):
+                        continue
+                    prefix = f"{vis} " if vis else ""
+                    out.append(
+                        _anchored_hunk(
+                            src,
+                            first,
+                            last,
+                            f"{prefix}use {head}::{{{', '.join(merged)}}};",
+                            "use-merge",
+                        )
+                    )
+        for child in node.named_children:
+            visit(child)
+
+    visit(root)
+    return out
+
+
+_BINDING = r"[A-Za-z_][A-Za-z0-9_]*"
+_OK_ERR_PATTERN = re.compile(rf"^(Ok|Err|Some)\(({_BINDING})\)$")
+
+
+def _unwrap_value(node):
+    """A match-arm value with statement wrappers removed. A trailing
+    semicolon means the arm yields unit, never the expression, so blocks
+    ending in `;` unwrap to nothing."""
+    while node is not None and node.type == "expression_statement":
+        node = node.named_children[0] if node.named_children else None
+    if node is not None and node.type == "block":
+        inner = [
+            c
+            for c in node.named_children
+            if c.type not in ("line_comment", "block_comment")
+        ]
+        if len(inner) != 1 or inner[0].type == "expression_statement":
+            return None
+        node = inner[0]
+    return node
+
+
+def _try_match_question(src: bytes, node):
+    """`match R { Ok(v) => v, Err(e) => return Err(e) }` -> `R?`, and the
+    Option analogues (`None => return None` -> `?`, `None => return Err(X)`
+    -> `ok_or_else`). Every non-success arm must diverge with `return`;
+    guards are refused outright, so control flow cannot change shape."""
+    scrutinee = node.child_by_field_name("value")
+    body = node.child_by_field_name("body")
+    if scrutinee is None or body is None or body.type != "match_block":
+        return None
+    if scrutinee.type not in ("identifier", "field_expression", "call_expression"):
+        return None
+    if _node_text(src, scrutinee).lstrip().startswith("&"):
+        return None
+    arms = [c for c in body.named_children if c.type == "match_arm"]
+    if len(arms) != 2:
+        return None
+    parsed = []
+    for arm in arms:
+        pattern = arm.child_by_field_name("pattern")
+        value = arm.child_by_field_name("value")
+        if pattern is None or value is None:
+            return None
+        if any(c.type == "match_guard" for c in arm.named_children):
+            return None
+        match = _OK_ERR_PATTERN.fullmatch(_node_text(src, pattern).strip())
+        if match is None:
+            # only a bare None arm is allowed besides Ok/Err/Some
+            if _node_text(src, pattern).strip() != "None":
+                return None
+            parsed.append((None, None, arm))
+            continue
+        parsed.append((match.group(1), match.group(2), arm))
+    kinds = sorted(p[0] if p[0] is not None else "None" for p in parsed)
+    success, failure = None, None
+    for kind, binding, arm in parsed:
+        if kind in ("Ok", "Some"):
+            success = (kind, binding, arm)
+        elif kind in ("Err", None):
+            failure = (kind, binding, arm)
+    if success is None or failure is None:
+        return None
+    if kinds not in (["Err", "Ok"], ["None", "Some"]):
+        return None
+    success_value = _unwrap_value(success[2].child_by_field_name("value"))
+    if success_value is None or _node_text(src, success_value) != success[1]:
+        return None
+    failure_value = _unwrap_value(failure[2].child_by_field_name("value"))
+    if failure_value is None or failure_value.type != "return_expression":
+        return None
+    returned = failure_value.named_children[0] if failure_value.named_children else None
+    if returned is None:
+        return None
+    scrutinee_text = _node_text(src, scrutinee)
+    if not _comments_only_in(node, [scrutinee]):
+        return None
+    if _has_closure_breakers(returned):
+        return None
+    if success[0] == "Ok":
+        # only an Err-constructing payload maps onto `?`/`map_err`; a bare
+        # `return foo(e)` returns a whole new result, not a mapped error
+        if returned.type != "call_expression":
+            return None
+        function = returned.child_by_field_name("function")
+        arguments = returned.child_by_field_name("arguments")
+        if function is None or arguments is None:
+            return None
+        if (
+            _node_text(src, function).strip().split("::")[-1] != "Err"
+            or len(arguments.named_children) != 1
+        ):
+            return None
+        inner = _node_text(src, arguments.named_children[0])
+        binding = failure[1]
+        if inner == binding or re.fullmatch(
+            rf"{re.escape(binding)}\s*\.\s*into\s*\(\s*\)", inner
+        ):
+            replacement = f"{scrutinee_text}?"
+        elif re.search(rf"\b{re.escape(binding)}\b", inner):
+            replacement = f"{scrutinee_text}.map_err(|{binding}| {inner})?"
+        else:
+            # the original error is discarded; name the closure parameter
+            # `_` so it cannot warn as unused
+            replacement = f"{scrutinee_text}.map_err(|_| {inner})?"
+        return _anchored_hunk(
+            src, node, node, replacement, "match-early-return-to-question"
+        )
+    # Option scrutinee
+    if returned.type != "identifier" or _node_text(src, returned) != "None":
+        error_call = _node_text(src, returned)
+        error_match = re.fullmatch(r"Err\((.*)\)", error_call, re.DOTALL)
+        if error_match is None:
+            return None
+        payload = error_match.group(1).strip()
+        if re.fullmatch(
+            rf"{_BINDING}|-?\d+|\"(?:[^\"\\]|\\.)*\"|'.'"
+            rf"|(?:[A-Za-z_][A-Za-z0-9_]*\s*\.\s*)+{_BINDING}",
+            payload,
+        ):
+            # pure payloads evaluate eagerly with no observable difference
+            replacement = f"{scrutinee_text}.ok_or({payload})?"
+        else:
+            replacement = f"{scrutinee_text}.ok_or_else(|| {payload})?"
+    else:
+        replacement = f"{scrutinee_text}?"
+    return _anchored_hunk(
+        src, node, node, replacement, "match-early-return-to-question"
+    )
+
+
+def _collect_match_question(src: bytes, root):
+    out = []
+
+    def visit(node):
+        if node.type == "match_expression":
+            r = _try_match_question(src, node)
             if r is not None:
                 out.append(r)
                 return

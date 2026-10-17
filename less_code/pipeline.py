@@ -66,6 +66,7 @@ class ShrinkStats:
     oracle: dict = field(default_factory=dict)
     gate_tests_run: int | None = None
     root: Path | None = None  # not serialized: lets report time re-measure disk
+    exclude: tuple[str, ...] = ()  # not serialized: same mapping as the run
 
     def to_json(self) -> dict:
         return {
@@ -125,11 +126,13 @@ def _project_ruff_config(root: Path) -> Path | None:
     return None
 
 
-def _disk_loc(root: Path, lang: str) -> tuple[int, list[Path]]:
+def _disk_loc(
+    root: Path, lang: str, exclude: tuple[str, ...] = ()
+) -> tuple[int, list[Path]]:
     """LOC of the tree as it exists on disk right now, freshly mapped —
     the file set is NOT frozen at shrink start, so files the build or test
     commands create mid-run are counted (they sit on the disk we ship)."""
-    fresh = map_project(root, lang)
+    fresh = map_project(root, lang, exclude)
     return _tree_loc(fresh.source_files, lang), fresh.source_files
 
 
@@ -172,9 +175,7 @@ def _apply_rules(
     return out, notes
 
 
-def _apply_ruff_again(
-    sources: dict[Path, str],
-) -> tuple[dict[Path, str], list[str]]:
+def _apply_ruff_again(sources: dict[Path, str]) -> tuple[dict[Path, str], list[str]]:
     """The rule layers expose shapes ruff fixes (superfluous else after a
     return, a now-useless trailing return, an assignment before return)."""
     from .static import _ruff_fix
@@ -207,6 +208,7 @@ def _apply_comma_collapse(
 def shrink_project(
     root: Path,
     lang: str | None = None,
+    exclude: tuple[str, ...] = (),
     test_timeout: int = 600,
     ml_backend: object | None = None,
     test_command: list[str] | None = None,
@@ -220,12 +222,9 @@ def shrink_project(
         raise ValueError("ml_attempts must be between 1 and 3")
     if not 1 <= ml_symbols <= 64:
         raise ValueError("ml_symbols must be between 1 and 64")
-    project = map_project(root, lang)
-    stats = ShrinkStats(
-        lang=project.lang,
-        files_considered=len(project.source_files),
-    )
-    stats.root = root
+    project = map_project(root, lang, exclude)
+    stats = ShrinkStats(lang=project.lang, files_considered=len(project.source_files))
+    stats.root, stats.exclude = root, exclude
     stats.static_notes += project.notes
     # Measured before any early return so a failed baseline still reports LOC.
     stats.loc_start = _tree_loc(project.source_files, project.lang)
@@ -253,14 +252,14 @@ def shrink_project(
         stats.static_notes.append(
             f"baseline tests failed: {baseline.output_tail[-300:]}"
         )
-        stats.loc_final, _ = _disk_loc(root, project.lang)
+        stats.loc_final, _ = _disk_loc(root, project.lang, exclude)
         return stats
     stats.tests_ok = True
 
     # The baseline run can materialize files (editable installs, codegen).
     # Start and end must share one file universe, so re-base the start
     # measurement here or the reduction counts phantom lines.
-    fresh = map_project(root, project.lang)
+    fresh = map_project(root, project.lang, exclude)
     if set(fresh.source_files) != set(project.source_files):
         added = sorted(set(fresh.source_files) - set(project.source_files))
         removed = sorted(set(project.source_files) - set(fresh.source_files))
@@ -293,14 +292,12 @@ def shrink_project(
     )
     if not stats.formatted_loc:
         stats.loc_after_static = stats.loc_start
-        stats.loc_final = stats.loc_start
-        stats.api_ok = True
-        stats.docs_ok = True
+        stats.loc_final, stats.api_ok, stats.docs_ok = stats.loc_start, True, True
         stats.static_notes.append(
             "canonical formatter unavailable or rejected a source file; "
             "refusing to measure a reduction"
         )
-        stats.loc_final, _ = _disk_loc(root, project.lang)
+        stats.loc_final, _ = _disk_loc(root, project.lang, exclude)
         return stats
 
     if final_validator is not None:
@@ -310,7 +307,7 @@ def shrink_project(
             stats.loc_after_static = stats.loc_final = stats.loc_start
             stats.api_ok = stats.docs_ok = True
             stats.static_notes.append("baseline audit failed; no rewrites attempted")
-            stats.loc_final, _ = _disk_loc(root, project.lang)
+            stats.loc_final, _ = _disk_loc(root, project.lang, exclude)
             return stats
 
     runner = lambda root_, lang_: run_tests(
@@ -318,11 +315,10 @@ def shrink_project(
     )
 
     def docs_preserved(sources: dict[Path, str]) -> bool:
-        current = {
+        return {
             path: documentation_layout(text, project.lang)
             for path, text in sources.items()
-        }
-        return current == docs_baseline
+        } == docs_baseline
 
     def project_style_ok(paths: list[Path]) -> bool:
         """Run configured format/lint checks on the files a layer changed."""
@@ -475,8 +471,7 @@ def shrink_project(
                 )
         pre_loc = _tree_loc(project.source_files, project.lang)
         _write_changes(changes)
-        loc_after = _tree_loc(project.source_files, project.lang)
-        reason = ""
+        loc_after, reason = _tree_loc(project.source_files, project.lang), ""
         if loc_after >= pre_loc:
             reason = "no canonical LOC reduction"
         elif (
@@ -594,9 +589,7 @@ def shrink_project(
         return notes
 
     def _salvage_file_batches(
-        name: str,
-        batches: list[list[tuple[Path, str]]],
-        api_baseline=None,
+        name: str, batches: list[list[tuple[Path, str]]], api_baseline=None
     ) -> tuple[list[str], int]:
         """Bisect independent file edits, retaining every green subset."""
         salvage_notes: list[str] = []
@@ -642,9 +635,7 @@ def shrink_project(
             items = sorted(changes.items())
             middle = len(items) // 2
             salvage_notes, _ = _salvage_file_batches(
-                "external-static subset",
-                [items[:middle], items[middle:]],
-                api_original,
+                "external-static subset", [items[:middle], items[middle:]], api_original
             )
             static.notes += salvage_notes
             loc_after_static = _tree_loc(project.source_files, project.lang)
@@ -831,11 +822,7 @@ def shrink_project(
         file_checkpoint = _snapshot(project.source_files)
         gate = default_gate(root, file_checkpoint, test_timeout, test_command)
         stats.ml_file_stats, stats.ml_file_records = rewrite_tree(
-            root,
-            project.source_files,
-            ml_file_backend,
-            gate,
-            attempts=ml_file_attempts,
+            root, project.source_files, ml_file_backend, gate, attempts=ml_file_attempts
         )
         final_file_loc = _tree_loc(project.source_files, project.lang)
         stats.ml_file_loc = pre_loc - final_file_loc
@@ -874,9 +861,7 @@ def shrink_project(
                 )
                 stats.ml_file_loc = 0
                 stats.layer_records[-1].update(
-                    committed=False,
-                    loc_after=pre_loc,
-                    audit_rollback=True,
+                    committed=False, loc_after=pre_loc, audit_rollback=True
                 )
 
     stats.loc_final = _tree_loc(project.source_files, project.lang)
@@ -898,12 +883,11 @@ def shrink_project(
     if violations:
         stats.static_notes.append(f"API violations: {violations[:3]}")
 
-    final_check = run_tests(
+    stats.tests_ok = run_tests(
         root, project.lang, timeout=test_timeout, command=test_command
-    )
-    stats.tests_ok = final_check.ok
+    ).ok
     stats.docs_ok = docs_preserved(_snapshot(project.source_files))
-    stats.loc_final, final_files = _disk_loc(root, project.lang)
+    stats.loc_final, final_files = _disk_loc(root, project.lang, exclude)
     if set(final_files) != set(project.source_files):
         grew = sorted(set(final_files) - set(project.source_files))
         add_loc = _tree_loc(grew, project.lang) if grew else 0
@@ -923,7 +907,7 @@ def shrink_project(
 
 def write_report(stats: ShrinkStats, out: Path) -> Path:
     if stats.root is not None:
-        disk, _ = _disk_loc(stats.root, stats.lang)
+        disk, _ = _disk_loc(stats.root, stats.lang, stats.exclude)
         if disk != stats.loc_final:
             raise ValueError(
                 f"report-time disk truth ({disk} code LOC) does not match the"

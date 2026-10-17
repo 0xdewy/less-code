@@ -30,8 +30,7 @@ from .ml_shrink import declaration_preserved, extract_symbols, syntax_ok
 from .rust_rules import test_spans
 
 SENTINEL = "/*__LC_FROZEN_{i}__*/"
-SENTINEL_RE = re.compile(r"__LC_FROZEN_(\d+)__\*/")
-CONTENT_CAP = 96 * 1024
+SENTINEL_RE, CONTENT_CAP = re.compile(r"__LC_FROZEN_(\d+)__\*/"), 96 * 1024
 
 SYSTEM_PROMPT_FILE = (
     "Rewrite this Rust file to use fewer canonical lines with identical "
@@ -85,8 +84,7 @@ def unmask_candidates(
     Every sentinel must appear exactly once, in order, and no foreign
     `__LC_FROZEN_` marker may exist. Any deviation is a reject - never a
     repair."""
-    found = SENTINEL_RE.findall(masked_candidate)
-    if found != [str(i) for i in range(len(spans))]:
+    if SENTINEL_RE.findall(masked_candidate) != [str(i) for i in range(len(spans))]:
         return None
     out = masked_candidate
     for index, (_, _, text) in enumerate(spans):
@@ -115,9 +113,7 @@ class FileBackend:
         digest: str | None = None,
         payload_extra: dict | None = None,
     ):
-        self.command = command
-        self.timeout = timeout
-        self.system = system
+        self.command, self.timeout, self.system = command, timeout, system
         self.digest = digest
         self.payload_extra = payload_extra or {}
         self._extra_sequence: list[dict] | None = None
@@ -127,16 +123,10 @@ class FileBackend:
         - a popped (seed, extras) pair per call."""
         if self._extra_sequence is None:
             return self.payload_extra
-        if self._extra_sequence:
-            return self._extra_sequence.pop(0)
-        return {}
+        return self._extra_sequence.pop(0) if self._extra_sequence else {}
 
     def rewrite(
-        self,
-        path: Path,
-        masked_source: str,
-        context: str,
-        feedback: dict | None,
+        self, path: Path, masked_source: str, context: str, feedback: dict | None
     ) -> str | None:
         payload = {
             "system": self.system,
@@ -224,8 +214,7 @@ def symbol_drift(original: str, candidate: str) -> str:
     new_public = sorted(set(after_names) - set(before_names) - private_after)
     if new_public:
         return f"new public item: {new_public[0]}"
-    before_by_name = {}
-    after_by_name = {}
+    before_by_name, after_by_name = {}, {}
     for mapping, symbols, names in (
         (before_by_name, before, before_names),
         (after_by_name, after, after_names),
@@ -263,9 +252,9 @@ def cascade_reject(original: str, candidate: str, root: Path) -> str:
     violations = api_violations({"f": rust_api(original)}, {"f": rust_api(candidate)})
     if violations:
         return f"API changed: {violations[0]}"
-    if not rustfmt_check_clean(candidate, root):
-        return "project lint/format failed"
-    return ""
+    return (
+        "project lint/format failed" if not rustfmt_check_clean(candidate, root) else ""
+    )
 
 
 def _category(reason: str) -> str:
@@ -292,10 +281,7 @@ def _category(reason: str) -> str:
 
 
 def file_context(
-    root: Path,
-    path: Path,
-    sources: dict[Path, str],
-    clippy_cache: dict | None = None,
+    root: Path, path: Path, sources: dict[Path, str], clippy_cache: dict | None = None
 ) -> str:
     """Bounded sibling-module signatures plus this file's clippy findings."""
     parts: list[str] = []
@@ -312,13 +298,12 @@ def file_context(
             s["text"].split("{", 1)[0].strip().splitlines()[0]
             for s in extract_symbols(text, "rust", private_only=False)
         ][:40]
-        block = (
+        excerpt = (
             f"// {other.relative_to(root)}\n"
             + "\n".join(uses)
             + "\n"
             + "\n".join(signatures)
-        )
-        excerpt = block[: max(remaining, 0)]
+        )[: max(remaining, 0)]
         if excerpt:
             parts.append(excerpt)
             remaining -= len(excerpt)
@@ -419,10 +404,8 @@ def rewrite_file(
         proposal["duration_s"] = round(time.monotonic() - started, 3)
         record["proposals"].append(proposal)
         if proposal["accepted"]:
-            record["accepted"] = True
-            record["reason"] = ""
-            final = path.read_text(encoding="utf-8")
-            record["loc_after"] = measure(final, "rust").code
+            record["accepted"], record["reason"] = True, ""
+            record["loc_after"] = measure(path.read_text(encoding="utf-8"), "rust").code
             break
         if proposal["category"] in {"backend", "abstained"}:
             record["category"] = proposal["category"]
@@ -451,8 +434,7 @@ def rewrite_tree(
 ) -> tuple[dict[str, int], list[dict]]:
     """Rewrite every file largest-first; accepted rewrites persist on disk."""
     ordered = sorted(
-        files,
-        key=lambda p: (-p.stat().st_size, str(p)) if largest_first else str(p),
+        files, key=lambda p: (-p.stat().st_size, str(p)) if largest_first else str(p)
     )
     sources = {p: p.read_text(encoding="utf-8") for p in ordered}
     clippy_cache: dict = {}
@@ -515,12 +497,7 @@ def default_gate(
         test = run_tests(root, "rust", timeout=test_timeout, command=test_command)
         if not test.ok:
             path.write_text(pristine[path], encoding="utf-8")
-            return (
-                0,
-                [],
-                False,
-                f"tests failed: {compile_feedback(test.output_tail)}",
-            )
+            return (0, [], False, f"tests failed: {compile_feedback(test.output_tail)}")
         current = {
             p: (candidate if p == path else p.read_text(encoding="utf-8"))
             for p in pristine
@@ -557,8 +534,7 @@ def rewrite_project(
     project = map_project(root, lang)
     if project.lang != "rust":
         raise SystemExit(f"lc rewrite targets rust projects; got {project.lang}")
-    baseline = run_tests(root, "rust", timeout=test_timeout, command=test_command)
-    if not baseline.ok:
+    if not run_tests(root, "rust", timeout=test_timeout, command=test_command).ok:
         raise SystemExit("baseline tests failed; nothing to rewrite against")
     pristine = {p: p.read_text(encoding="utf-8") for p in project.source_files}
     gate = default_gate(root, pristine, test_timeout, test_command)
