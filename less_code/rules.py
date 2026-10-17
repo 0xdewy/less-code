@@ -2493,25 +2493,8 @@ def _dict_runs(node: ast.Dict) -> list[tuple[int, int]]:
     return runs
 
 
-def _rule_dict_repeated_values(
-    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
-) -> Rewrite | None:
-    """Runs of literal dict entries sharing one constant value collapse into
-    `**dict.fromkeys((k1, k2, ...), v)` or, for 2-tuple keys sharing their
-    first element, `**{(a, n): v for n in (x1, x2, ...)}` (aggressive).
-
-    Key order, duplicate-key resolution and every key/value object are the
-    same: the keys and values are immutable constants, the unpacking runs
-    in display order, and later entries still win.
-    """
-    stmt = body[i]
-    if not (
-        isinstance(stmt, (ast.Assign, ast.AnnAssign))
-        and isinstance(stmt.value, ast.Dict)
-        and stmt.value.end_lineno > stmt.value.lineno
-    ):
-        return None
-    node = stmt.value
+def _compress_dict(node: ast.Dict) -> ast.Dict | None:
+    """`node` with every run from `_dict_runs` collapsed, or None if none."""
     runs = _dict_runs(node)
     if not runs:
         return None
@@ -2548,16 +2531,56 @@ def _rule_dict_repeated_values(
         k = end
     for idx in range(k, len(node.keys)):
         parts.append((node.keys[idx], node.values[idx]))
+    return ast.Dict(keys=[p[0] for p in parts], values=[p[1] for p in parts])
+
+
+class _CompressDicts(ast.NodeTransformer):
+    def __init__(self) -> None:
+        self.changed = False
+
+    def visit_Dict(self, node: ast.Dict):
+        self.generic_visit(node)  # nested tables first
+        compressed = _compress_dict(node)
+        if compressed is None:
+            return node
+        self.changed = True
+        return compressed
+
+
+def _rule_dict_repeated_values(
+    body: list[ast.stmt], i: int, scope_lines: dict, class_body: bool = False
+) -> Rewrite | None:
+    """Runs of literal dict entries sharing one constant value collapse into
+    `**dict.fromkeys((k1, k2, ...), v)` or, for 2-tuple keys sharing their
+    first element, `**{(a, n): v for n in (x1, x2, ...)}` (aggressive). Dict
+    displays nested anywhere in the assigned value are handled too.
+
+    Key order, duplicate-key resolution and every key/value object are the
+    same: the keys and values are immutable constants, the unpacking runs
+    in display order, and later entries still win. The comprehension uses
+    only constants, so a class body's scoping cannot change what it sees.
+    """
+    stmt = body[i]
+    if not (
+        isinstance(stmt, (ast.Assign, ast.AnnAssign))
+        and stmt.value is not None
+        and stmt.end_lineno > stmt.lineno
+    ):
+        return None
     if "!stored:dict" in scope_lines or "!bound:dict" in scope_lines:
         return None  # `dict` must be the builtin
-    new_dict = ast.Dict(keys=[p[0] for p in parts], values=[p[1] for p in parts])
+    value = ast.parse(ast.unparse(stmt.value), mode="eval").body
+    transformer = _CompressDicts()
+    value = transformer.visit(value)
+    if not transformer.changed:
+        return None
     if isinstance(stmt, ast.Assign):
-        new = ast.Assign(targets=stmt.targets, value=new_dict)
+        new = ast.Assign(targets=stmt.targets, value=value)
     else:
         new = ast.AnnAssign(
             target=stmt.target,
             annotation=stmt.annotation,
-            value=new_dict,
+            value=value,
             simple=stmt.simple,
         )
     return Rewrite(
